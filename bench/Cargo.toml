@@ -7,6 +7,10 @@ license.workspace = true
 authors.workspace = true
 description = "Phase 0 measurement harness: does a custom protocol actually beat SMB on this link?"
 
+[lib]
+name = "basalt_bench"
+path = "src/lib.rs"
+
 [[bin]]
 name = "basalt-bench"
 path = "src/main.rs"

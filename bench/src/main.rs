@@ -25,20 +25,15 @@
 //! Still to build: `disk` (the HDD seek-thrash curve) and `smb` (the baseline
 //! the Phase 0 gate is actually measured against).
 
-mod compress;
-mod corpus;
-mod net;
-mod report;
-mod stats;
-
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use corpus::{Corpus, CorpusSpec};
-use report::Report;
-use stats::Suite;
+use basalt_bench::corpus::{Corpus, CorpusSpec};
+use basalt_bench::report::Report;
+use basalt_bench::stats::Suite;
+use basalt_bench::{compress, net, report};
 
 #[derive(Parser)]
 #[command(

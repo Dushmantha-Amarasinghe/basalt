@@ -179,6 +179,13 @@ impl<W: Write> BatchWriter<W> {
                 // many files, which is exactly the win we are after for large
                 // batches of similar small files.
                 let _ = encoder.long_distance_matching(true);
+                // zstd leaves the frame checksum off by default. Turn it on:
+                // it is an xxhash over the frame, costs almost nothing next to
+                // the compression itself, and turns silent corruption into a
+                // clean decode error. Note this covers the compressed path
+                // only — `Codec::Raw` bodies carry no integrity check, which is
+                // why whole-transfer BLAKE3 verification still matters.
+                let _ = encoder.include_checksum(true);
                 Sink::Zstd(Box::new(encoder))
             }
         };
@@ -348,6 +355,7 @@ impl<R: Read> BatchReader<R> {
         let kind = EntryKind::from_u8(kind_byte[0])?;
         if kind == EntryKind::End {
             self.finished = true;
+            self.verify_clean_end()?;
             return Ok(None);
         }
 
@@ -387,6 +395,38 @@ impl<R: Read> BatchReader<R> {
             data,
             error,
         }))
+    }
+
+    /// Confirms the underlying stream really did end where the terminator said
+    /// it did.
+    ///
+    /// Without this, two corruptions slip through silently:
+    ///
+    /// 1. A flipped byte turns some entry's `kind` into `End` (value 0). The
+    ///    reader stops early and reports success with *fewer entries* — a
+    ///    half-copied directory that looks complete.
+    /// 2. A stream truncated after the terminator but before the zstd frame
+    ///    epilogue loses the checksum, and nothing ever notices.
+    ///
+    /// Reading one more byte forces zstd to validate the frame epilogue and its
+    /// checksum, turning both into clean decode errors.
+    ///
+    /// The raw codec gets no such protection — there is nothing to check
+    /// against. That is why bulk transfers are verified end-to-end with BLAKE3
+    /// and why the wire is TLS, whose AEAD rejects tampering outright.
+    fn verify_clean_end(&mut self) -> Result<()> {
+        if matches!(self.header.codec, Codec::Raw) {
+            return Ok(());
+        }
+        let mut probe = [0u8; 1];
+        match self.source.read(&mut probe) {
+            Ok(0) => Ok(()),
+            Ok(_) => Err(ProtoError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "trailing bytes after the stream terminator",
+            ))),
+            Err(e) => Err(ProtoError::Io(e)),
+        }
     }
 
     fn read_path(&mut self) -> Result<String> {
