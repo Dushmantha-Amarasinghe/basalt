@@ -33,7 +33,7 @@ use clap::{Parser, Subcommand};
 use basalt_bench::corpus::{Corpus, CorpusSpec};
 use basalt_bench::report::Report;
 use basalt_bench::stats::Suite;
-use basalt_bench::{compress, net, report};
+use basalt_bench::{compress, disk, net, report, smb};
 
 #[derive(Parser)]
 #[command(
@@ -109,6 +109,43 @@ enum Command {
         /// How many small files to use in the batch comparison.
         #[arg(long, default_value_t = 2000)]
         small_files: usize,
+    },
+
+    /// Disk benchmarks. Runs locally against a generated corpus.
+    ///
+    /// The important output is the concurrency curve: it decides whether the
+    /// host needs an I/O scheduler that caps disk parallelism, or whether a
+    /// simple bounded queue is enough.
+    Disk {
+        /// Corpus directory — point this at the drive under test.
+        #[arg(long, default_value = "bench-corpus")]
+        root: PathBuf,
+
+        /// Bytes to read per sequential measurement.
+        #[arg(long, default_value_t = 512 * 1024 * 1024)]
+        sequential_bytes: u64,
+
+        /// Small files to use for the concurrency curve.
+        #[arg(long, default_value_t = 2000)]
+        small_files: usize,
+    },
+
+    /// SMB baseline. Run on the PC against a share on the laptop.
+    ///
+    /// This is what the Phase 0 gate is measured against.
+    Smb {
+        /// UNC path to the shared corpus on the laptop.
+        #[arg(long)]
+        share: PathBuf,
+
+        /// Small files to read. Match your `net --small-files` for a fair
+        /// comparison.
+        #[arg(long, default_value_t = 2000)]
+        small_files: usize,
+
+        /// Bytes to read from the large file.
+        #[arg(long, default_value_t = 256 * 1024 * 1024)]
+        large_bytes: u64,
     },
 
     /// Show what this machine looks like, including the Wi-Fi link.
@@ -188,6 +225,37 @@ fn main() -> Result<()> {
                 }))?;
             Report::new(suites).write(&cli.out)?;
             print_network_verdict();
+        }
+
+        Command::Disk {
+            root,
+            sequential_bytes,
+            small_files,
+        } => {
+            print_banner("disk");
+            let suites = disk::run(&disk::DiskConfig {
+                root,
+                runs: cli.runs,
+                sequential_bytes,
+                small_files,
+            })?;
+            Report::new(suites).write(&cli.out)?;
+        }
+
+        Command::Smb {
+            share,
+            small_files,
+            large_bytes,
+        } => {
+            print_banner("smb baseline");
+            let suites = smb::run(&smb::SmbConfig {
+                share,
+                runs: cli.runs,
+                small_files,
+                large_bytes,
+            })?;
+            Report::new(suites).write(&cli.out)?;
+            smb::print_comparison_hint();
         }
 
         Command::Env => {

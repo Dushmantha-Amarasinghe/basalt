@@ -35,6 +35,29 @@ fn zstd_ratio(data: &[u8], level: i32) -> f64 {
     data.len() as f64 / compressed.len() as f64
 }
 
+/// Compression ratio plus the *fastest* observed compression rate, in MB/s.
+///
+/// Best-of-N rather than a single run. `cargo test` runs these in parallel with
+/// everything else, so any individual run can be descheduled mid-measurement;
+/// the fastest run is the one least contaminated by that. The question being
+/// asked is "can this CPU compress faster than the link", which is a question
+/// about capability, not about average throughput under test-suite load.
+///
+/// Without this the test is flaky, and a flaky test in the pre-commit hook is
+/// worse than no test: it teaches you to reach for `--no-verify`.
+fn ratio_and_peak_mbs(data: &[u8], level: i32) -> (f64, f64) {
+    let mut ratio = 1.0;
+    let mut best_mbs: f64 = 0.0;
+    for _ in 0..5 {
+        let start = std::time::Instant::now();
+        let compressed = zstd::encode_all(data, level).expect("compress");
+        let elapsed = start.elapsed().as_secs_f64();
+        ratio = data.len() as f64 / compressed.len() as f64;
+        best_mbs = best_mbs.max((data.len() as f64 / 1e6) / elapsed.max(1e-9));
+    }
+    (ratio, best_mbs)
+}
+
 // --- the corpus still models reality ------------------------------------
 
 #[test]
@@ -147,13 +170,7 @@ fn compression_still_beats_the_link_for_compressible_data() {
 
     for flavour in [Flavour::Prose, Flavour::Code, Flavour::Json] {
         let data = block(flavour, 4 * 1024 * 1024, 7);
-
-        let start = std::time::Instant::now();
-        let compressed = zstd::encode_all(data.as_slice(), policy.level).unwrap();
-        let elapsed = start.elapsed().as_secs_f64();
-
-        let ratio = data.len() as f64 / compressed.len() as f64;
-        let compress_mbs = (data.len() as f64 / 1e6) / elapsed.max(1e-9);
+        let (ratio, compress_mbs) = ratio_and_peak_mbs(&data, policy.level);
         let effective = compress_mbs.min(TARGET_LINK_MBS * ratio);
 
         assert!(
@@ -173,10 +190,7 @@ fn the_default_level_is_fast_enough_to_stay_ahead_of_the_link() {
     // stalls on CPU instead of the radio.
     let policy = CompressionPolicy::default();
     let data = block(Flavour::Prose, 4 * 1024 * 1024, 11);
-
-    let start = std::time::Instant::now();
-    let _ = zstd::encode_all(data.as_slice(), policy.level).unwrap();
-    let mbs = (data.len() as f64 / 1e6) / start.elapsed().as_secs_f64().max(1e-9);
+    let (_, mbs) = ratio_and_peak_mbs(&data, policy.level);
 
     // Deliberately conservative: a loaded machine must not fail the build.
     // This only catches a genuinely unsuitable default.

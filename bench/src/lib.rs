@@ -6,6 +6,9 @@
 
 pub mod compress;
 pub mod corpus;
+pub mod disk;
 pub mod net;
 pub mod report;
+pub mod smb;
 pub mod stats;
+pub mod winio;
