@@ -328,17 +328,24 @@ fn generating_a_small_corpus_produces_the_expected_shape() {
 
     assert!(corpus.is_generated(), "corpus should be marked complete");
 
+    // Only the binary flavour is generated at full size; the other three are
+    // companions and deliberately smaller, so that a weak laptop is not made to
+    // format gigabytes of synthetic prose nothing ever reads.
     for flavour in Flavour::all() {
         let path = corpus.large_file(flavour);
         let len = std::fs::metadata(&path)
             .unwrap_or_else(|e| panic!("{} missing: {e}", path.display()))
             .len();
-        assert!(
-            len >= spec.large_file_bytes,
-            "{} is {len} bytes, expected at least {}",
-            path.display(),
-            spec.large_file_bytes
-        );
+        assert!(len > 0, "{} is empty", path.display());
+
+        if flavour == Flavour::Binary {
+            assert!(
+                len >= spec.large_file_bytes,
+                "the measured large file {} is {len} bytes, expected at least {}",
+                path.display(),
+                spec.large_file_bytes
+            );
+        }
     }
 
     let small = corpus.small_file_paths().expect("listing small files");

@@ -8,24 +8,22 @@
 //! it. So the harness measures the real stack — the same framing and codec code
 //! the shipped apps will use — and writes a durable report.
 //!
-//! Typical run:
+//! Two commands, one per machine:
 //!
 //! ```text
-//! # locally, no second machine needed
-//! basalt-bench compress
+//! # on the laptop (the machine being measured)
+//! basalt-bench host --root D:\bench-corpus
 //!
-//! # on the laptop
-//! basalt-bench gen-corpus --root D:\bench-corpus
-//! basalt-bench disk       --root D:\bench-corpus
-//! basalt-bench serve      --root D:\bench-corpus
-//!
-//! # on the PC
-//! basalt-bench net  --host 192.168.1.42
-//! basalt-bench smb  --share <UNC path to the shared corpus>
+//! # on the other PC — the laptop prints this line with the address filled in
+//! basalt-bench measure --host 192.168.1.42
 //! ```
 //!
-//! Every command is built. What remains is running them on the laptop, the
-//! real drive and the real radio — which is where the gate is actually decided.
+//! `host` generates the test files, opens the firewall, creates the Windows
+//! share the comparison needs, and then serves. `measure` runs every
+//! measurement and ends with a plain-English recommendation.
+//!
+//! The individual commands (`compress`, `disk`, `net`, `smb`, `gen-corpus`,
+//! `serve`) remain available for running one piece at a time.
 
 use std::path::PathBuf;
 
@@ -62,6 +60,58 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// RUN THIS ON THE LAPTOP. Sets everything up, then waits.
+    ///
+    /// Generates the test files if they are not already there, opens the
+    /// firewall, creates the Windows share used for the comparison, then starts
+    /// serving and prints the single command to run on the other PC.
+    Host {
+        /// Where to put the test files. Point this at the drive being shared.
+        #[arg(long, default_value = "bench-corpus")]
+        root: PathBuf,
+
+        #[arg(long, default_value_t = net::DEFAULT_PORT)]
+        port: u16,
+
+        /// Use a smaller set of test files. Faster to generate, slightly less
+        /// reliable numbers.
+        #[arg(long)]
+        quick: bool,
+    },
+
+    /// RUN THIS ON YOUR PC. Does every measurement and prints the answer.
+    ///
+    /// Needs `basalt-bench host` already running on the laptop.
+    Measure {
+        /// The address the laptop printed.
+        #[arg(long)]
+        host: String,
+
+        #[arg(long, default_value_t = net::DEFAULT_PORT)]
+        port: u16,
+
+        /// Skip the Windows-sharing comparison. Only use this if the share
+        /// cannot be reached — without it there is nothing to compare against.
+        #[arg(long)]
+        skip_smb: bool,
+
+        /// Override where the Windows share is. Defaults to the share `host`
+        /// creates on the laptop.
+        #[arg(long)]
+        share: Option<PathBuf>,
+
+        /// Bytes per transfer measurement.
+        #[arg(long, default_value_t = 256 * 1024 * 1024)]
+        transfer_bytes: u64,
+
+        /// How many small files to use.
+        #[arg(long, default_value_t = 2000)]
+        small_files: usize,
+    },
+
+    /// Undo what `host` set up: removes the share and firewall rule.
+    Cleanup,
+
     /// Generate the test corpus.
     GenCorpus {
         #[arg(long, default_value = "bench-corpus")]
@@ -166,6 +216,31 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Host { root, port, quick } => {
+            run_host(root, port, quick, cli.seed)?;
+        }
+
+        Command::Measure {
+            ref host,
+            port,
+            skip_smb,
+            ref share,
+            transfer_bytes,
+            small_files,
+        } => {
+            run_measure(
+                &cli,
+                host,
+                port,
+                skip_smb,
+                share.clone(),
+                transfer_bytes,
+                small_files,
+            )?;
+        }
+
+        Command::Cleanup => basalt_bench::setup::cleanup()?,
+
         Command::GenCorpus { root, quick, force } => {
             let spec = if quick {
                 CorpusSpec {
@@ -269,6 +344,183 @@ fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// The laptop side: set everything up, then serve.
+fn run_host(root: PathBuf, port: u16, quick: bool, seed: u64) -> Result<()> {
+    use basalt_bench::setup;
+
+    println!("\n┌─ Basalt benchmark host");
+    println!("└─ this machine will be measured. leave it running.\n");
+
+    // 1. Test files.
+    let spec = if quick {
+        CorpusSpec {
+            seed,
+            ..CorpusSpec::quick()
+        }
+    } else {
+        CorpusSpec {
+            seed,
+            ..CorpusSpec::full()
+        }
+    };
+    let corpus = Corpus::open(&root);
+    if !corpus.is_generated() {
+        println!("Creating test files (this happens once, and can take a while):");
+    }
+    corpus.generate(spec, false)?;
+
+    let absolute = root.canonicalize()?;
+    // Strip the \\?\ prefix so the path is usable in a PowerShell command.
+    let display_path = absolute
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_string();
+
+    // 2. Firewall and share, so the other PC can actually reach this one.
+    println!("\nSetting up access:");
+    let fw = setup::ensure_firewall(port);
+    println!("{}", fw.describe("Firewall"));
+    let share = setup::ensure_share(&display_path);
+    println!("{}", share.describe("Windows share"));
+
+    if !fw.is_ok() || !share.is_ok() {
+        println!(
+            "\n  Some setup needs administrator rights. Close this, right-click\n\
+             \x20 PowerShell -> 'Run as administrator', and start it again from\n\
+             \x20 there. Everything else will still work, but the comparison\n\
+             \x20 against Windows sharing needs the share to exist."
+        );
+    }
+
+    // 3. Tell the user exactly what to type on the other machine.
+    let addresses = setup::local_addresses();
+    println!("\n{}", "=".repeat(64));
+    match addresses.first() {
+        Some(ip) => {
+            println!("  On your OTHER PC, run this one command:\n");
+            println!("      basalt-bench measure --host {ip}\n");
+            if addresses.len() > 1 {
+                println!(
+                    "  (if that address does not work, try: {})",
+                    addresses[1..].join(", ")
+                );
+            }
+        }
+        None => println!(
+            "  Could not work out this machine's address. Run `ipconfig` and\n\
+             \x20 use the IPv4 address of the Wi-Fi adapter."
+        ),
+    }
+    println!("{}", "=".repeat(64));
+    println!("\nServing. Leave this window open. Press Ctrl-C when the other PC finishes.\n");
+
+    let bind_addr = format!("0.0.0.0:{port}").parse()?;
+    let tls_addr = format!("0.0.0.0:{}", port + 1).parse()?;
+
+    // Bind and serve directly rather than going through `server::run`, which
+    // prints its own banner. Two sets of instructions on one screen — one of
+    // them telling the user to go and find their own IP address — is worse
+    // than none.
+    tokio_runtime()?.block_on(async move {
+        let bound = net::server::bind(net::server::ServerConfig {
+            root: absolute,
+            addr: bind_addr,
+            tls_addr,
+        })
+        .await?;
+        net::server::serve(bound).await
+    })
+}
+
+/// The client side: run everything, then say what it means.
+#[allow(clippy::too_many_arguments)]
+fn run_measure(
+    cli: &Cli,
+    host: &str,
+    port: u16,
+    skip_smb: bool,
+    share_override: Option<PathBuf>,
+    transfer_bytes: u64,
+    small_files: usize,
+) -> Result<()> {
+    use basalt_bench::{setup, smb, verdict};
+
+    println!("\n┌─ Basalt measurement");
+    println!("└─ measuring against {host}. this takes a few minutes.\n");
+
+    // How fast can this machine compress? Cheap, and it runs without the
+    // network, so do it first.
+    println!("[1/4] checking this PC's compression speed");
+    compress::verify_round_trip(cli.seed)?;
+    let compress_suites = compress::run(cli.seed, 3)?;
+
+    println!("\n[2/4] measuring the custom protocol over the network");
+    let net_suites = tokio_runtime()?.block_on(net::client::run(net::client::ClientConfig {
+        host: host.to_string(),
+        port,
+        tls_port: net::client::default_tls_port(port),
+        runs: cli.runs,
+        transfer_bytes,
+        small_file_count: small_files,
+    }))?;
+
+    let mut smb_suites = Vec::new();
+    let mut real_share = false;
+    if skip_smb {
+        println!("\n[3/4] skipping the Windows-sharing comparison (--skip-smb)");
+    } else {
+        let share = share_override
+            .unwrap_or_else(|| PathBuf::from(format!(r"\\{host}\{}", setup::SHARE_NAME)));
+        real_share = smb::is_network_share(&share);
+        println!(
+            "\n[3/4] measuring Windows file sharing at {}",
+            share.display()
+        );
+        match smb::run(&smb::SmbConfig {
+            share,
+            runs: cli.runs,
+            small_files,
+            large_bytes: transfer_bytes,
+        }) {
+            Ok(s) => smb_suites = s,
+            // A missing share must not throw away the measurements we already
+            // have; report it and carry on to the partial result.
+            Err(e) => {
+                println!("\n  Could not measure Windows sharing: {e}");
+                println!(
+                    "  Open \\\\{host}\\{} in Explorer once to authenticate, then\n\
+                     \x20 run this again. Without it there is nothing to compare against.",
+                    setup::SHARE_NAME
+                );
+            }
+        }
+    }
+
+    println!("\n[4/4] writing the report");
+    let mut all = compress_suites;
+    all.extend(net_suites.iter().cloned());
+    all.extend(smb_suites.iter().cloned());
+    Report::new(all).write(&cli.out)?;
+
+    // Only compare against a real network share. Comparing against a local
+    // folder would pit a network protocol against a local disk read and produce
+    // a confident, completely wrong recommendation.
+    if real_share {
+        let comparisons = verdict::compare(&net_suites, &smb_suites);
+        verdict::print(&comparisons);
+    } else if !skip_smb {
+        println!(
+            "\n  No verdict: the share given was a local folder, not a network\n\
+             \x20 share, so there is nothing valid to compare against."
+        );
+    }
+    println!(
+        "  Full numbers: {}\n",
+        cli.out.join("benchmarks.md").display()
+    );
     Ok(())
 }
 

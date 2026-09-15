@@ -1,0 +1,8 @@
+# Link the C runtime statically.
+#
+# Without this, the binary needs the Visual C++ redistributable installed. The
+# benchmark has to run on a bare low-end laptop that may never have had a
+# development tool on it, so "copy the exe across and double-click" must work
+# with nothing else installed.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

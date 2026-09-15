@@ -43,10 +43,28 @@ pub fn run(config: &SmbConfig) -> Result<Vec<Suite>> {
     );
 
     println!("\nSMB baseline against {}", config.share.display());
-    println!(
-        "  NOTE: these numbers come from the same corpus and the same code as\n\
-         \x20 the `net` run, so they are directly comparable."
-    );
+
+    // A local path is not a network share. Reading files off the local disk
+    // will look enormously faster than anything crossing a radio, and the
+    // resulting "comparison" is nonsense. This is easy to do by accident with
+    // --share, so say so loudly rather than quietly producing a wrong verdict.
+    if !is_network_share(&config.share) {
+        println!();
+        println!("  {}", "!".repeat(64));
+        println!(
+            "  WARNING: {} is a local folder, not a network share.",
+            config.share.display()
+        );
+        println!("  These numbers measure your local disk, not Windows file sharing,");
+        println!("  and the comparison against Basalt is meaningless. Use a UNC path");
+        println!("  (\\\\machine\\share) for a real result.");
+        println!("  {}", "!".repeat(64));
+    } else {
+        println!(
+            "  NOTE: these numbers come from the same corpus and the same code as\n\
+             \x20 the `net` run, so they are directly comparable."
+        );
+    }
 
     Ok(vec![
         large_file(config)?,
@@ -203,6 +221,34 @@ fn listing(config: &SmbConfig) -> Result<Suite> {
     suite.push(with_meta);
 
     Ok(suite)
+}
+
+/// True if the path is a UNC network share rather than a local folder.
+///
+/// Only a real share exercises the SMB stack. A local path measures the disk,
+/// which would make any comparison against a network protocol meaningless.
+pub fn is_network_share(path: &Path) -> bool {
+    let s = path.to_string_lossy().replace('/', "\\");
+
+    // The extended-length forms have to be checked first: `\\?\UNC\srv\share`
+    // is a network path, but `\\?\C:\folder` is local — and both begin with
+    // two backslashes, so a naive prefix test calls every canonicalised local
+    // path a network share.
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        return rest.starts_with("UNC\\");
+    }
+    if s.starts_with(r"\\.\") {
+        return false; // device namespace
+    }
+    // A genuine UNC path needs a server and a share: \\server\share
+    s.strip_prefix(r"\\")
+        .map(|rest| {
+            let mut parts = rest.splitn(2, '\\');
+            let server = parts.next().unwrap_or("");
+            let share = parts.next().unwrap_or("");
+            !server.is_empty() && !share.is_empty()
+        })
+        .unwrap_or(false)
 }
 
 /// Reads up to `limit` bytes and discards them.
@@ -399,6 +445,44 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unc_paths_are_recognised_as_network_shares() {
+        for p in [
+            r"\\LAPTOP\basalt",
+            r"\\192.168.1.42\basalt",
+            r"\\server\share\sub\folder",
+            r"\\?\UNC\server\share",
+            "//server/share",
+        ] {
+            assert!(
+                is_network_share(Path::new(p)),
+                "{p} should be treated as a network share"
+            );
+        }
+    }
+
+    #[test]
+    fn local_paths_are_not_mistaken_for_network_shares() {
+        // The canonicalised local form is the dangerous one: it starts with two
+        // backslashes, so a naive check calls it a share and the benchmark
+        // silently compares Basalt against a local disk read.
+        for p in [
+            r"C:\Users\someone\bench-corpus",
+            r"\\?\C:\Users\someone\bench-corpus",
+            r"\\?\D:\bench-corpus",
+            r"\\.\PhysicalDrive0",
+            "bench-corpus",
+            r"D:\My Projects\NAS\bench-corpus",
+            r"\\onlyserver",
+            r"\\",
+        ] {
+            assert!(
+                !is_network_share(Path::new(p)),
+                "{p} is local and must NOT be treated as a network share"
+            );
+        }
     }
 
     #[test]

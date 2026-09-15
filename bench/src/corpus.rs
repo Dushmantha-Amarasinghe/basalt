@@ -325,16 +325,26 @@ pub struct CorpusSpec {
 }
 
 impl CorpusSpec {
-    /// Full-fidelity corpus. `large_file_bytes` should exceed the host's RAM
-    /// for the sequential-read numbers to reflect the disk rather than the
-    /// page cache; the disk benchmark also uses unbuffered reads as a belt-and-
-    /// braces measure.
+    /// Full-fidelity corpus.
+    ///
+    /// Sized for a low-end laptop writing to a USB hard drive, which is the
+    /// machine this actually has to run on. Three things keep it small without
+    /// weakening the measurements:
+    ///
+    /// - The disk benchmark reads unbuffered, so files do **not** need to
+    ///   exceed RAM to defeat the page cache. 512 MiB is plenty.
+    /// - Only the `binary` large file is ever measured; the other three
+    ///   flavours exist for the compression tests, which generate their own
+    ///   data in memory. See [`Corpus::generate_large`].
+    /// - Creating files is a metadata operation, and on a spinning USB drive
+    ///   100,000 of them takes many minutes. 20,000 measures directory
+    ///   enumeration just as well.
     pub fn full() -> Self {
         Self {
-            large_file_bytes: 2 * 1024 * 1024 * 1024,
+            large_file_bytes: 512 * 1024 * 1024,
             small_file_count: 10_000,
             small_file_bytes: 20 * 1024,
-            wide_entry_count: 100_000,
+            wide_entry_count: 20_000,
             seed: 0xBA5A17,
         }
     }
@@ -350,8 +360,12 @@ impl CorpusSpec {
         }
     }
 
+    /// Rough total on disk. Only the binary large file is full size; see
+    /// [`Corpus::generate_large`].
     pub fn total_bytes(&self) -> u64 {
-        self.large_file_bytes * 4
+        let companions = 3 * (32 * 1024 * 1024).min(self.large_file_bytes);
+        self.large_file_bytes
+            + companions
             + (self.small_file_count * self.small_file_bytes) as u64
             + (self.wide_entry_count * 64) as u64
     }
@@ -443,16 +457,30 @@ impl Corpus {
     fn generate_large(&self, spec: CorpusSpec) -> Result<()> {
         const CHUNK: usize = 8 * 1024 * 1024;
 
+        // Only the binary flavour is actually measured — the disk sequential
+        // read and the SMB large-file baseline both use it, chosen because it
+        // is incompressible and so cannot be flattered by SMB compression. The
+        // other three exist only so the tree looks realistic and so the
+        // buffered/unbuffered agreement test has something to read.
+        //
+        // Generating them at full size would triple the wait for no gain, and
+        // they are the *slow* ones: prose, code and json are built by string
+        // formatting, while binary is a PRNG fill. On a weak laptop CPU that
+        // difference is minutes, not seconds.
+        const COMPANION_BYTES: u64 = 32 * 1024 * 1024;
+
         for (i, flavour) in Flavour::all().into_iter().enumerate() {
+            let target = if flavour == Flavour::Binary {
+                spec.large_file_bytes
+            } else {
+                COMPANION_BYTES.min(spec.large_file_bytes)
+            };
+
             let path = self.large_file(flavour);
-            if path.is_file() && path.metadata()?.len() >= spec.large_file_bytes {
+            if path.is_file() && path.metadata()?.len() >= target {
                 continue;
             }
-            print!(
-                "  large/{:<8} {:>9} ",
-                flavour.name(),
-                fmt_bytes(spec.large_file_bytes)
-            );
+            print!("  large/{:<8} {:>9} ", flavour.name(), fmt_bytes(target));
             std::io::stdout().flush().ok();
 
             let mut rng = Rng::new(spec.seed ^ (i as u64) << 32);
@@ -460,9 +488,9 @@ impl Corpus {
                 File::create(&path).with_context(|| format!("creating {}", path.display()))?;
             let mut buf = Vec::with_capacity(CHUNK + 4096);
             let mut written = 0u64;
-            while written < spec.large_file_bytes {
+            while written < target {
                 generate(flavour, CHUNK, &mut rng, &mut buf);
-                let remaining = (spec.large_file_bytes - written) as usize;
+                let remaining = (target - written) as usize;
                 let take = buf.len().min(remaining);
                 file.write_all(&buf[..take])?;
                 written += take as u64;

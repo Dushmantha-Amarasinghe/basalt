@@ -9,6 +9,8 @@ pub mod corpus;
 pub mod disk;
 pub mod net;
 pub mod report;
+pub mod setup;
 pub mod smb;
 pub mod stats;
+pub mod verdict;
 pub mod winio;
