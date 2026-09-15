@@ -16,3 +16,6 @@ dist/
 .DS_Store
 Thumbs.db
 .idea/
+
+# Built binary staged for copying to the laptop
+/dist/
