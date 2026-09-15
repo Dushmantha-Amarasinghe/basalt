@@ -1,0 +1,18 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Benchmark artifacts — corpora are gigabytes, results are regenerated
+/bench-corpus/
+/bench-out/
+/docs/benchmarks.json
+
+# Node / Tauri (phases 1+)
+node_modules/
+dist/
+.vite/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/

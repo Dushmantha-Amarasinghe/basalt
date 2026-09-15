@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = ["crates/basalt-proto", "bench"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+authors = ["Basalt"]
+
+[workspace.dependencies]
+basalt-proto = { path = "crates/basalt-proto" }
+
+anyhow = "1"
+blake3 = "1"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zstd = "0.13"
+
+# Release profile tuned for measurement: we want the benchmark binary to be
+# representative of a shipped build, not of a debug build.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+# `bench-dev` gives near-release speed with fast incremental rebuilds, for
+# iterating on the harness without waiting on full LTO.
+[profile.bench-dev]
+inherits = "release"
+lto = false
+codegen-units = 16

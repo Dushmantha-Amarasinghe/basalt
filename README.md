@@ -1,0 +1,108 @@
+# Basalt
+
+A personal NAS built from a spare laptop and a desktop HDD.
+
+- **Basalt Host** — runs on the laptop, locks in a drive, serves it over the LAN.
+- **Basalt** — runs on your PC. Pair once; after that it is just there.
+
+Currently at **Phase 0**: measuring before building. See
+[the plan](../../../Users/dsbam/.claude/plans/i-want-to-make-quirky-rainbow.md)
+for the full design.
+
+## Why Phase 0 exists
+
+Building a NAS client is months of work. Windows already ships SMB, and on a
+LAN a tuned SMB3 share is genuinely fast. Discovering in month six that file
+sharing was already quicker would be an expensive way to learn it.
+
+So before any UI is written, `basalt-bench` measures the real stack — the same
+framing and compression code the shipped apps will use — against an SMB
+baseline, on the actual laptop, the actual drive, and the actual radio.
+
+**The gate:** match or beat SMB on both a single large file and ten thousand
+small ones. If we cannot, the approach gets revisited.
+
+## Layout
+
+```
+crates/basalt-proto/   wire framing + compression policy (ships in Phase 1)
+bench/                 Phase 0 measurement harness
+docs/                  generated benchmark reports
+```
+
+`basalt-proto` is deliberately not benchmark-only code. The batch stream format
+and the entropy-based compression policy are what the host and client will
+actually speak, so Phase 0 measures the real thing rather than a stand-in.
+
+## Setup
+
+Requires Rust (stable) and the MSVC build tools.
+
+```bash
+cargo build --release
+cargo test
+```
+
+## Running the benchmarks
+
+### 1. Compression — run this first, no second machine needed
+
+The highest-value measurement. On a ~30 MB/s Wi-Fi link, zstd compresses
+roughly 20x faster than the radio can transmit, so compressible data should
+move several times faster than raw.
+
+```bash
+cargo run --release -p basalt-bench -- compress
+```
+
+### 2. Generate the corpus on the laptop
+
+Point `--root` at the drive under test. Use `--quick` (~1 GB) to smoke-test the
+harness, or omit it for the full ~8 GB corpus.
+
+```bash
+cargo run --release -p basalt-bench -- gen-corpus --root D:\bench-corpus
+```
+
+The corpus is deterministic: the same `--seed` produces byte-identical files, so
+runs are comparable across machines and across days.
+
+### 3. Serve from the laptop
+
+```bash
+cargo run --release -p basalt-bench -- serve --root D:\bench-corpus
+```
+
+Prints the addresses it is reachable on. Allow it through Windows Firewall when
+prompted — ports 7742 (plaintext) and 7743 (TLS).
+
+### 4. Measure from the PC
+
+```bash
+cargo run --release -p basalt-bench -- net --host 192.168.1.42
+```
+
+### 5. Check the environment any time
+
+```bash
+cargo run --release -p basalt-bench -- env
+```
+
+Reports CPU, RAM, and the Wi-Fi link — band, channel, rate, signal — plus
+advice when the link is the thing holding transfers back.
+
+## Output
+
+Every run writes `docs/benchmarks.md` (readable) and `docs/benchmarks.json`
+(diffable), both stamped with the machine that produced them. Numbers from
+different CPUs or different radio conditions are not comparable, and the report
+makes that explicit.
+
+## Reading the results
+
+- **Medians, not means.** One antivirus scan turns a mean into fiction.
+- **`⚠ unstable`** means p95 ran more than 25% over the median. Close background
+  apps and re-run; do not record unstable numbers.
+- **Loopback proves the harness works, not the design.** With a 77 µs RTT and a
+  2900 MB/s "link", batching and compression both look pointless — correctly so.
+  Only a run across the real radio answers the real question.
