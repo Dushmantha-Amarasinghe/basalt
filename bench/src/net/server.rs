@@ -23,7 +23,45 @@ pub struct ServerConfig {
     pub tls_addr: SocketAddr,
 }
 
-pub async fn run(config: ServerConfig) -> Result<()> {
+/// A server whose sockets are already bound but which is not yet accepting.
+///
+/// Splitting bind from serve exists for the integration tests: they pass port 0
+/// and read back whichever ports the OS handed out. Probing for a free port and
+/// then binding it separately is a race, and under `cargo test`'s parallelism
+/// that race loses often enough to make the suite flaky.
+pub struct BoundServer {
+    plain: TcpListener,
+    tls_listener: TcpListener,
+    acceptor: TlsAcceptor,
+    root: Arc<PathBuf>,
+    plain_addr: SocketAddr,
+    tls_addr: SocketAddr,
+}
+
+impl BoundServer {
+    pub fn plain_addr(&self) -> SocketAddr {
+        self.plain_addr
+    }
+
+    pub fn tls_addr(&self) -> SocketAddr {
+        self.tls_addr
+    }
+
+    pub fn print_banner(&self) {
+        println!("basalt-bench server");
+        println!("  root      {}", self.root.display());
+        println!("  plaintext {}", self.plain_addr);
+        println!("  tls       {}", self.tls_addr);
+        for ip in local_addresses() {
+            println!("  reachable at {ip}");
+        }
+        println!("\nrun the client with:  basalt-bench net --host <this machine's IP>");
+        println!("ctrl-c to stop\n");
+    }
+}
+
+/// Binds both listeners and prepares TLS, without accepting yet.
+pub async fn bind(config: ServerConfig) -> Result<BoundServer> {
     let root = config
         .root
         .canonicalize()
@@ -36,19 +74,34 @@ pub async fn run(config: ServerConfig) -> Result<()> {
         .await
         .with_context(|| format!("binding {}", config.tls_addr))?;
 
-    let acceptor = build_tls_acceptor()?;
+    let plain_addr = plain.local_addr()?;
+    let tls_addr = tls_listener.local_addr()?;
 
-    println!("basalt-bench server");
-    println!("  root      {}", root.display());
-    println!("  plaintext {}", config.addr);
-    println!("  tls       {}", config.tls_addr);
-    for ip in local_addresses() {
-        println!("  reachable at {ip}");
-    }
-    println!("\nrun the client with:  basalt-bench net --host <this machine's IP>");
-    println!("ctrl-c to stop\n");
+    Ok(BoundServer {
+        plain,
+        tls_listener,
+        acceptor: build_tls_acceptor()?,
+        root: Arc::new(root),
+        plain_addr,
+        tls_addr,
+    })
+}
 
-    let root = Arc::new(root);
+pub async fn run(config: ServerConfig) -> Result<()> {
+    let server = bind(config).await?;
+    server.print_banner();
+    serve(server).await
+}
+
+/// Accepts connections until cancelled.
+pub async fn serve(server: BoundServer) -> Result<()> {
+    let BoundServer {
+        plain,
+        tls_listener,
+        acceptor,
+        root,
+        ..
+    } = server;
 
     loop {
         tokio::select! {
@@ -230,7 +283,17 @@ async fn send_batch<S: AsyncWrite + Unpin>(
 
         let mut out = Vec::with_capacity(8 * 1024 * 1024);
         let mut w = BatchWriter::new(&mut out, codec)?;
-        for rel in &paths {
+        for (index, rel) in paths.iter().enumerate() {
+            // Every path written into the stream must itself be valid, including
+            // the ones attached to errors. Writing the caller's raw path into an
+            // error entry means the *decoder* rejects it, which kills the whole
+            // batch — the exact opposite of what inline errors are for. So a
+            // path we cannot sanitise gets a safe placeholder keyed by its index
+            // in the request, and the original goes in the message where it is
+            // inert.
+            let label =
+                sanitize_relative_path(rel).unwrap_or_else(|_| format!("!rejected/{index:06}"));
+
             match resolve(&root, rel) {
                 Ok(path) => match std::fs::read(&path) {
                     Ok(data) => {
@@ -240,12 +303,12 @@ async fn send_batch<S: AsyncWrite + Unpin>(
                             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                             .map(|d| d.as_secs() as i64)
                             .unwrap_or(0);
-                        w.write_file(rel, mtime, &data)?;
+                        w.write_file(&label, mtime, &data)?;
                     }
                     // One unreadable file must not abort a batch of thousands.
-                    Err(e) => w.write_error(rel, &e.to_string())?,
+                    Err(e) => w.write_error(&label, &e.to_string())?,
                 },
-                Err(e) => w.write_error(rel, &e.to_string())?,
+                Err(e) => w.write_error(&label, &e.to_string())?,
             }
         }
         w.finish()?;

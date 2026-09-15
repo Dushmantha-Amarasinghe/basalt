@@ -33,7 +33,11 @@ impl Rng {
         x
     }
     fn below(&mut self, n: usize) -> usize {
-        if n == 0 { 0 } else { (self.next() % n as u64) as usize }
+        if n == 0 {
+            0
+        } else {
+            (self.next() % n as u64) as usize
+        }
     }
     fn bytes(&mut self, len: usize) -> Vec<u8> {
         (0..len).map(|_| (self.next() >> 24) as u8).collect()
@@ -42,7 +46,9 @@ impl Rng {
 
 /// A randomly generated, always-valid entry set.
 fn random_entries(rng: &mut Rng, count: usize) -> Vec<(EntryKind, String, i64, Vec<u8>)> {
-    let segments = ["docs", "photos", "src", "a", "deep", "nested", "folder-2", "x_y"];
+    let segments = [
+        "docs", "photos", "src", "a", "deep", "nested", "folder-2", "x_y",
+    ];
     (0..count)
         .map(|i| {
             let depth = rng.below(4) + 1;
@@ -71,10 +77,7 @@ fn random_entries(rng: &mut Rng, count: usize) -> Vec<(EntryKind, String, i64, V
         .collect()
 }
 
-fn encode(
-    entries: &[(EntryKind, String, i64, Vec<u8>)],
-    codec: Codec,
-) -> Vec<u8> {
+fn encode(entries: &[(EntryKind, String, i64, Vec<u8>)], codec: Codec) -> Vec<u8> {
     let mut buf = Vec::new();
     let mut w = BatchWriter::new(&mut buf, codec).expect("writer");
     for (kind, path, mtime, data) in entries {
@@ -186,7 +189,10 @@ fn corrupting_a_compressed_stream_is_always_detected() {
             }
         }
     }
-    assert!(checked > 50, "expected a meaningful number of mutations, ran {checked}");
+    assert!(
+        checked > 50,
+        "expected a meaningful number of mutations, ran {checked}"
+    );
 }
 
 #[test]
@@ -207,12 +213,18 @@ fn corrupting_the_header_is_rejected() {
     let mut bad_version = full.clone();
     bad_version[4] = 0xAB;
     bad_version[5] = 0xCD;
-    assert!(decode(&bad_version).is_err(), "bad version must be rejected");
+    assert!(
+        decode(&bad_version).is_err(),
+        "bad version must be rejected"
+    );
 
     // Codec id.
     let mut bad_codec = full.clone();
     bad_codec[6] = 0x7F;
-    assert!(decode(&bad_codec).is_err(), "unknown codec must be rejected");
+    assert!(
+        decode(&bad_codec).is_err(),
+        "unknown codec must be rejected"
+    );
 }
 
 #[test]
@@ -299,7 +311,10 @@ fn many_entries_survive_a_round_trip() {
     let decoded = decode(&buf).expect("20k entries should decode");
     assert_eq!(decoded.len(), count);
     assert_eq!(decoded[0].path, "shard000/file0.txt");
-    assert_eq!(decoded[count - 1].path, format!("shard{:03}/file{}.txt", (count - 1) / 250, count - 1));
+    assert_eq!(
+        decoded[count - 1].path,
+        format!("shard{:03}/file{}.txt", (count - 1) / 250, count - 1)
+    );
     assert_eq!(decoded[12345].data, b"contents of file number 12345\n");
 }
 
@@ -308,8 +323,8 @@ fn entry_sizes_around_the_block_boundaries_round_trip() {
     // Sizes near powers of two and near zstd's internal block size are where
     // off-by-one framing bugs hide.
     let sizes = [
-        0usize, 1, 2, 7, 255, 256, 257, 1023, 1024, 1025, 4095, 4096, 4097, 65_535, 65_536,
-        65_537, 131_072, 131_073,
+        0usize, 1, 2, 7, 255, 256, 257, 1023, 1024, 1025, 4095, 4096, 4097, 65_535, 65_536, 65_537,
+        131_072, 131_073,
     ];
     for codec in [Codec::Raw, Codec::Zstd(1)] {
         let mut buf = Vec::new();
@@ -325,7 +340,11 @@ fn entry_sizes_around_the_block_boundaries_round_trip() {
         for (entry, &size) in decoded.iter().zip(&sizes) {
             assert_eq!(entry.data.len(), size, "size {size} did not round-trip");
             assert!(
-                entry.data.iter().enumerate().all(|(b, &v)| v == (b % 251) as u8),
+                entry
+                    .data
+                    .iter()
+                    .enumerate()
+                    .all(|(b, &v)| v == (b % 251) as u8),
                 "size {size} round-tripped with wrong contents"
             );
         }
@@ -370,7 +389,10 @@ fn invalid_utf8_in_a_path_is_rejected() {
     stream.extend_from_slice(&0u64.to_le_bytes());
     stream.push(EntryKind::End as u8);
 
-    assert!(decode(&stream).is_err(), "invalid UTF-8 path must be rejected");
+    assert!(
+        decode(&stream).is_err(),
+        "invalid UTF-8 path must be rejected"
+    );
 }
 
 #[test]

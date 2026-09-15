@@ -41,13 +41,13 @@ impl ClientConfig {
 
 /// Either a plain or TLS-wrapped connection, so measurement code can be written
 /// once and run over both.
-enum Conn {
+pub enum Conn {
     Plain(TcpStream),
     Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
 }
 
 impl Conn {
-    async fn connect_plain(addr: &str) -> Result<Self> {
+    pub async fn connect_plain(addr: &str) -> Result<Self> {
         let stream = TcpStream::connect(addr)
             .await
             .with_context(|| format!("connecting to {addr}"))?;
@@ -55,7 +55,7 @@ impl Conn {
         Ok(Conn::Plain(stream))
     }
 
-    async fn connect_tls(addr: &str, connector: &TlsConnector) -> Result<Self> {
+    pub async fn connect_tls(addr: &str, connector: &TlsConnector) -> Result<Self> {
         let stream = TcpStream::connect(addr)
             .await
             .with_context(|| format!("connecting to {addr}"))?;
@@ -65,7 +65,7 @@ impl Conn {
         Ok(Conn::Tls(Box::new(tls)))
     }
 
-    fn as_io(&mut self) -> &mut (dyn AsyncReadWrite + Unpin + Send) {
+    pub fn as_io(&mut self) -> &mut (dyn AsyncReadWrite + Unpin + Send) {
         match self {
             Conn::Plain(s) => s,
             Conn::Tls(s) => s.as_mut(),
@@ -77,7 +77,7 @@ impl Conn {
 ///
 /// `Send` is part of the object type because the multi-stream measurements move
 /// each connection onto its own task.
-trait AsyncReadWrite: AsyncRead + AsyncWrite {}
+pub trait AsyncReadWrite: AsyncRead + AsyncWrite {}
 impl<T: AsyncRead + AsyncWrite> AsyncReadWrite for T {}
 
 pub async fn run(config: ClientConfig) -> Result<Vec<Suite>> {
@@ -468,7 +468,7 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyServerCert {
     }
 }
 
-fn build_tls_connector() -> Result<TlsConnector> {
+pub fn build_tls_connector() -> Result<TlsConnector> {
     let config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(AcceptAnyServerCert))
