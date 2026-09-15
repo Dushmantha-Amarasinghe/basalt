@@ -63,6 +63,14 @@ skipping. Use `git commit --no-verify` to bypass it deliberately.
 | `path_safety` | ~50 adversarial paths — traversal, UNC, drive letters, NUL, Windows device names, trailing-dot tricks |
 | `net_integration` | the real server and client over real TCP and TLS: batching, inline errors, concurrency, malformed input |
 | `compression_policy` | the Phase 0 conclusion itself — that the corpus still models reality and compression still beats the link |
+| `disk` / `winio` | unbuffered reads return correct bytes, the concurrency classifier reads curves the right way round |
+
+Two tests measure real throughput and so are time-sensitive. They take the
+**best of five runs** rather than one, because `cargo test` runs them in
+parallel with everything else and any single run can be descheduled
+mid-measurement. Thresholds are set loose (2x the link speed against ~14x
+measured headroom) so they only fire on a genuinely bad change, such as raising
+the default zstd level.
 
 `net_integration` and `frame_stress` deliberately attack the code rather than
 demonstrate it. Two real bugs came out of writing them: a decoder that accepted
@@ -103,13 +111,38 @@ cargo run --release -p basalt-bench -- serve --root D:\bench-corpus
 Prints the addresses it is reachable on. Allow it through Windows Firewall when
 prompted — ports 7742 (plaintext) and 7743 (TLS).
 
-### 4. Measure from the PC
+### 4. Disk benchmarks, on the laptop
+
+Run this against the drive under test. Every read bypasses the Windows file
+cache, so the numbers are the drive rather than RAM.
+
+```bash
+cargo run --release -p basalt-bench -- disk --root D:\bench-corpus
+```
+
+The output that matters is the **concurrency curve**. If throughput falls as
+threads are added, the host needs an I/O scheduler that caps disk parallelism.
+If it keeps climbing, that whole component can be dropped.
+
+### 5. Measure from the PC
 
 ```bash
 cargo run --release -p basalt-bench -- net --host 192.168.1.42
 ```
 
-### 5. Check the environment any time
+### 6. The SMB baseline — the actual gate
+
+Share the corpus folder on the laptop, then from the PC:
+
+```bash
+cargo run --release -p basalt-bench -- smb --share \\LAPTOP\bench-corpus
+```
+
+Use the same `--small-files` count as the `net` run, or the comparison is
+meaningless. Compare the batched request against SMB's **best parallel**
+result, not its sequential one — beating a strawman proves nothing.
+
+### Check the environment any time
 
 ```bash
 cargo run --release -p basalt-bench -- env

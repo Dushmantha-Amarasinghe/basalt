@@ -16,14 +16,16 @@
 //!
 //! # on the laptop
 //! basalt-bench gen-corpus --root D:\bench-corpus
-//! basalt-bench serve --root D:\bench-corpus
+//! basalt-bench disk       --root D:\bench-corpus
+//! basalt-bench serve      --root D:\bench-corpus
 //!
 //! # on the PC
-//! basalt-bench net --host 192.168.1.42
+//! basalt-bench net  --host 192.168.1.42
+//! basalt-bench smb  --share <UNC path to the shared corpus>
 //! ```
 //!
-//! Still to build: `disk` (the HDD seek-thrash curve) and `smb` (the baseline
-//! the Phase 0 gate is actually measured against).
+//! Every command is built. What remains is running them on the laptop, the
+//! real drive and the real radio — which is where the gate is actually decided.
 
 use std::path::PathBuf;
 
