@@ -345,9 +345,8 @@ async fn tls_rejects_a_plaintext_client() {
 
     let result =
         tokio::time::timeout(Duration::from_secs(2), read_response_header(&mut stream)).await;
-    match result {
-        Ok(Ok(_)) => panic!("TLS listener answered an unencrypted request"),
-        Ok(Err(_)) | Err(_) => {}
+    if let Ok(Ok(_)) = result {
+        panic!("TLS listener answered an unencrypted request")
     }
 }
 

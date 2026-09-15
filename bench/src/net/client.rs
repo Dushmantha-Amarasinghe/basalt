@@ -376,16 +376,16 @@ fn report_batch_speedup(suite: &Suite) {
             .find(|m| m.label.contains(needle))
             .map(|m| m.median_ms())
     };
-    if let (Some(per_file), Some(batched)) = (find("per-file"), find("zstd")) {
-        if batched > 0.0 {
-            println!(
-                "  -> batching is {:.1}x faster than per-file requests \
+    if let (Some(per_file), Some(batched)) = (find("per-file"), find("zstd"))
+        && batched > 0.0
+    {
+        println!(
+            "  -> batching is {:.1}x faster than per-file requests \
                  ({} vs {})",
-                per_file / batched,
-                crate::stats::fmt_duration_ms(per_file),
-                crate::stats::fmt_duration_ms(batched),
-            );
-        }
+            per_file / batched,
+            crate::stats::fmt_duration_ms(per_file),
+            crate::stats::fmt_duration_ms(batched),
+        );
     }
 }
 

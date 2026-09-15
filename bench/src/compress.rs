@@ -46,11 +46,11 @@ const MODELLED_LINKS_MBS: [f64; 3] = [30.0, 100.0, 1000.0];
 const BLOCK_BYTES: usize = 4 * 1024 * 1024;
 
 pub fn run(seed: u64, runs: usize) -> Result<Vec<Suite>> {
-    let mut suites = Vec::new();
-    suites.push(throughput_by_flavour(seed, runs)?);
-    suites.push(effective_throughput(seed)?);
-    suites.push(heuristic_accuracy(seed)?);
-    Ok(suites)
+    Ok(vec![
+        throughput_by_flavour(seed, runs)?,
+        effective_throughput(seed)?,
+        heuristic_accuracy(seed)?,
+    ])
 }
 
 /// Raw compress/decompress speed and ratio, per content type and zstd level.

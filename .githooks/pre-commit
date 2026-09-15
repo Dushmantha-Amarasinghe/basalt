@@ -1,0 +1,57 @@
+#!/bin/sh
+#
+# Basalt pre-commit checks.
+#
+# Runs formatting, lints and the full test suite before every commit, so a
+# regression cannot reach history quietly. The suite is fast on purpose
+# (a few seconds) — a slow gate is a gate people start skipping.
+#
+# Enable once per clone:
+#     git config core.hooksPath .githooks
+#
+# Skip deliberately for a work-in-progress commit:
+#     git commit --no-verify
+
+set -eu
+
+# rustup installs here but this machine's PATH was left untouched, so the hook
+# has to find cargo itself.
+if ! command -v cargo >/dev/null 2>&1; then
+    if [ -x "$HOME/.cargo/bin/cargo" ]; then
+        PATH="$HOME/.cargo/bin:$PATH"
+        export PATH
+    else
+        echo "pre-commit: cargo not found; install Rust or commit with --no-verify" >&2
+        exit 1
+    fi
+fi
+
+log=$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/basalt-precommit.$$")
+cleanup() { rm -f "$log"; }
+trap cleanup EXIT
+
+# Capture to a file rather than piping into `tail`: a pipeline reports the exit
+# status of its *last* command, so `cargo test | tail` would report tail's
+# success and let failing tests through. That bug would quietly disable this
+# entire hook.
+run() {
+    label=$1
+    shift
+    printf 'pre-commit: %s ... ' "$label"
+    if "$@" >"$log" 2>&1; then
+        echo "ok"
+    else
+        echo "FAILED"
+        echo >&2
+        tail -40 "$log" >&2
+        echo >&2
+        echo "pre-commit: '$label' failed. Fix it, or commit with --no-verify." >&2
+        exit 1
+    fi
+}
+
+run "formatting" cargo fmt --all --check
+run "clippy" cargo clippy --all-targets --all-features -- -D warnings
+run "tests" cargo test --all
+
+echo "pre-commit: all checks passed"

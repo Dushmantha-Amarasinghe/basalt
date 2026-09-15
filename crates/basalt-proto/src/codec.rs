@@ -327,8 +327,10 @@ mod tests {
 
     #[test]
     fn always_sample_bypasses_the_extension_table() {
-        let mut policy = CompressionPolicy::default();
-        policy.always_sample = true;
+        let policy = CompressionPolicy {
+            always_sample: true,
+            ..Default::default()
+        };
         // A .mp4 whose body is actually trivially compressible: with the fast
         // path bypassed, entropy decides and we compress.
         let sample = vec![b'a'; 4096];
