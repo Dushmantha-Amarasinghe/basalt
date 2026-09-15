@@ -43,6 +43,33 @@ cargo build --release
 cargo test
 ```
 
+Enable the pre-commit hook once per clone. It runs `cargo fmt --check`,
+`cargo clippy -D warnings`, and the full test suite before every commit, so a
+regression cannot land quietly:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The whole suite runs in a few seconds — a slow gate is one people start
+skipping. Use `git commit --no-verify` to bypass it deliberately.
+
+## Tests
+
+| Suite | What it guards |
+|---|---|
+| `basalt-proto` unit | framing, codec policy, path rules |
+| `frame_stress` | randomised round trips, truncation at every byte offset, bit-flip corruption, hostile length fields |
+| `path_safety` | ~50 adversarial paths — traversal, UNC, drive letters, NUL, Windows device names, trailing-dot tricks |
+| `net_integration` | the real server and client over real TCP and TLS: batching, inline errors, concurrency, malformed input |
+| `compression_policy` | the Phase 0 conclusion itself — that the corpus still models reality and compression still beats the link |
+
+`net_integration` and `frame_stress` deliberately attack the code rather than
+demonstrate it. Two real bugs came out of writing them: a decoder that accepted
+a stream truncated after its terminator, and a server that put an unsanitised
+path into an error entry, which made the *decoder* reject the whole batch —
+exactly the failure inline errors exist to prevent.
+
 ## Running the benchmarks
 
 ### 1. Compression — run this first, no second machine needed
