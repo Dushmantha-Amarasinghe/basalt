@@ -116,20 +116,118 @@ fn powershell(script: &str) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
-/// Parses `netsh wlan show interfaces`.
+/// Describes the wireless link without requiring any permission.
 ///
-/// This is the same data the shipped apps will surface in the link-quality
-/// panel, so it is worth having the parser here first: the benchmark report is
-/// meaningless without knowing which radio produced it.
+/// `netsh wlan show interfaces` is the obvious source, but on Windows 11 it is
+/// gated behind **Location services** — SSID and BSSID can locate a machine, so
+/// reading them needs the same consent as GPS. Without it the command fails
+/// with `WlanQueryInterface returns error 5: Access is denied`, which is what
+/// laptop B did.
+///
+/// Asking someone to enable Location just to read a link speed is exactly the
+/// settings-fiddling this project ruled out after the SMB experience. So the
+/// primary source is `Get-NetAdapter`, which needs no permission and still
+/// yields the two things that matter: the negotiated rate and the adapter
+/// model. The richer netsh fields (SSID, band, channel, signal) are layered on
+/// top only when they happen to be available.
 fn detect_wifi() -> Option<WifiLink> {
-    let out = Command::new("netsh")
+    let adapter = detect_adapter();
+
+    let netsh = Command::new("netsh")
         .args(["wlan", "show", "interfaces"])
         .output()
-        .ok()?;
-    if !out.status.success() {
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| parse_netsh_interfaces(&String::from_utf8_lossy(&o.stdout)));
+
+    match (adapter, netsh) {
+        // Both available: netsh carries the richer detail, but the adapter's
+        // negotiated rate is the more reliable of the two figures.
+        (Some(a), Some(mut n)) => {
+            if a.transmit_mbps > 0 {
+                n.transmit_mbps = a.transmit_mbps;
+                n.receive_mbps = a.transmit_mbps;
+            }
+            Some(n)
+        }
+        (Some(a), None) => Some(a),
+        (None, Some(n)) => Some(n),
+        (None, None) => None,
+    }
+}
+
+/// Reads the wireless adapter via `Get-NetAdapter`, which needs no permission.
+///
+/// Gives the negotiated link rate and the adapter description. The description
+/// usually names the Wi-Fi generation ("Wi-Fi 6 AX201", "Wireless-AC 9560"),
+/// which is enough to tell whether the radio is the weak link.
+fn detect_adapter() -> Option<WifiLink> {
+    let script = "Get-NetAdapter -Physical -ErrorAction SilentlyContinue | \
+         Where-Object { $_.Status -eq 'Up' -and \
+         ($_.InterfaceDescription -match 'Wi-?Fi|Wireless|802\\.11|WLAN') } | \
+         Select-Object -First 1 | \
+         ForEach-Object { \"$($_.InterfaceDescription)|$($_.LinkSpeed)\" }";
+
+    parse_adapter_line(&powershell(script)?)
+}
+
+/// Parses `"Intel(R) Wi-Fi 6 AX201 160MHz|866.7 Mbps"`.
+fn parse_adapter_line(raw: &str) -> Option<WifiLink> {
+    let (description, speed) = raw.trim().split_once('|')?;
+    if description.trim().is_empty() {
         return None;
     }
-    parse_netsh_interfaces(&String::from_utf8_lossy(&out.stdout))
+    let mbps = parse_link_speed(speed);
+    Some(WifiLink {
+        ssid: "unknown (needs Location permission)".into(),
+        radio_type: infer_radio_type(description),
+        band: "unknown".into(),
+        receive_mbps: mbps,
+        transmit_mbps: mbps,
+        signal_percent: 0,
+        channel: String::new(),
+    })
+}
+
+/// `Get-NetAdapter` reports link speed as "866.7 Mbps" or "1.2 Gbps".
+fn parse_link_speed(raw: &str) -> u32 {
+    let Some((number, unit)) = raw.trim().split_once(' ') else {
+        return 0;
+    };
+    let Ok(value) = number.trim().parse::<f64>() else {
+        return 0;
+    };
+    let unit = unit.trim().to_ascii_lowercase();
+    let mbps = if unit.starts_with("gbps") {
+        value * 1000.0
+    } else if unit.starts_with("mbps") {
+        value
+    } else if unit.starts_with("kbps") {
+        value / 1000.0
+    } else {
+        return 0;
+    };
+    mbps as u32
+}
+
+/// Guesses the Wi-Fi generation from the adapter's model string.
+fn infer_radio_type(description: &str) -> String {
+    let d = description.to_ascii_lowercase();
+    // Newest first: "Wi-Fi 6E AX211" contains both "ax2" and "6e", and the
+    // more specific answer is the useful one.
+    if d.contains("be200") || d.contains("wi-fi 7") {
+        "802.11be (Wi-Fi 7)".into()
+    } else if d.contains("6e") {
+        "802.11ax (Wi-Fi 6E)".into()
+    } else if d.contains("wi-fi 6") || d.contains("ax2") || d.contains("ax1") {
+        "802.11ax (Wi-Fi 6)".into()
+    } else if d.contains("wireless-ac") || d.contains("802.11ac") || d.contains("ac 9") {
+        "802.11ac (Wi-Fi 5)".into()
+    } else if d.contains("802.11n") || d.contains("wireless-n") {
+        "802.11n (Wi-Fi 4)".into()
+    } else {
+        description.trim().to_string()
+    }
 }
 
 fn parse_netsh_interfaces(text: &str) -> Option<WifiLink> {
@@ -366,6 +464,71 @@ There is 1 interface on the system:
     Signal                 : 92%
     Profile                : HomeNetwork
 "#;
+
+    #[test]
+    fn adapter_line_parses_without_any_permission() {
+        // The path that matters on Windows 11: netsh needs Location consent,
+        // Get-NetAdapter does not. Laptop B returned "Access is denied" from
+        // netsh, so this is the only source that works there.
+        let w =
+            parse_adapter_line("Intel(R) Wi-Fi 6 AX201 160MHz|866.7 Mbps").expect("should parse");
+        assert_eq!(w.transmit_mbps, 866);
+        assert_eq!(w.receive_mbps, 866);
+        assert_eq!(w.radio_type, "802.11ax (Wi-Fi 6)");
+    }
+
+    #[test]
+    fn link_speed_handles_every_unit_windows_uses() {
+        assert_eq!(parse_link_speed("866.7 Mbps"), 866);
+        assert_eq!(parse_link_speed("1.2 Gbps"), 1200);
+        assert_eq!(parse_link_speed("2.4 Gbps"), 2400);
+        assert_eq!(parse_link_speed("100 Mbps"), 100);
+        assert_eq!(parse_link_speed("540 Kbps"), 0);
+        // Garbage must be 0, never a panic or a wild number.
+        assert_eq!(parse_link_speed(""), 0);
+        assert_eq!(parse_link_speed("fast"), 0);
+        assert_eq!(parse_link_speed("866.7"), 0);
+        assert_eq!(parse_link_speed("abc Mbps"), 0);
+    }
+
+    #[test]
+    fn radio_generation_is_inferred_from_the_adapter_name() {
+        let cases = [
+            ("Intel(R) Wi-Fi 6 AX201 160MHz", "802.11ax (Wi-Fi 6)"),
+            ("Intel(R) Wi-Fi 6E AX211 160MHz", "802.11ax (Wi-Fi 6E)"),
+            ("Intel(R) Wireless-AC 9560", "802.11ac (Wi-Fi 5)"),
+            ("Realtek 802.11n Wireless LAN", "802.11n (Wi-Fi 4)"),
+            ("Intel(R) BE200 320MHz", "802.11be (Wi-Fi 7)"),
+        ];
+        for (description, expected) in cases {
+            assert_eq!(infer_radio_type(description), expected, "for {description}");
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_adapter_keeps_its_own_name() {
+        // Better to show the raw model than to guess wrong about it.
+        assert_eq!(
+            infer_radio_type("Acme SuperWave 9000"),
+            "Acme SuperWave 9000"
+        );
+    }
+
+    #[test]
+    fn a_malformed_adapter_line_is_rejected() {
+        assert!(parse_adapter_line("").is_none());
+        assert!(parse_adapter_line("no pipe here").is_none());
+        assert!(parse_adapter_line("|866.7 Mbps").is_none());
+    }
+
+    #[test]
+    fn an_adapter_with_an_unreadable_speed_still_reports_its_model() {
+        // Losing the rate should not lose the adapter name too — the name
+        // alone often answers "is this radio the weak link".
+        let w = parse_adapter_line("Intel(R) Wireless-AC 9560|Unknown").expect("should parse");
+        assert_eq!(w.transmit_mbps, 0);
+        assert_eq!(w.radio_type, "802.11ac (Wi-Fi 5)");
+    }
 
     #[test]
     fn parses_a_connected_wifi_interface() {
