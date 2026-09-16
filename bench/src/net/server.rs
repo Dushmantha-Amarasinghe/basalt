@@ -3,16 +3,19 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 use basalt_proto::codec::{Codec, CompressionPolicy};
 use basalt_proto::frame::{BatchWriter, sanitize_relative_path};
 use basalt_proto::manifest::BatchRequest;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio_rustls::TlsAcceptor;
 
-use super::{CHUNK_BYTES, Op, STATUS_ERR, STATUS_OK, drain, read_request, write_response_header};
+use super::{
+    CHUNK_BYTES, Op, STATUS_ERR, STATUS_OK, UDP_HEADER, drain, read_request, write_response_header,
+};
 use crate::corpus::{Flavour, Rng, generate};
 
 pub struct ServerConfig {
@@ -21,6 +24,53 @@ pub struct ServerConfig {
     /// Second listener offering the same protocol wrapped in TLS 1.3, so the
     /// client can measure the crypto cost on this machine directly.
     pub tls_addr: SocketAddr,
+}
+
+/// Counters for the UDP ceiling test.
+///
+/// UDP is the control experiment for "is TCP the bottleneck, or is the radio?".
+/// It has no congestion control, no acknowledgements and no retransmission, so
+/// whatever it achieves is close to what the air itself will carry. If TCP and
+/// UDP land in the same place, the link is saturated and protocol work is
+/// finished; if UDP is far ahead, TCP is leaving throughput unused.
+#[derive(Default)]
+pub struct UdpCounters {
+    pub packets: AtomicU64,
+    pub bytes: AtomicU64,
+    /// Highest sequence number seen. Compared against `packets` to separate
+    /// genuine loss from reordering.
+    pub highest_seq: AtomicU64,
+}
+
+impl UdpCounters {
+    fn reset(&self) {
+        self.packets.store(0, Ordering::Relaxed);
+        self.bytes.store(0, Ordering::Relaxed);
+        self.highest_seq.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Receives UDP packets forever, counting them. Never replies — an
+/// acknowledgement would reintroduce the round-trip cost the test exists to
+/// remove.
+async fn run_udp_sink(socket: UdpSocket, counters: Arc<UdpCounters>) {
+    let mut buf = vec![0u8; 65536];
+    loop {
+        match socket.recv_from(&mut buf).await {
+            Ok((len, _)) => {
+                if len >= UDP_HEADER {
+                    let seq =
+                        u64::from_le_bytes(buf[..UDP_HEADER].try_into().expect("checked length"));
+                    counters.highest_seq.fetch_max(seq, Ordering::Relaxed);
+                }
+                counters.packets.fetch_add(1, Ordering::Relaxed);
+                counters.bytes.fetch_add(len as u64, Ordering::Relaxed);
+            }
+            Err(e) => {
+                tracing::debug!("udp recv: {e}");
+            }
+        }
+    }
 }
 
 /// A server whose sockets are already bound but which is not yet accepting.
@@ -32,10 +82,13 @@ pub struct ServerConfig {
 pub struct BoundServer {
     plain: TcpListener,
     tls_listener: TcpListener,
+    udp: Option<UdpSocket>,
+    udp_counters: Arc<UdpCounters>,
     acceptor: TlsAcceptor,
     root: Arc<PathBuf>,
     plain_addr: SocketAddr,
     tls_addr: SocketAddr,
+    udp_port: u16,
 }
 
 impl BoundServer {
@@ -77,13 +130,27 @@ pub async fn bind(config: ServerConfig) -> Result<BoundServer> {
     let plain_addr = plain.local_addr()?;
     let tls_addr = tls_listener.local_addr()?;
 
+    // UDP sits two above the plaintext port. Failure to bind is not fatal:
+    // the rest of the benchmark is still useful without the ceiling test.
+    let mut udp_addr = config.addr;
+    udp_addr.set_port(plain_addr.port().wrapping_add(2));
+    let udp = UdpSocket::bind(udp_addr).await.ok();
+    let udp_port = udp
+        .as_ref()
+        .and_then(|s| s.local_addr().ok())
+        .map(|a| a.port())
+        .unwrap_or(0);
+
     Ok(BoundServer {
         plain,
         tls_listener,
+        udp,
+        udp_counters: Arc::new(UdpCounters::default()),
         acceptor: build_tls_acceptor()?,
         root: Arc::new(root),
         plain_addr,
         tls_addr,
+        udp_port,
     })
 }
 
@@ -98,32 +165,46 @@ pub async fn serve(server: BoundServer) -> Result<()> {
     let BoundServer {
         plain,
         tls_listener,
+        udp,
+        udp_counters,
         acceptor,
         root,
+        udp_port,
         ..
     } = server;
+
+    if let Some(socket) = udp {
+        let counters = Arc::clone(&udp_counters);
+        tokio::spawn(run_udp_sink(socket, counters));
+    }
+
+    let ctx = Arc::new(ServeContext {
+        root,
+        udp_counters,
+        udp_port,
+    });
 
     loop {
         tokio::select! {
             accepted = plain.accept() => {
                 let (stream, peer) = accepted?;
-                let root = Arc::clone(&root);
+                let ctx = Arc::clone(&ctx);
                 tokio::spawn(async move {
                     tune_socket(&stream);
-                    if let Err(e) = serve_connection(stream, root).await {
+                    if let Err(e) = serve_connection(stream, ctx).await {
                         tracing::debug!("plaintext {peer}: {e}");
                     }
                 });
             }
             accepted = tls_listener.accept() => {
                 let (stream, peer) = accepted?;
-                let root = Arc::clone(&root);
+                let ctx = Arc::clone(&ctx);
                 let acceptor = acceptor.clone();
                 tokio::spawn(async move {
                     tune_socket(&stream);
                     match acceptor.accept(stream).await {
                         Ok(tls) => {
-                            if let Err(e) = serve_connection(tls, root).await {
+                            if let Err(e) = serve_connection(tls, ctx).await {
                                 tracing::debug!("tls {peer}: {e}");
                             }
                         }
@@ -144,10 +225,19 @@ fn tune_socket(stream: &TcpStream) {
     let _ = stream.set_nodelay(true);
 }
 
-async fn serve_connection<S>(mut stream: S, root: Arc<PathBuf>) -> Result<()>
+/// Everything a connection handler needs, so adding state does not mean
+/// threading another argument through every call site.
+struct ServeContext {
+    root: Arc<PathBuf>,
+    udp_counters: Arc<UdpCounters>,
+    udp_port: u16,
+}
+
+async fn serve_connection<S>(mut stream: S, ctx: Arc<ServeContext>) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let root = Arc::clone(&ctx.root);
     loop {
         let (op, payload) = match read_request(&mut stream).await {
             Ok(v) => v,
@@ -183,6 +273,32 @@ where
                 let req: BatchRequest =
                     serde_json::from_slice(&payload).context("bad batch manifest")?;
                 send_batch(&mut stream, &root, req).await?;
+            }
+            Op::SourceTuned => {
+                if payload.len() != 12 {
+                    bail!("SourceTuned needs 12 bytes, got {}", payload.len());
+                }
+                let n = u64::from_le_bytes(payload[..8].try_into().expect("8 bytes"));
+                let chunk = u32::from_le_bytes(payload[8..12].try_into().expect("4 bytes"));
+                write_response_header(&mut stream, STATUS_OK, n).await?;
+                send_synthetic_chunked(&mut stream, n, chunk as usize).await?;
+                stream.flush().await?;
+            }
+            Op::UdpReset => {
+                ctx.udp_counters.reset();
+                write_response_header(&mut stream, STATUS_OK, 2).await?;
+                stream.write_all(&ctx.udp_port.to_le_bytes()).await?;
+                stream.flush().await?;
+            }
+            Op::UdpReport => {
+                let packets = ctx.udp_counters.packets.load(Ordering::Relaxed);
+                let bytes = ctx.udp_counters.bytes.load(Ordering::Relaxed);
+                let highest = ctx.udp_counters.highest_seq.load(Ordering::Relaxed);
+                write_response_header(&mut stream, STATUS_OK, 24).await?;
+                stream.write_all(&packets.to_le_bytes()).await?;
+                stream.write_all(&bytes.to_le_bytes()).await?;
+                stream.write_all(&highest.to_le_bytes()).await?;
+                stream.flush().await?;
             }
         }
     }
@@ -246,6 +362,28 @@ async fn send_synthetic<S: AsyncWrite + Unpin>(stream: &mut S, total: u64) -> Re
     while sent < total {
         let take = chunk.len().min((total - sent) as usize);
         stream.write_all(&chunk[..take]).await?;
+        sent += take as u64;
+    }
+    Ok(())
+}
+
+/// Like [`send_synthetic`] but with an explicit write size, so the lab can find
+/// the write size that suits this link. Too small wastes syscalls; too large
+/// can stall behind a full socket buffer.
+async fn send_synthetic_chunked<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    total: u64,
+    chunk: usize,
+) -> Result<()> {
+    let chunk = chunk.clamp(4096, 16 * 1024 * 1024);
+    let mut rng = Rng::new(0xF00D);
+    let mut buf = Vec::new();
+    generate(Flavour::Binary, chunk, &mut rng, &mut buf);
+
+    let mut sent = 0u64;
+    while sent < total {
+        let take = buf.len().min((total - sent) as usize);
+        stream.write_all(&buf[..take]).await?;
         sent += take as u64;
     }
     Ok(())

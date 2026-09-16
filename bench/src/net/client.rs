@@ -55,6 +55,41 @@ impl Conn {
         Ok(Conn::Plain(stream))
     }
 
+    /// Connects with an explicit receive buffer size.
+    ///
+    /// `SO_RCVBUF` has to be set *before* the connection is established,
+    /// because it determines the window scale factor negotiated in the
+    /// handshake. Setting it afterwards changes the buffer but not the scale,
+    /// which silently caps how much data can be in flight — so this builds the
+    /// socket by hand rather than using `TcpStream::connect`.
+    pub async fn connect_plain_tuned(addr: &str, recv_buffer: Option<usize>) -> Result<Self> {
+        let Some(size) = recv_buffer else {
+            return Self::connect_plain(addr).await;
+        };
+
+        let target: std::net::SocketAddr = tokio::net::lookup_host(addr)
+            .await
+            .with_context(|| format!("resolving {addr}"))?
+            .next()
+            .with_context(|| format!("no address for {addr}"))?;
+
+        let socket = if target.is_ipv4() {
+            tokio::net::TcpSocket::new_v4()?
+        } else {
+            tokio::net::TcpSocket::new_v6()?
+        };
+        // Best effort: the OS may clamp or ignore the request, and the sweep is
+        // still meaningful when it does — that clamping is itself the answer.
+        let _ = socket.set_recv_buffer_size(size as u32);
+
+        let stream = socket
+            .connect(target)
+            .await
+            .with_context(|| format!("connecting to {addr}"))?;
+        stream.set_nodelay(true)?;
+        Ok(Conn::Plain(stream))
+    }
+
     pub async fn connect_tls(addr: &str, connector: &TlsConnector) -> Result<Self> {
         let stream = TcpStream::connect(addr)
             .await

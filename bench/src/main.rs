@@ -33,7 +33,7 @@ use clap::{Parser, Subcommand};
 use basalt_bench::corpus::{Corpus, CorpusSpec};
 use basalt_bench::report::Report;
 use basalt_bench::stats::Suite;
-use basalt_bench::{compress, disk, net, report, smb};
+use basalt_bench::{compress, disk, lab, net, report, smb};
 
 #[derive(Parser)]
 #[command(
@@ -200,6 +200,28 @@ enum Command {
         large_bytes: u64,
     },
 
+    /// Transport lab: find the fastest possible way to move bytes on this link.
+    ///
+    /// Sweeps TCP buffer and write sizes, then blasts UDP to find the link's
+    /// true ceiling. Answers whether any faster transport exists at all.
+    Lab {
+        /// Address of the machine running `host`.
+        #[arg(long)]
+        host: String,
+
+        #[arg(long, default_value_t = net::DEFAULT_PORT)]
+        port: u16,
+
+        /// Bytes per TCP measurement. Smaller than `measure` because the lab
+        /// runs many more of them.
+        #[arg(long, default_value_t = 128 * 1024 * 1024)]
+        transfer_bytes: u64,
+
+        /// Seconds to blast for each UDP rate.
+        #[arg(long, default_value_t = 4.0)]
+        udp_seconds: f64,
+    },
+
     /// Show what this machine looks like, including the Wi-Fi link.
     Env,
 }
@@ -333,6 +355,23 @@ fn main() -> Result<()> {
             })?;
             Report::new(suites).write(&cli.out)?;
             smb::print_comparison_hint();
+        }
+
+        Command::Lab {
+            ref host,
+            port,
+            transfer_bytes,
+            udp_seconds,
+        } => {
+            print_banner("transport lab");
+            let suites = tokio_runtime()?.block_on(lab::run(&lab::LabConfig {
+                host: host.clone(),
+                port,
+                runs: cli.runs.min(3),
+                transfer_bytes,
+                udp_seconds,
+            }))?;
+            Report::new(suites).write(&cli.out)?;
         }
 
         Command::Env => {

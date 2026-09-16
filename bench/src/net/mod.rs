@@ -33,6 +33,17 @@ pub const DEFAULT_PORT: u16 = 7742;
 /// the server from becoming the bottleneck.
 pub const CHUNK_BYTES: usize = 1024 * 1024;
 
+/// UDP payload size for the ceiling test.
+///
+/// 1472 = 1500 byte Ethernet MTU - 20 (IP) - 8 (UDP). Anything larger is
+/// fragmented by IP, and a single lost fragment destroys the whole datagram,
+/// which would measure fragmentation rather than the radio.
+pub const UDP_PAYLOAD: usize = 1472;
+
+/// Bytes of sequence number at the head of each UDP packet, so the receiver can
+/// tell loss from reordering.
+pub const UDP_HEADER: usize = 8;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Op {
@@ -48,6 +59,13 @@ pub enum Op {
     /// Payload is a JSON `BatchRequest`. Responds with a basalt-proto batch
     /// stream covering every requested path.
     GetBatch = 5,
+    /// Like [`Op::Source`] but with an explicit write size: u64 bytes followed
+    /// by u32 chunk size. Used to find the write size that suits the link.
+    SourceTuned = 6,
+    /// Zero the UDP counters. Responds with the UDP port as a u16.
+    UdpReset = 7,
+    /// Report UDP counters: u64 packets, u64 bytes, u64 highest sequence seen.
+    UdpReport = 8,
 }
 
 impl Op {
@@ -58,6 +76,9 @@ impl Op {
             3 => Op::Sink,
             4 => Op::GetFile,
             5 => Op::GetBatch,
+            6 => Op::SourceTuned,
+            7 => Op::UdpReset,
+            8 => Op::UdpReport,
             other => bail!("unknown opcode {other}"),
         })
     }

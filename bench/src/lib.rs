@@ -7,6 +7,7 @@
 pub mod compress;
 pub mod corpus;
 pub mod disk;
+pub mod lab;
 pub mod net;
 pub mod report;
 pub mod setup;

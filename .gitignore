@@ -19,3 +19,8 @@ Thumbs.db
 
 # Built binary staged for copying to the laptop
 /dist/
+
+# Test media — never commit multi-GB files
+*.mkv
+*.mp4
+*.avi
