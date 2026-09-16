@@ -232,6 +232,44 @@ Note these two findings are independent and both hold: use a *high* queue depth
 
 20,000 entries in **11 ms**, with or without metadata. Not a problem.
 
+### B's radio is the bottleneck, and it is hardware
+
+| | |
+|---|---|
+| Adapter | Intel Wireless-AC 9260 160MHz (2x2, Wi-Fi 5) |
+| Live link rate | **260-325 Mbps, drifting** |
+| Laptop A for comparison | 866 Mbps |
+
+Both machines sit in the same room, so this is not distance. Transmit power was
+already Highest, 5 GHz channel width already Auto, and forcing MIMO Power Save
+Mode to No SMPS changed nothing. A 2x2 Wi-Fi 5 card should negotiate 866 Mbps
+here; 260-325 is the range you get from single-chain operation, which usually
+means one antenna is disconnected inside the laptop.
+
+The arithmetic closes the loop on the 22.7 MB/s measurement. Every bit pays for
+both hops, B to router and router to A:
+
+```
+1/300 + 1/866 Mbps  ->  ~223 Mbps combined
+x ~0.75 real-world efficiency
+= ~21 MB/s          (measured: 22.7)
+```
+
+Not pursued further: fixing it means opening the laptop for an uncertain gain to
+maybe 30-35 MB/s, while an Ethernet cable is certain and worth ~60 MB/s.
+
+### Reading the link rate correctly
+
+Two traps, both hit:
+
+- `Get-NetAdapter` reports the adapter's **maximum** PHY rate, not the current
+  one. It claimed 866 Mbps for B while the real link ran at 325 — a 2.7x
+  overstatement. `MSNdis_LinkSpeed` via WMI carries the live rate and needs no
+  permission.
+- `netsh wlan show interfaces` needs **Location services** on Windows 11,
+  because SSID and BSSID can locate a machine. Without it: `error 5: Access is
+  denied`. The app must never depend on it.
+
 ## Still unmeasured
 
 - **Laptop B's Wi-Fi radio type and link rate.** `basalt-bench env` returned
