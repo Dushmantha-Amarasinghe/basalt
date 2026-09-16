@@ -16,69 +16,14 @@ use std::sync::{Arc, Mutex};
 
 use basalt_client::client::{Cancel, ProgressFn};
 use basalt_client::proxy::MediaProxy;
-use basalt_client::{Basalt, ClientError};
-use serde::Serialize;
+use basalt_client::{Basalt, HostSummary, Status, TransferEvent, UiError};
 use tauri::{Emitter, Manager, State};
 
-/// An error the interface can branch on.
-///
-/// `kind` is a short machine-readable tag — `offline`, `notfound`, `denied`,
-/// `unpaired` — so the UI never has to match on prose to decide whether to show
-/// a reconnecting banner or an empty folder.
-#[derive(Debug, Serialize)]
-pub struct UiError {
-    kind: String,
-    message: String,
-}
-
-impl From<ClientError> for UiError {
-    fn from(e: ClientError) -> Self {
-        Self {
-            kind: e.kind().to_string(),
-            message: e.to_string(),
-        }
-    }
-}
-
+/// Every command answers with this: the value, or an error the interface can
+/// branch on. `UiError` and the response types live in `basalt-client` so their
+/// JSON field names are covered by tests — see that crate's `ui` module for why
+/// that matters more than it looks.
 type Answer<T> = Result<T, UiError>;
-
-/// What the header and the reconnect logic need to know.
-#[derive(Debug, Serialize, Clone)]
-pub struct Status {
-    connected: bool,
-    host_id: Option<String>,
-    host_name: Option<String>,
-    vault: Option<String>,
-    writable: bool,
-    address: Option<String>,
-    /// Whether this device has ever paired with anything. Distinguishes "the
-    /// host is asleep" from "you have not set this up yet", which are entirely
-    /// different screens.
-    has_paired: bool,
-    device_name: String,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct HostSummary {
-    host_id: String,
-    host_name: String,
-    vault: String,
-    pairing_open: bool,
-}
-
-/// A transfer the user can watch and cancel.
-#[derive(Debug, Serialize, Clone)]
-pub struct TransferEvent {
-    id: String,
-    kind: &'static str,
-    name: String,
-    path: String,
-    transferred: u64,
-    total: u64,
-    status: &'static str,
-    /// Bytes per second over the whole transfer so far.
-    rate: f64,
-}
 
 struct AppState {
     client: Arc<Basalt>,
@@ -109,28 +54,12 @@ impl AppState {
 
 #[tauri::command]
 fn status(state: State<'_, AppState>) -> Status {
-    let info = state.client.status();
-    Status {
-        connected: info.is_some(),
-        host_id: info.as_ref().map(|i| i.host_id.clone()),
-        host_name: info.as_ref().map(|i| i.host_name.clone()),
-        vault: info.as_ref().map(|i| i.vault.clone()),
-        writable: info.as_ref().is_some_and(|i| i.writable),
-        address: info.as_ref().map(|i| i.address.to_string()),
-        has_paired: !state.client.known_hosts().is_empty(),
-        device_name: state.client.device_name().to_string(),
-    }
+    status_of(&state.client)
 }
 
 #[tauri::command]
 async fn probe(state: State<'_, AppState>, address: String) -> Answer<HostSummary> {
-    let hello = state.client.probe(&address).await?;
-    Ok(HostSummary {
-        host_id: hello.host_id,
-        host_name: hello.host_name,
-        vault: hello.vault,
-        pairing_open: hello.pairing_open,
-    })
+    Ok(state.client.probe(&address).await?.into())
 }
 
 #[tauri::command]
@@ -168,17 +97,11 @@ async fn forget_host(state: State<'_, AppState>, host_id: String) -> Answer<Stat
 }
 
 fn status_of(client: &Arc<Basalt>) -> Status {
-    let info = client.status();
-    Status {
-        connected: info.is_some(),
-        host_id: info.as_ref().map(|i| i.host_id.clone()),
-        host_name: info.as_ref().map(|i| i.host_name.clone()),
-        vault: info.as_ref().map(|i| i.vault.clone()),
-        writable: info.as_ref().is_some_and(|i| i.writable),
-        address: info.as_ref().map(|i| i.address.to_string()),
-        has_paired: !client.known_hosts().is_empty(),
-        device_name: client.device_name().to_string(),
-    }
+    Status::new(
+        client.status(),
+        !client.known_hosts().is_empty(),
+        client.device_name(),
+    )
 }
 
 // ---------------------------------------------------------------------------
