@@ -49,7 +49,13 @@ impl WifiLink {
         (self.transmit_mbps.min(self.receive_mbps) as f64 * 0.55) / 8.0
     }
 
-    /// Advice worth acting on, or `None` if the link is already healthy.
+    /// Advice worth acting on, or `None` if the link is healthy or unknown.
+    ///
+    /// Every check here has to distinguish *bad* from *unknown*. Without
+    /// Location permission the signal strength is not merely low, it is
+    /// unavailable, and it arrives as 0. An earlier version read that 0 as a
+    /// terrible signal and told the user to move closer to the router — advice
+    /// derived entirely from missing data.
     pub fn advice(&self) -> Option<String> {
         if self.band.contains("2.4") {
             return Some(format!(
@@ -58,17 +64,20 @@ impl WifiLink {
                 self.transmit_mbps
             ));
         }
-        if self.signal_percent < 60 {
+        // 0 means "not measured", not "no signal". Only advise when there is a
+        // real reading.
+        if self.signal_percent > 0 && self.signal_percent < 60 {
             return Some(format!(
                 "Signal is {}%. Moving the machine closer to the router, or \
                  away from obstructions, will raise the link rate.",
                 self.signal_percent
             ));
         }
-        if self.transmit_mbps < 400 {
+        if self.transmit_mbps > 0 && self.transmit_mbps < 400 {
             return Some(format!(
-                "Link rate is only {} Mbps. Check the channel width (prefer 80 \
-                 or 160 MHz) and that the adapter supports Wi-Fi 5 or better.",
+                "Link rate is only {} Mbps, well below what this adapter can do. \
+                 Moving closer to the router, or onto a wider channel (80 or 160 \
+                 MHz), would raise it.",
                 self.transmit_mbps
             ));
         }
@@ -168,7 +177,38 @@ fn detect_adapter() -> Option<WifiLink> {
          Select-Object -First 1 | \
          ForEach-Object { \"$($_.InterfaceDescription)|$($_.LinkSpeed)\" }";
 
-    parse_adapter_line(&powershell(script)?)
+    let mut link = parse_adapter_line(&powershell(script)?)?;
+
+    // `Get-NetAdapter` reports the adapter's *maximum* PHY rate, not the rate
+    // currently negotiated. On laptop B it claimed 866 Mbps while Windows
+    // Settings showed the real link running at 585/325 Mbps — a 2.7x
+    // overstatement, and the sort of error that makes a throughput estimate
+    // look broken when it is the input that is wrong.
+    //
+    // MSNdis_LinkSpeed carries the live rate and, unlike `netsh wlan`, needs no
+    // Location permission.
+    if let Some(live) = live_link_speed_mbps() {
+        link.receive_mbps = live;
+        link.transmit_mbps = live;
+    }
+    Some(link)
+}
+
+/// Current negotiated link rate in Mbps, via WMI. No permission required.
+fn live_link_speed_mbps() -> Option<u32> {
+    // Wi-Fi Direct virtual adapters share the name and report a fixed 54 Mbps,
+    // which would otherwise be picked up instead of the real radio.
+    let script = "Get-CimInstance -Namespace root/wmi -ClassName MSNdis_LinkSpeed \
+         -ErrorAction SilentlyContinue | \
+         Where-Object { $_.InstanceName -match 'Wi-?Fi|Wireless|802\\.11' -and \
+         $_.InstanceName -notmatch 'Virtual|Direct' } | \
+         Select-Object -First 1 -ExpandProperty NdisLinkSpeed";
+
+    let raw = powershell(script)?;
+    // NdisLinkSpeed is in units of 100 bits per second.
+    let hundred_bps: u64 = raw.trim().parse().ok()?;
+    let mbps = (hundred_bps * 100) / 1_000_000;
+    if mbps == 0 { None } else { Some(mbps as u32) }
 }
 
 /// Parses `"Intel(R) Wi-Fi 6 AX201 160MHz|866.7 Mbps"`.
@@ -464,6 +504,71 @@ There is 1 interface on the system:
     Signal                 : 92%
     Profile                : HomeNetwork
 "#;
+
+    #[test]
+    fn unknown_signal_produces_no_advice() {
+        // Without Location permission the signal arrives as 0 because it was
+        // never measured. An earlier version read that as "no signal" and told
+        // the user to move closer to the router - advice invented entirely
+        // from missing data.
+        let w = WifiLink {
+            ssid: "unknown".into(),
+            radio_type: "802.11ac (Wi-Fi 5)".into(),
+            band: "unknown".into(),
+            receive_mbps: 866,
+            transmit_mbps: 866,
+            signal_percent: 0,
+            channel: String::new(),
+        };
+        assert_eq!(
+            w.advice(),
+            None,
+            "a missing signal reading must not be reported as a weak signal"
+        );
+    }
+
+    #[test]
+    fn a_genuinely_weak_signal_still_produces_advice() {
+        let w = WifiLink {
+            ssid: "x".into(),
+            radio_type: "802.11ac".into(),
+            band: "5 GHz".into(),
+            receive_mbps: 866,
+            transmit_mbps: 866,
+            signal_percent: 35,
+            channel: "36".into(),
+        };
+        assert!(w.advice().unwrap().contains("35%"));
+    }
+
+    #[test]
+    fn unknown_link_rate_produces_no_advice() {
+        let w = WifiLink {
+            ssid: "x".into(),
+            radio_type: "x".into(),
+            band: "unknown".into(),
+            receive_mbps: 0,
+            transmit_mbps: 0,
+            signal_percent: 0,
+            channel: String::new(),
+        };
+        assert_eq!(w.advice(), None, "0 Mbps means unmeasured, not broken");
+    }
+
+    #[test]
+    fn a_low_link_rate_produces_advice() {
+        // Laptop B's real transmit rate, from Windows Settings.
+        let w = WifiLink {
+            ssid: "x".into(),
+            radio_type: "802.11ac (Wi-Fi 5)".into(),
+            band: "5 GHz".into(),
+            receive_mbps: 585,
+            transmit_mbps: 325,
+            signal_percent: 0,
+            channel: "104".into(),
+        };
+        assert!(w.advice().unwrap().contains("325"));
+    }
 
     #[test]
     fn adapter_line_parses_without_any_permission() {
