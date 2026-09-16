@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/basalt-proto", "bench"]
+members = [
+    "crates/basalt-proto",
+    "crates/basalt-net",
+    "crates/basalt-host",
+    "crates/basalt-client",
+    "bench",
+]
 # The Tauri shell builds through its own toolchain and pulls in a very large
 # dependency tree. Keeping it out of the workspace keeps `cargo test` (and so
 # the pre-commit hook) fast; build it with `npm run app:build` instead.
@@ -15,6 +21,9 @@ authors = ["Basalt"]
 
 [workspace.dependencies]
 basalt-proto = { path = "crates/basalt-proto" }
+basalt-net = { path = "crates/basalt-net" }
+basalt-host = { path = "crates/basalt-host" }
+basalt-client = { path = "crates/basalt-client" }
 
 anyhow = "1"
 blake3 = "1"
