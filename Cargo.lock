@@ -148,6 +148,7 @@ dependencies = [
  "basalt-net",
  "basalt-proto",
  "blake3",
+ "clap",
  "serde",
  "serde_json",
  "thiserror",

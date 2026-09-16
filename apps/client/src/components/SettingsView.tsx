@@ -1,67 +1,100 @@
-import { useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { motion } from 'framer-motion'
-import { Check, HardDrive, Laptop, Shield, Wifi, Zap } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { HardDrive, Laptop, Shield, Wifi, Zap } from 'lucide-react'
+import type { Status } from '@/lib/api'
+import { cn, formatBytes } from '@/lib/utils'
 
 /**
  * Settings.
  *
- * The numbers shown here are the ones Phase 0 actually measured on this
- * hardware, not invented defaults — 22.7 MB/s, 2.3 ms, zstd level 1, a 2 MiB
- * receive buffer. Seeing real values in the mock keeps the design honest about
- * how much room these rows need.
+ * Every value here is read from the live connection. Where a setting is not
+ * adjustable it is shown as a fact rather than as a switch that does nothing —
+ * compression, batching and verification are always on because the
+ * measurements left no case for turning them off, and a toggle implying
+ * otherwise would be a lie about the software.
  */
-export function SettingsView(): React.JSX.Element {
+export function SettingsView({
+  status,
+  space,
+  onForget,
+  onRepair,
+}: {
+  status: Status | null
+  space: [number, number] | null
+  onForget: () => void
+  onRepair: () => void
+}): React.JSX.Element {
+  const [free, total] = space ?? [0, 0]
+
   return (
     <div className="h-full overflow-y-auto px-8 py-6">
       <div className="mx-auto max-w-[640px] space-y-6">
         <Section icon={HardDrive} title="Vault" hint="The drive this app connects to">
-          <Row label="Name" value="Vault" />
-          <Row label="Host" value="192.168.1.10" mono />
-          {/* A JSX string literal, so the backslash is not an escape. */}
-          <Row label="Drive" value={'D:\\ · 3.6 TB'} mono />
-          <Row label="Paired" value="16 Sept 2026" />
-          <Action label="Forget this vault" danger />
+          <Row label="Name" value={status?.vault ?? '—'} />
+          <Row label="Host" value={status?.hostName ?? '—'} />
+          <Row label="Address" value={status?.address ?? 'not connected'} mono />
+          <Row
+            label="Space"
+            value={total > 0 ? `${formatBytes(free)} free of ${formatBytes(total)}` : '—'}
+            mono
+          />
+          <Row label="Access" value={status?.writable ? 'read and write' : 'read only'} />
+          <Action label="Forget this vault" danger onClick={onForget} />
         </Section>
 
-        <Section icon={Wifi} title="Connection" hint="Measured on this link">
-          <Row label="Throughput" value="22.7 MB/s" mono />
-          <Row label="Round trip" value="2.3 ms" mono />
+        <Section icon={Wifi} title="Connection" hint="How this link behaves">
+          <Row label="Transport" value="TCP · single connection" mono />
           <Row label="Encryption" value="TLS 1.3 · always on" mono />
+          <Row label="Receive buffer" value="2 MiB" mono />
           <Note>
-            Both machines are on Wi-Fi, so every byte crosses the air twice. A
-            cable to the vault would roughly double this.
+            Both machines are on Wi-Fi, so every byte crosses the air twice —
+            once to the router and once back out. A cable to the host would
+            roughly double throughput, which is more than any software change
+            can offer.
           </Note>
         </Section>
 
-        <Section icon={Zap} title="Transfers" hint="How data moves">
-          <Toggle label="Compress before sending" defaultOn hint="2.2x measured on documents" />
-          <Toggle label="Batch small files" defaultOn hint="7.6x faster than one at a time" />
-          <Toggle label="Verify after transfer" defaultOn hint="BLAKE3 checksum" />
-          <Select
-            label="Compression level"
-            value="1 — fastest"
-            options={['1 — fastest', '3 — balanced', '6 — smaller']}
-          />
-          <Row label="Receive buffer" value="2 MiB" mono />
+        <Section icon={Zap} title="Transfers" hint="Measured on this hardware">
+          <Row label="Compression" value="zstd level 1 · 2.2x on documents" mono />
+          <Row label="Small files" value="batched · 7.6x faster" mono />
+          <Row label="Verification" value="BLAKE3, every transfer" mono />
+          <Row label="Chunk size" value="4 MiB" mono />
+          <Note>
+            None of these are switches. Compression is skipped automatically for
+            anything already compressed, level 9 was measured slower than the
+            link itself, and an unverified transfer has no advantage worth
+            having.
+          </Note>
         </Section>
 
-        <Section icon={Laptop} title="This device" hint="Local behaviour">
-          <Toggle label="Start with Windows" />
-          <Toggle label="Keep folders available offline" hint="Uses local disk space" />
-          <Select label="Cache size" value="20 GB" options={['5 GB', '20 GB', '50 GB', 'Unlimited']} />
-          <Action label="Clear cache" />
+        <Section icon={Laptop} title="This device" hint="How the host sees you">
+          <Row label="Name" value={status?.deviceName ?? '—'} />
+          <Note>
+            Shown in the host&rsquo;s device list, where this device can be
+            revoked at any time.
+          </Note>
         </Section>
 
         <Section icon={Shield} title="Security">
-          <Row label="Device key" value="SHA256:a41f…9c2e" mono />
-          <Toggle label="Require confirmation before deleting" defaultOn />
-          <Action label="Re-pair with vault" />
+          <Row
+            label="Host identity"
+            value={status?.hostId ? formatIdentity(status.hostId) : '—'}
+            mono
+          />
+          <Note>
+            The host&rsquo;s public key, pinned when you paired. Every connection
+            since has had to present exactly this key — a different machine at
+            the same address is refused rather than trusted.
+          </Note>
+          <Action label="Pair with a different vault" onClick={onRepair} />
         </Section>
       </div>
     </div>
   )
+}
+
+/** Groups a long hex identity so a person can compare it against a screen. */
+function formatIdentity(hostId: string): string {
+  return (hostId.match(/.{1,4}/g) ?? [hostId]).slice(0, 4).join(' ') + ' …'
 }
 
 function Section({
@@ -111,150 +144,19 @@ function Row({
   )
 }
 
-function Toggle({
+function Action({
   label,
-  hint,
-  defaultOn,
+  danger,
+  onClick,
 }: {
   label: string
-  hint?: string
-  defaultOn?: boolean
+  danger?: boolean
+  onClick?: () => void
 }): React.JSX.Element {
-  const [on, setOn] = useState(Boolean(defaultOn))
-  return (
-    <div className="flex items-center justify-between gap-4 px-4 py-2.5">
-      <div className="min-w-0">
-        <div className="text-[13px] text-text">{label}</div>
-        {hint && <div className="mt-0.5 text-[11px] text-textFaint">{hint}</div>}
-      </div>
-      <button
-        onClick={() => setOn((v) => !v)}
-        role="switch"
-        aria-checked={on}
-        aria-label={label}
-        className={cn(
-          'relative flex h-5 w-9 shrink-0 items-center rounded-full border px-0.5 transition-colors duration-150',
-          on ? 'border-white/25 bg-white/20' : 'border-white/10 bg-white/5',
-        )}
-      >
-        <motion.span
-          initial={false}
-          animate={{ x: on ? 16 : 0 }}
-          transition={{ type: 'spring', stiffness: 700, damping: 38 }}
-          className="h-3.5 w-3.5 rounded-full"
-          style={{ backgroundColor: on ? '#ffffff' : '#6b6b72' }}
-        />
-      </button>
-    </div>
-  )
-}
-
-function Select({
-  label,
-  value,
-  options,
-}: {
-  label: string
-  value: string
-  options: string[]
-}): React.JSX.Element {
-  const [open, setOpen] = useState(false)
-  const [current, setCurrent] = useState(value)
-  const [rect, setRect] = useState<DOMRect | null>(null)
-  const triggerRef = useRef<HTMLButtonElement>(null)
-
-  // The menu is portalled to <body>.
-  //
-  // Each settings section is `overflow-hidden` so its rounded corners clip its
-  // contents, which also clipped any menu opening near the bottom of a
-  // section — the list disappeared under the next card. Rendering outside the
-  // section escapes the clip entirely; the cost is having to position it by
-  // hand from the trigger's rect.
-  const measure = (): void => {
-    const el = triggerRef.current
-    if (el) setRect(el.getBoundingClientRect())
-  }
-
-  useEffect(() => {
-    if (!open) return undefined
-    const onReposition = (): void => measure()
-    // `true` captures scrolls from the settings pane, not just the window.
-    window.addEventListener('scroll', onReposition, true)
-    window.addEventListener('resize', onReposition)
-    return () => {
-      window.removeEventListener('scroll', onReposition, true)
-      window.removeEventListener('resize', onReposition)
-    }
-  }, [open])
-
-  const menuHeight = options.length * 34 + 8
-  // Flip upward when there is not enough room below.
-  const flipUp = rect ? window.innerHeight - rect.bottom < menuHeight + 12 : false
-
-  return (
-    <div className="flex items-center justify-between px-4 py-2.5">
-      <span className="text-[13px] text-textDim">{label}</span>
-      <button
-        ref={triggerRef}
-        onClick={() => {
-          measure()
-          setOpen((v) => !v)
-        }}
-        className={cn(
-          'rounded-md border bg-panel2 px-3 py-1.5 text-[12px] text-text transition-colors',
-          open ? 'border-white/20' : 'border-white/10 hover:border-white/20',
-        )}
-      >
-        {current}
-      </button>
-
-      {open &&
-        rect &&
-        createPortal(
-          <>
-            <div className="fixed inset-0 z-[60]" onClick={() => setOpen(false)} />
-            <motion.div
-              initial={{ opacity: 0, y: flipUp ? 4 : -4, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              transition={{ duration: 0.1, ease: 'easeOut' }}
-              style={{
-                position: 'fixed',
-                left: rect.right - 180,
-                width: 180,
-                ...(flipUp
-                  ? { bottom: window.innerHeight - rect.top + 6 }
-                  : { top: rect.bottom + 6 }),
-              }}
-              className="z-[61] overflow-hidden rounded-md border border-white/10 bg-panel2 shadow-lift"
-            >
-              {options.map((option) => (
-                <button
-                  key={option}
-                  onClick={() => {
-                    setCurrent(option)
-                    setOpen(false)
-                  }}
-                  className={cn(
-                    'flex w-full items-center justify-between px-3 py-2 text-left text-[12px] transition-colors hover:bg-white/[0.06]',
-                    option === current ? 'bg-white/5 text-text' : 'text-textDim',
-                  )}
-                >
-                  {option}
-                  {option === current && <Check size={12} className="text-textDim" />}
-                </button>
-              ))}
-            </motion.div>
-          </>,
-          document.body,
-        )}
-    </div>
-  )
-}
-
-function Action({ label, danger }: { label: string; danger?: boolean }): React.JSX.Element {
   return (
     <div className="px-4 py-2.5">
       <button
+        onClick={onClick}
         className={cn(
           'rounded-md border px-3 py-1.5 text-[12px] transition-colors',
           danger

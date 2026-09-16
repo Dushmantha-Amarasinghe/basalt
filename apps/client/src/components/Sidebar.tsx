@@ -39,12 +39,14 @@ export function Sidebar({
   driveUsed,
   driveTotal,
   connected,
+  vaultName = 'Vault',
 }: {
   active: NavKey
   onNavigate: (key: NavKey) => void
   driveUsed: number
   driveTotal: number
   connected: boolean
+  vaultName?: string
 }): React.JSX.Element {
   const usedPercent = driveTotal > 0 ? (driveUsed / driveTotal) * 100 : 0
 
@@ -91,6 +93,7 @@ export function Sidebar({
         used={driveUsed}
         total={driveTotal}
         usedPercent={usedPercent}
+        vaultName={vaultName}
       />
 
       <nav className="mt-1 flex flex-col gap-1">
@@ -160,23 +163,25 @@ function DriveStatus({
   used,
   total,
   usedPercent,
+  vaultName,
 }: {
   connected: boolean
   used: number
   total: number
   usedPercent: number
+  vaultName: string
 }): React.JSX.Element {
   return (
     <div className="glass rounded-md px-3 py-3">
       <div className="flex items-center gap-2">
-        <HardDrive size={14} className="text-textDim" />
-        <span className="text-xs font-semibold text-text">Vault</span>
+        <HardDrive size={14} className="shrink-0 text-textDim" />
+        <span className="truncate text-xs font-semibold text-text">{vaultName}</span>
         {/*
           Connection shows as a word, not a coloured dot. The palette is
           deliberately monochrome, and a green pip was the one thing breaking
           it for information the text already carries.
         */}
-        <span className="ml-auto font-mono text-[9px] uppercase tracking-[0.14em] text-textFaint">
+        <span className="ml-auto shrink-0 font-mono text-[9px] uppercase tracking-[0.14em] text-textFaint">
           {connected ? 'online' : 'offline'}
         </span>
       </div>

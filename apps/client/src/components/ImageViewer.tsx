@@ -1,7 +1,8 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronLeft, ChevronRight, Download, Info, Star, X } from 'lucide-react'
 import type { MediaItem } from '@/lib/mockMedia'
+import { api } from '@/lib/api'
 import { formatBytes } from '@/lib/utils'
 
 /**
@@ -24,6 +25,29 @@ export function ImageViewer({
   onClose: () => void
 }): React.JSX.Element {
   const item = index !== null ? items[index] : undefined
+  const [url, setUrl] = useState<string | null>(null)
+
+  // One image at a time, resolved through the media proxy. The filmstrip keeps
+  // its generated tones: fetching a hundred full-size photos to fill a row of
+  // 48-pixel squares would be absurd, and host-side thumbnails are their own
+  // phase.
+  useEffect(() => {
+    if (!item) {
+      setUrl(null)
+      return
+    }
+    let cancelled = false
+    setUrl(null)
+    void api
+      .mediaUrl(item.id)
+      .then((resolved) => {
+        if (!cancelled) setUrl(resolved || null)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [item])
 
   useEffect(() => {
     if (index === null) return undefined
@@ -64,8 +88,8 @@ export function ImageViewer({
             <ToolButton icon={X} label="Close" onClick={onClose} />
           </div>
 
-          {/* The image itself. A generated tone stands in until real
-              thumbnails exist. */}
+          {/* The photo, streamed from the vault. The generated tone shows
+              underneath while it loads, so the frame never flashes empty. */}
           <div className="relative flex min-h-0 flex-1 items-center justify-center px-14 pb-6">
             <AnimatePresence mode="wait">
               <motion.div
@@ -74,7 +98,7 @@ export function ImageViewer({
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.985 }}
                 transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-                className="relative h-full w-full max-w-[1100px] overflow-hidden rounded-lg border border-white/[0.07]"
+                className="relative flex h-full w-full max-w-[1100px] items-center justify-center overflow-hidden rounded-lg border border-white/[0.07]"
                 style={{
                   background: `linear-gradient(145deg, ${item.tone[0]} 0%, ${item.tone[1]} 100%)`,
                 }}
@@ -92,6 +116,18 @@ export function ImageViewer({
                     strokeWidth="1.5"
                   />
                 </svg>
+
+                {url && (
+                  <motion.img
+                    src={url}
+                    alt={item.title}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ duration: 0.25, ease: 'easeOut' }}
+                    className="relative max-h-full max-w-full object-contain"
+                    draggable={false}
+                  />
+                )}
               </motion.div>
             </AnimatePresence>
 
