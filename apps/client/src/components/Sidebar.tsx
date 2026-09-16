@@ -169,13 +169,14 @@ function DriveStatus({
       <div className="flex items-center gap-2">
         <HardDrive size={14} className="text-textDim" />
         <span className="text-xs font-semibold text-text">Vault</span>
-        <span
-          className={cn(
-            'ml-auto h-1.5 w-1.5 rounded-full',
-            connected ? 'bg-[#28C840]' : 'bg-textFaint',
-          )}
-          title={connected ? 'Connected' : 'Offline'}
-        />
+        {/*
+          Connection shows as a word, not a coloured dot. The palette is
+          deliberately monochrome, and a green pip was the one thing breaking
+          it for information the text already carries.
+        */}
+        <span className="ml-auto font-mono text-[9px] uppercase tracking-[0.14em] text-textFaint">
+          {connected ? 'online' : 'offline'}
+        </span>
       </div>
 
       <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-white/[0.06]">

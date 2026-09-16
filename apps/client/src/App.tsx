@@ -5,12 +5,33 @@ import { TitleBar } from '@/components/TitleBar'
 import { useSimulatedThroughput } from '@/components/Sparkline'
 import { Sidebar, type NavKey } from '@/components/Sidebar'
 import { FileList, type Entry } from '@/components/FileList'
+import { MediaGrid } from '@/components/MediaGrid'
+import { SettingsView } from '@/components/SettingsView'
+import { TransfersPanel } from '@/components/TransfersPanel'
+import { PlayerOverlay } from '@/components/PlayerOverlay'
 import { CommandPalette } from '@/components/CommandPalette'
 import { generateEntries } from '@/lib/mockData'
+import {
+  generateMusic,
+  generatePhotos,
+  generateTransfers,
+  generateVideos,
+  type MediaItem,
+} from '@/lib/mockMedia'
 import { cn, formatBytes } from '@/lib/utils'
 
 /** Row count for the mock data. High on purpose: see `mockData.ts`. */
 const MOCK_ENTRIES = 100_000
+
+const TITLES: Record<NavKey, string> = {
+  files: 'Vault',
+  recent: 'Recent',
+  starred: 'Starred',
+  videos: 'Videos',
+  music: 'Music',
+  photos: 'Photos',
+  settings: 'Settings',
+}
 
 export function App(): React.JSX.Element {
   const [nav, setNav] = useState<NavKey>('files')
@@ -18,19 +39,41 @@ export function App(): React.JSX.Element {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [path, setPath] = useState<string[]>(['Vault'])
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [transfersOpen, setTransfersOpen] = useState(false)
+  const [playing, setPlaying] = useState<MediaItem | null>(null)
 
   const allEntries = useMemo(() => generateEntries(MOCK_ENTRIES), [])
+  const videos = useMemo(() => generateVideos(), [])
+  const music = useMemo(() => generateMusic(), [])
+  const photos = useMemo(() => generatePhotos(), [])
+  const transfers = useMemo(() => generateTransfers(), [])
 
   // Live link activity. Simulated for now; the shape of the data is what the
   // header renders, so swapping in the real feed later changes nothing here.
   const samples = useSimulatedThroughput()
   const throughput = samples[samples.length - 1] ?? 0
 
+  // Each section draws from the same corpus but presents a different slice, so
+  // navigation actually goes somewhere rather than relabelling one list.
+  const sectionEntries = useMemo(() => {
+    if (nav === 'recent') {
+      return [...allEntries]
+        .filter((e) => e.kind === 'file')
+        .sort((a, b) => b.modified - a.modified)
+        .slice(0, 400)
+    }
+    if (nav === 'starred') {
+      // Deterministic pseudo-selection, standing in for real stars.
+      return allEntries.filter((_, i) => i % 137 === 3).slice(0, 220)
+    }
+    return allEntries
+  }, [nav, allEntries])
+
   const entries = useMemo(() => {
-    if (!query.trim()) return allEntries
+    if (!query.trim()) return sectionEntries
     const needle = query.toLowerCase()
-    return allEntries.filter((e) => e.name.toLowerCase().includes(needle))
-  }, [allEntries, query])
+    return sectionEntries.filter((e) => e.name.toLowerCase().includes(needle))
+  }, [sectionEntries, query])
 
   const handleSelect = useCallback((id: string, additive: boolean) => {
     setSelected((prev) => {
@@ -62,22 +105,27 @@ export function App(): React.JSX.Element {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // Clear search and selection when changing section; carrying either over
+  // makes the new view look mysteriously empty.
+  useEffect(() => {
+    setQuery('')
+    setSelected(new Set())
+  }, [nav])
+
   const selectedSize = useMemo(() => {
     if (selected.size === 0) return 0
     let total = 0
-    for (const e of allEntries) if (selected.has(e.id)) total += e.size
+    for (const e of entries) if (selected.has(e.id)) total += e.size
     return total
-  }, [selected, allEntries])
+  }, [selected, entries])
+
+  const isLibrary = nav === 'videos' || nav === 'music' || nav === 'photos'
+  const libraryItems = nav === 'videos' ? videos : nav === 'music' ? music : photos
 
   return (
     <div className="relative flex h-full flex-col">
       <div className="backdrop" />
-      <TitleBar
-        vaultName="Vault"
-        connected
-        throughput={throughput}
-        samples={samples}
-      />
+      <TitleBar vaultName="Vault" connected throughput={throughput} samples={samples} />
 
       <div className="relative flex min-h-0 flex-1">
         <Sidebar
@@ -90,20 +138,24 @@ export function App(): React.JSX.Element {
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
-          <Toolbar
-            path={path}
-            onNavigateTo={(index) => {
-              setPath((prev) => prev.slice(0, index + 1))
-              setSelected(new Set())
-            }}
-            query={query}
-            onQueryChange={setQuery}
-          />
+          {nav !== 'settings' && (
+            <Toolbar
+              title={TITLES[nav]}
+              path={nav === 'files' ? path : undefined}
+              onNavigateTo={(index) => {
+                setPath((prev) => prev.slice(0, index + 1))
+                setSelected(new Set())
+              }}
+              query={query}
+              onQueryChange={setQuery}
+              count={isLibrary ? libraryItems.length : entries.length}
+            />
+          )}
 
           {/*
             Keyed on the section so switching views replays the entrance. The
-            list itself is virtualised and must not animate per row, so the
-            motion lives on the container: content lifts in as a single plane.
+            file list is virtualised and must not animate per row, so the motion
+            lives on the container: content lifts in as a single plane.
           */}
           <motion.div
             key={nav}
@@ -112,23 +164,41 @@ export function App(): React.JSX.Element {
             transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
             className="min-h-0 flex-1"
           >
-            <FileList
-              entries={entries}
-              selected={selected}
-              onSelect={handleSelect}
-              onOpen={handleOpen}
-            />
+            {nav === 'settings' ? (
+              <SettingsView />
+            ) : isLibrary ? (
+              <MediaGrid
+                items={libraryItems}
+                shape={nav === 'photos' ? 'square' : 'poster'}
+                onOpen={(item) => setPlaying(item)}
+              />
+            ) : (
+              <FileList
+                entries={entries}
+                selected={selected}
+                onSelect={handleSelect}
+                onOpen={handleOpen}
+              />
+            )}
           </motion.div>
 
-          <StatusBar
-            total={entries.length}
-            filtered={query.trim().length > 0}
-            selectedCount={selected.size}
-            selectedSize={selectedSize}
-            onOpenPalette={() => setPaletteOpen(true)}
-          />
+          {nav !== 'settings' && !isLibrary && (
+            <StatusBar
+              total={entries.length}
+              filtered={query.trim().length > 0}
+              selectedCount={selected.size}
+              selectedSize={selectedSize}
+              onOpenPalette={() => setPaletteOpen(true)}
+            />
+          )}
         </main>
       </div>
+
+      <TransfersPanel
+        transfers={transfers}
+        open={transfersOpen}
+        onToggle={() => setTransfersOpen((v) => !v)}
+      />
 
       <CommandPalette
         open={paletteOpen}
@@ -137,41 +207,56 @@ export function App(): React.JSX.Element {
         onNavigate={setNav}
         onOpenEntry={handleOpen}
       />
+
+      <PlayerOverlay item={playing} onClose={() => setPlaying(null)} />
     </div>
   )
 }
 
 function Toolbar({
+  title,
   path,
   onNavigateTo,
   query,
   onQueryChange,
+  count,
 }: {
-  path: string[]
+  title: string
+  path?: string[]
   onNavigateTo: (index: number) => void
   query: string
   onQueryChange: (value: string) => void
+  count: number
 }): React.JSX.Element {
   return (
     <div className="drag flex h-12 shrink-0 items-center gap-3 border-b border-line px-4">
-      <nav className="flex min-w-0 items-center gap-1 text-sm">
-        {path.map((segment, index) => (
-          <div key={`${segment}-${index}`} className="flex min-w-0 items-center">
-            {index > 0 && <ChevronRight size={14} className="mx-0.5 shrink-0 text-textFaint" />}
-            <button
-              onClick={() => onNavigateTo(index)}
-              className={cn(
-                'no-drag truncate rounded px-1.5 py-0.5 transition-colors',
-                index === path.length - 1
-                  ? 'font-semibold text-text'
-                  : 'text-textDim hover:bg-white/[0.04] hover:text-text',
-              )}
-            >
-              {segment}
-            </button>
-          </div>
-        ))}
-      </nav>
+      {path ? (
+        <nav className="flex min-w-0 items-center gap-1 text-sm">
+          {path.map((segment, index) => (
+            <div key={`${segment}-${index}`} className="flex min-w-0 items-center">
+              {index > 0 && <ChevronRight size={14} className="mx-0.5 shrink-0 text-textFaint" />}
+              <button
+                onClick={() => onNavigateTo(index)}
+                className={cn(
+                  'no-drag truncate rounded px-1.5 py-0.5 transition-colors',
+                  index === path.length - 1
+                    ? 'font-semibold text-text'
+                    : 'text-textDim hover:bg-white/[0.04] hover:text-text',
+                )}
+              >
+                {segment}
+              </button>
+            </div>
+          ))}
+        </nav>
+      ) : (
+        <div className="flex items-baseline gap-2.5">
+          <span className="text-sm font-semibold text-text">{title}</span>
+          <span className="tnum font-mono text-[11px] text-textFaint">
+            {count.toLocaleString()}
+          </span>
+        </div>
+      )}
 
       <div className="flex-1" />
 

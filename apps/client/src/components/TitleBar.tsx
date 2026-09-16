@@ -69,7 +69,11 @@ export function TitleBar({
         <span className="text-[12px] font-semibold tracking-tight text-text">
           {vaultName}
         </span>
-        <ConnectionDot connected={connected} />
+        {!connected && (
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-textFaint">
+            offline
+          </span>
+        )}
       </div>
 
       <div className="flex-1" />
@@ -111,27 +115,6 @@ export function TitleBar({
         />
       </div>
     </div>
-  )
-}
-
-/** A small live dot, with a slow halo while connected. */
-function ConnectionDot({ connected }: { connected: boolean }): React.JSX.Element {
-  return (
-    <span className="relative flex h-1.5 w-1.5 items-center justify-center">
-      {connected && (
-        <motion.span
-          className="absolute inset-0 rounded-full bg-[#28C840]"
-          animate={{ scale: [1, 2.6, 1], opacity: [0.45, 0, 0.45] }}
-          transition={{ duration: 2.8, repeat: Infinity, ease: 'easeOut' }}
-        />
-      )}
-      <span
-        className={cn(
-          'relative h-1.5 w-1.5 rounded-full',
-          connected ? 'bg-[#28C840]' : 'bg-textFaint',
-        )}
-      />
-    </span>
   )
 }
 
