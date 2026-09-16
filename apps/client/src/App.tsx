@@ -4,6 +4,8 @@ import { ChevronRight, Search, X } from 'lucide-react'
 import { TitleBar } from '@/components/TitleBar'
 import { Sidebar, type NavKey } from '@/components/Sidebar'
 import { FileList, type Entry } from '@/components/FileList'
+import { EmptyState, ListView, TileView } from '@/components/FileViews'
+import { ViewMenu, type ViewMode } from '@/components/ViewMenu'
 import { MediaGrid } from '@/components/MediaGrid'
 import { SettingsView } from '@/components/SettingsView'
 import { TransfersPanel } from '@/components/TransfersPanel'
@@ -42,6 +44,7 @@ export function App(): React.JSX.Element {
   const [transfersOpen, setTransfersOpen] = useState(false)
   const [playing, setPlaying] = useState<MediaItem | null>(null)
   const [viewingIndex, setViewingIndex] = useState<number | null>(null)
+  const [view, setView] = useState<ViewMode>('details')
 
   const allEntries = useMemo(() => generateEntries(MOCK_ENTRIES), [])
   const videos = useMemo(() => generateVideos(), [])
@@ -144,6 +147,8 @@ export function App(): React.JSX.Element {
               query={query}
               onQueryChange={setQuery}
               count={isLibrary ? libraryItems.length : entries.length}
+              view={view}
+              onViewChange={isLibrary ? undefined : setView}
             />
           )}
 
@@ -171,6 +176,22 @@ export function App(): React.JSX.Element {
                   if (nav === 'photos') setViewingIndex(index)
                   else setPlaying(item)
                 }}
+              />
+            ) : entries.length === 0 ? (
+              <EmptyState label={query ? `Nothing matches “${query}”` : 'Nothing here'} />
+            ) : view === 'tiles' ? (
+              <TileView
+                entries={entries}
+                selected={selected}
+                onSelect={handleSelect}
+                onOpen={handleOpen}
+              />
+            ) : view === 'list' ? (
+              <ListView
+                entries={entries}
+                selected={selected}
+                onSelect={handleSelect}
+                onOpen={handleOpen}
               />
             ) : (
               <FileList
@@ -227,6 +248,8 @@ function Toolbar({
   query,
   onQueryChange,
   count,
+  view,
+  onViewChange,
 }: {
   title: string
   path?: string[]
@@ -234,6 +257,8 @@ function Toolbar({
   query: string
   onQueryChange: (value: string) => void
   count: number
+  view: ViewMode
+  onViewChange?: (mode: ViewMode) => void
 }): React.JSX.Element {
   return (
     <div className="drag flex h-12 shrink-0 items-center gap-3 border-b border-line px-4">
@@ -267,6 +292,8 @@ function Toolbar({
 
       <div className="flex-1" />
 
+      {onViewChange && <ViewMenu mode={view} onChange={onViewChange} />}
+
       <div className="no-drag relative">
         <Search
           size={14}
@@ -289,12 +316,16 @@ function Toolbar({
               onClick={() => onQueryChange('')}
               aria-label="Clear search"
               /*
-                Centred by giving the button a fixed box and centring its
-                contents, rather than translating a bare icon. The icon's own
-                glyph box is not symmetrical, so `-translate-y-1/2` on it alone
-                left the cross sitting a pixel low and right of centre.
+                Centred with `inset-y-0` + `my-auto`, deliberately **not**
+                `top-1/2 -translate-y-1/2`.
+                
+                Framer Motion animates `scale` by writing an inline
+                `transform`, which silently overwrites Tailwind's
+                `-translate-y-1/2` — so the button lost its centring the moment
+                it animated in. Auto margins centre without touching transform,
+                leaving it free for the animation.
               */
-              className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-textFaint transition-colors hover:bg-white/[0.06] hover:text-text"
+              className="absolute inset-y-0 right-1 my-auto flex h-6 w-6 items-center justify-center rounded text-textFaint transition-colors hover:bg-white/[0.06] hover:text-text"
             >
               <X size={13} />
             </motion.button>

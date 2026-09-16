@@ -14,6 +14,7 @@ import {
   Video,
 } from 'lucide-react'
 import { cn, formatBytes, formatDate } from '@/lib/utils'
+import { EmptyState } from './FileViews'
 
 export interface Entry {
   id: string
@@ -26,7 +27,7 @@ export interface Entry {
 const ROW_HEIGHT = 34
 
 /** Maps an extension to an icon. Cheap lookup, called once per visible row. */
-function iconFor(entry: Entry): typeof FileIcon {
+export function iconFor(entry: Entry): typeof FileIcon {
   if (entry.kind === 'dir') return Folder
   const ext = entry.name.split('.').pop()?.toLowerCase() ?? ''
   if (['mp4', 'mkv', 'avi', 'mov', 'webm'].includes(ext)) return Video
@@ -157,16 +158,7 @@ export function FileList({
     [entries, selected, onSelect, onOpen],
   )
 
-  if (entries.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="text-center">
-          <Folder size={32} className="mx-auto text-textFaint/40" />
-          <p className="mt-3 text-sm text-textFaint">Nothing here</p>
-        </div>
-      </div>
-    )
-  }
+  if (entries.length === 0) return <EmptyState />
 
   return (
     <div className="h-full px-2 pb-2" role="grid">
