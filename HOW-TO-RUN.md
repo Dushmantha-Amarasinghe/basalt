@@ -1,114 +1,144 @@
-# How to run the speed test
+# How to run Basalt
 
-This measures whether custom software would actually move files faster than
-Windows' built-in file sharing. Two commands, one on each machine.
-
-You need: the old laptop, the hard drive, both on the same Wi-Fi.
+Two programs. One on the laptop with the drive, one on the machine you browse
+from. Nothing to install on either.
 
 ---
 
-## Step 1 — get the program onto the laptop
+## On the laptop with the drive — Basalt Host
 
-Copy this one file across (USB stick is easiest):
+Copy one file across:
 
 ```
-dist\basalt-bench.exe
+target\release\basalt-host.exe
 ```
 
-Nothing to install. It runs on its own — no Rust, no runtime, nothing.
-
-## Step 2 — plug the hard drive into the laptop
-
-Note the drive letter Windows gives it. Open **This PC** and look. It'll be
-something like `D:` or `E:`.
-
-## Step 3 — on the LAPTOP, open PowerShell as administrator
-
-Press Start, type `powershell`, then **right-click** "Windows PowerShell" and
-choose **Run as administrator**.
-
-This matters: without administrator the program can't create the Windows share,
-and the Windows share is the thing we're comparing against.
-
-Then run this, replacing `E:` with your actual drive letter and the path to
-where you put the exe:
+Plug in the drive, note the letter Windows gives it (open **This PC** and look),
+then run:
 
 ```powershell
-C:\Users\you\Desktop\basalt-bench.exe host --root E:\bench-corpus
+.\basalt-host.exe serve --path E:\ --name "My Drive"
 ```
 
-It will:
-- create test files on the drive (**this takes 5–15 minutes**, once only)
-- open the firewall
-- create the Windows share
-- print a command for you to run on your PC
+Replace `E:\` with your drive letter. It prints something like:
 
-**Leave this window open.** It has to keep running.
+```
+  Basalt Host
+  sharing   E:\
+  as        My Drive
+  identity  7e508aaa
+  port      7742
+  reachable at  192.168.1.11
 
-## Step 4 — on YOUR PC, run the command it printed
-
-It'll look like this:
-
-```powershell
-basalt-bench.exe measure --host 192.168.1.50
+  No devices paired yet.
+  Pairing PIN:  653 443
 ```
 
-Takes a few minutes. When it finishes it prints the answer in plain English —
-which is faster, by how much, and whether the custom software is worth building.
+**Leave the window open** — it has to keep running to serve the drive.
 
-## Step 5 — when you're done
+Two things to write down: the **address** (`192.168.1.11`) and the **PIN**.
 
-On the laptop, press **Ctrl-C** to stop it, then:
+The PIN lasts three minutes. Press **Enter** in that window any time for a new
+one. Type `d` and Enter to see which devices are paired.
 
-```powershell
-basalt-bench.exe cleanup
+### The one thing Windows will ask
+
+The first time it runs, Windows shows a **Windows Security Alert** asking
+whether to allow it through the firewall. Tick both **Private** and **Public**,
+then **Allow access**. That needs an administrator click, once, on this machine
+only.
+
+That is the entire setup. No network profile changes, no credentials, no
+sharing settings, nothing on any other machine.
+
+## On the machine you browse from — Basalt
+
+Run:
+
+```
+apps\client\src-tauri\target\release\basalt-client-shell.exe
 ```
 
-That removes the Windows share and the firewall rule. You can also delete the
-`bench-corpus` folder from the drive — it's only test data.
+It opens on the pairing screen.
+
+1. Type the **address** from the host window. Press Enter.
+2. It shows what it found — the host's name, the drive, and its identity.
+   Check the identity matches the one on the host window before continuing:
+   after this it is trusted permanently and never asked about again.
+3. Type the **PIN**.
+
+That is the last time you do any of this. From then on the app reconnects on
+its own whenever the host is up.
 
 ---
 
 ## If something goes wrong
 
-**"Could not reach the benchmark server"**
-The laptop's firewall is blocking it. Check the laptop window said
-`Firewall: done` and not `NEEDS ADMIN`. If it said NEEDS ADMIN, you didn't open
-PowerShell as administrator — go back to step 3.
+**Nothing answers at that address**
+Check the host window is still open, and that you used the address it printed.
+If the laptop has several adapters it prints more than one — the right one
+usually starts `192.168.`. If it still fails, the firewall prompt was probably
+dismissed; see below.
 
-**"Could not measure Windows sharing"**
-Open `\\LAPTOP-NAME\basalt` in File Explorer on your PC once, so Windows
-authenticates. Then run step 4 again.
+**It worked yesterday and not today**
+The router most likely gave the host a different address. Open the host window,
+read the new one, and enter it in the app.
 
-**It says the address doesn't work**
-The laptop prints more than one address if it has several network adapters. Try
-the others it listed. The right one usually starts `192.168.`.
+**"This host is not accepting new devices"**
+The three-minute pairing window has closed. Press Enter in the host window for
+a new PIN.
 
-**The laptop is really slow making the test files**
-Expected on a spinning USB drive. Add `--quick` to step 3 for a smaller set —
-the numbers are slightly less reliable but still useful.
+**"This is not the host this device paired with"**
+The app is refusing a machine that is not the one you paired with. Either
+something else is now at that address, or the host's config file was deleted
+and it generated a new identity. If you know why, pair again from Settings.
+
+**The firewall prompt never appeared, or was dismissed**
+Run this once on the host machine, in PowerShell **as administrator**:
+
+```powershell
+New-NetFirewallRule -DisplayName "Basalt Host" -Direction Inbound -Protocol TCP -LocalPort 7742 -Action Allow
+```
+
+**A video shows "cannot decode this file"**
+The window plays what Chromium plays — MP4, WebM, MP3, FLAC. MKV, HEVC and AC3
+need a real decoder, which is the next piece of work. Download the file to
+watch it in another player for now.
 
 ---
 
-## What you'll get
+## Without a window
 
-A result like this:
-
-```
-  Thousands of small files
-    Basalt             48.2 MB/s
-    Windows sharing    12.1 MB/s
-    -> Basalt is 3.98x faster
-
-  BUILD IT — the custom protocol is clearly faster
-```
-
-or the opposite:
+There is a command-line client too, which is the quickest way to tell whether a
+problem is the network or the app:
 
 ```
-  USE WINDOWS SHARING — the custom protocol is not faster
+target\release\basalt.exe probe 192.168.1.11
+target\release\basalt.exe pair 192.168.1.11 653443
+target\release\basalt.exe ls
+target\release\basalt.exe get films/holiday.mp4 C:\Users\you\Downloads\holiday.mp4
+target\release\basalt.exe put C:\Users\you\clip.mp4 films/clip.mp4
 ```
 
-Either answer is useful. The second one saves months of work.
+It drives exactly the same code the app does, so anything that works here works
+there — and every failure is printed in full rather than turned into a banner.
 
-Full numbers land in `docs\benchmarks.md` on your PC.
+---
+
+## Where things are kept
+
+| | |
+|---|---|
+| Host identity and paired devices | `%APPDATA%\Basalt\host.json` on the host |
+| Paired hosts and their tokens | `%APPDATA%\Basalt\client.json` on the client |
+
+Deleting the host's file changes its identity, and every device has to pair
+again. Both files are worth the same care as a password manager's.
+
+---
+
+## The old benchmark harness
+
+`basalt-bench.exe` measured whether any of this was worth building. It is not
+needed to run Basalt; the numbers it produced are written up in
+[`docs/measured-facts.md`](docs/measured-facts.md).
