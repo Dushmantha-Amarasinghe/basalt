@@ -1,14 +1,13 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import {
+  AlertCircle,
   ArrowDown,
   ArrowUp,
   Check,
   ChevronDown,
-  Pause,
-  Play,
   X,
 } from 'lucide-react'
-import type { Transfer } from '@/lib/mockMedia'
+import type { Transfer } from '@/lib/useTransfers'
 import { cn, formatBytes } from '@/lib/utils'
 
 /**
@@ -16,7 +15,7 @@ import { cn, formatBytes } from '@/lib/utils'
  *
  * This is the screen a NAS client is really about, and the one Frostbyte has no
  * equivalent of: its queue is a list of jobs to run, this is a list of things
- * currently crossing a link that might stall, resume, or be paused.
+ * currently crossing a link that might stall or be cancelled.
  *
  * Collapsed it is a single summary bar, so it can stay open permanently without
  * stealing room from the files.
@@ -25,54 +24,63 @@ export function TransfersPanel({
   transfers,
   open,
   onToggle,
+  onCancel,
+  onClearDone,
 }: {
   transfers: Transfer[]
   open: boolean
   onToggle: () => void
+  onCancel: (id: string) => void
+  onClearDone: () => void
 }): React.JSX.Element {
   const active = transfers.filter((t) => t.status === 'active')
-  const queued = transfers.filter((t) => t.status === 'queued')
   const done = transfers.filter((t) => t.status === 'done')
-
-  const totalSpeed = active.reduce((sum, t) => sum + t.speed, 0)
-  const remainingBytes = [...active, ...queued].reduce(
-    (sum, t) => sum + (t.bytes - t.transferred),
-    0,
+  const failed = transfers.filter(
+    (t) => t.status === 'failed' || t.status === 'cancelled',
   )
-  const etaSeconds = totalSpeed > 0 ? remainingBytes / (totalSpeed * 1e6) : 0
+
+  const totalRate = active.reduce((sum, t) => sum + t.rate, 0)
+  const remaining = active.reduce((sum, t) => sum + (t.total - t.transferred), 0)
+  const etaSeconds = totalRate > 0 ? remaining / totalRate : 0
 
   return (
     <div className="shrink-0 border-t border-line bg-ink2/80 backdrop-blur-sm">
-      <button
-        onClick={onToggle}
-        className="flex h-9 w-full items-center gap-3 px-4 text-left transition-colors hover:bg-white/[0.02]"
-      >
-        <motion.span
-          animate={{ rotate: open ? 0 : 180 }}
-          transition={{ duration: 0.2 }}
-          className="text-textFaint"
+      <div className="flex h-9 w-full items-center gap-3 px-4">
+        <button
+          onClick={onToggle}
+          className="-mx-2 flex min-w-0 flex-1 items-center gap-3 rounded px-2 py-1 text-left transition-colors hover:bg-white/[0.02]"
         >
-          <ChevronDown size={14} />
-        </motion.span>
+          <motion.span
+            animate={{ rotate: open ? 0 : 180 }}
+            transition={{ duration: 0.2 }}
+            className="shrink-0 text-textFaint"
+          >
+            <ChevronDown size={14} />
+          </motion.span>
 
-        <span className="text-xs font-semibold text-text">Transfers</span>
+          <span className="shrink-0 text-xs font-semibold text-text">Transfers</span>
 
-        {active.length > 0 ? (
-          <span className="tnum font-mono text-[11px] text-textDim">
-            {active.length} active · {totalSpeed.toFixed(1)} MB/s
-            {etaSeconds > 0 && ` · ${formatEta(etaSeconds)} left`}
-          </span>
-        ) : (
-          <span className="font-mono text-[11px] text-textFaint">idle</span>
-        )}
+          {active.length > 0 ? (
+            <span className="tnum truncate font-mono text-[11px] text-textDim">
+              {active.length} active · {(totalRate / 1e6).toFixed(1)} MB/s
+              {etaSeconds > 0 && ` · ${formatEta(etaSeconds)} left`}
+            </span>
+          ) : (
+            <span className="font-mono text-[11px] text-textFaint">idle</span>
+          )}
+        </button>
 
-        <div className="flex-1" />
-
-        {queued.length > 0 && (
-          <Pill label={`${queued.length} queued`} />
-        )}
         {done.length > 0 && <Pill label={`${done.length} done`} muted />}
-      </button>
+        {failed.length > 0 && <Pill label={`${failed.length} failed`} />}
+        {(done.length > 0 || failed.length > 0) && (
+          <button
+            onClick={onClearDone}
+            className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] text-textFaint transition-colors hover:bg-white/[0.05] hover:text-textDim"
+          >
+            clear
+          </button>
+        )}
+      </div>
 
       <AnimatePresence initial={false}>
         {open && (
@@ -93,9 +101,15 @@ export function TransfersPanel({
               className="overflow-y-auto border-t border-line px-2 py-1.5"
               style={{ maxHeight: 'min(232px, 32vh)' }}
             >
-              {transfers.map((t) => (
-                <TransferRow key={t.id} transfer={t} />
-              ))}
+              {transfers.length === 0 ? (
+                <p className="px-2 py-4 text-center text-[11px] text-textFaint">
+                  Nothing transferring. Downloads and uploads appear here.
+                </p>
+              ) : (
+                transfers.map((t) => (
+                  <TransferRow key={t.id} transfer={t} onCancel={onCancel} />
+                ))
+              )}
             </div>
           </motion.div>
         )}
@@ -108,10 +122,10 @@ function Pill({ label, muted }: { label: string; muted?: boolean }): React.JSX.E
   return (
     <span
       className={cn(
-        'rounded-full border px-2 py-0.5 font-mono text-[10px]',
+        'shrink-0 rounded-full border px-2 py-0.5 font-mono text-[10px]',
         muted
           ? 'border-white/[0.06] text-textFaint'
-          : 'border-white/[0.12] text-textDim',
+          : 'border-danger/25 text-danger',
       )}
     >
       {label}
@@ -119,22 +133,32 @@ function Pill({ label, muted }: { label: string; muted?: boolean }): React.JSX.E
   )
 }
 
-function TransferRow({ transfer }: { transfer: Transfer }): React.JSX.Element {
-  const percent = transfer.bytes > 0 ? (transfer.transferred / transfer.bytes) * 100 : 0
+function TransferRow({
+  transfer,
+  onCancel,
+}: {
+  transfer: Transfer
+  onCancel: (id: string) => void
+}): React.JSX.Element {
+  const percent =
+    transfer.total > 0 ? (transfer.transferred / transfer.total) * 100 : 0
   const isActive = transfer.status === 'active'
   const isDone = transfer.status === 'done'
+  const isBad = transfer.status === 'failed' || transfer.status === 'cancelled'
 
   return (
     <div className="group flex items-center gap-3 rounded-md px-2 py-2 transition-colors hover:bg-white/[0.03]">
       <span
         className={cn(
           'flex h-6 w-6 shrink-0 items-center justify-center rounded',
-          isDone ? 'text-textFaint' : 'text-textDim',
+          isBad ? 'text-danger' : isDone ? 'text-textFaint' : 'text-textDim',
         )}
       >
-        {isDone ? (
+        {isBad ? (
+          <AlertCircle size={13} />
+        ) : isDone ? (
           <Check size={13} />
-        ) : transfer.direction === 'down' ? (
+        ) : transfer.kind === 'download' ? (
           <ArrowDown size={13} />
         ) : (
           <ArrowUp size={13} />
@@ -146,64 +170,55 @@ function TransferRow({ transfer }: { transfer: Transfer }): React.JSX.Element {
           <span
             className={cn(
               'truncate text-[13px]',
-              isDone ? 'text-textFaint' : 'text-text',
+              isDone || isBad ? 'text-textFaint' : 'text-text',
             )}
+            title={transfer.path}
           >
             {transfer.name}
           </span>
-          <span className="tnum ml-auto shrink-0 font-mono text-[10px] text-textFaint">
-            {formatBytes(transfer.transferred)} / {formatBytes(transfer.bytes)}
-          </span>
+          {transfer.total > 0 && (
+            <span className="tnum ml-auto shrink-0 font-mono text-[10px] text-textFaint">
+              {formatBytes(transfer.transferred)} / {formatBytes(transfer.total)}
+            </span>
+          )}
         </div>
 
-        {!isDone && (
+        {isActive && (
           <div className="mt-1.5 h-[3px] overflow-hidden rounded-full bg-white/[0.06]">
             <motion.div
-              className={cn(
-                'h-full rounded-full',
-                isActive ? 'bg-basalt' : 'bg-basaltDim',
-              )}
+              className="h-full rounded-full bg-basalt"
               initial={false}
               animate={{ width: `${percent}%` }}
               transition={{ duration: 0.4, ease: 'easeOut' }}
             />
           </div>
         )}
+
+        {isBad && transfer.error && (
+          <p className="mt-1 truncate text-[10px] text-danger" title={transfer.error}>
+            {transfer.error}
+          </p>
+        )}
       </div>
 
       <span className="tnum w-[70px] shrink-0 text-right font-mono text-[10px] text-textFaint">
-        {isActive ? `${transfer.speed.toFixed(1)} MB/s` : transfer.status}
+        {isActive ? `${(transfer.rate / 1e6).toFixed(1)} MB/s` : transfer.status}
       </span>
 
       {/* Row controls, revealed on hover like the file list. */}
       <span className="flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-        {!isDone && (
-          <IconButton
-            icon={isActive ? Pause : Play}
-            label={isActive ? 'Pause' : 'Resume'}
-          />
+        {isActive && (
+          <button
+            onClick={() => onCancel(transfer.id)}
+            aria-label="Cancel"
+            title="Cancel"
+            className="flex h-6 w-6 items-center justify-center rounded text-textFaint transition-colors hover:bg-white/[0.07] hover:text-text"
+          >
+            <X size={12} />
+          </button>
         )}
-        <IconButton icon={X} label="Cancel" />
       </span>
     </div>
-  )
-}
-
-function IconButton({
-  icon: Icon,
-  label,
-}: {
-  icon: typeof Pause
-  label: string
-}): React.JSX.Element {
-  return (
-    <button
-      aria-label={label}
-      title={label}
-      className="flex h-6 w-6 items-center justify-center rounded text-textFaint transition-colors hover:bg-white/[0.07] hover:text-text"
-    >
-      <Icon size={12} />
-    </button>
   )
 }
 

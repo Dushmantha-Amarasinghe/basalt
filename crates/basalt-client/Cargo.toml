@@ -7,11 +7,20 @@ license.workspace = true
 authors.workspace = true
 description = "Basalt client: session, transfers and media proxy."
 
+[lib]
+name = "basalt_client"
+path = "src/lib.rs"
+
+[[bin]]
+name = "basalt"
+path = "src/main.rs"
+
 [dependencies]
 basalt-proto = { workspace = true }
 basalt-net = { workspace = true }
 
 anyhow = { workspace = true }
+clap = { workspace = true }
 blake3 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
