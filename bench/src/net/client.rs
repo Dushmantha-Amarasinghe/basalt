@@ -19,6 +19,13 @@ use crate::stats::{Measurement, Suite, fmt_bytes};
 /// sweet spot is expected around 4-8; this finds it rather than assuming it.
 const STREAM_COUNTS: [usize; 5] = [1, 2, 4, 8, 16];
 
+/// Receive buffer applied to every connection by default.
+///
+/// The transport lab measured a 3x spread across buffer sizes on the real
+/// link, with a broad optimum between 1 and 4 MiB and a regression at 8 MiB.
+/// See [`Conn::connect_plain`] for the measurements.
+pub const DEFAULT_RECV_BUFFER: usize = 2 * 1024 * 1024;
+
 pub struct ClientConfig {
     pub host: String,
     pub port: u16,
@@ -47,7 +54,27 @@ pub enum Conn {
 }
 
 impl Conn {
+    /// Connects with the receive buffer the transport lab found best.
+    ///
+    /// Measured on the real link (both ends on Wi-Fi, 2.3 ms round-trip):
+    ///
+    /// ```text
+    ///    64 KiB ->  7.4 MB/s
+    ///   256 KiB -> 17.4 MB/s
+    ///     1 MiB -> 22.1 MB/s
+    ///     4 MiB -> 22.7 MB/s   <- best
+    ///     8 MiB -> 20.1 MB/s   <- bufferbloat, worse again
+    /// ```
+    ///
+    /// A 3x spread from one socket option, and the Windows default sat in the
+    /// middle at 20.4 MB/s. 2 MiB is taken as the default: inside the flat
+    /// optimum, and far enough below 8 MiB to stay clear of the regression.
     pub async fn connect_plain(addr: &str) -> Result<Self> {
+        Self::connect_plain_tuned(addr, Some(DEFAULT_RECV_BUFFER)).await
+    }
+
+    /// Connects with no explicit tuning, for measuring the OS default.
+    pub async fn connect_plain_untuned(addr: &str) -> Result<Self> {
         let stream = TcpStream::connect(addr)
             .await
             .with_context(|| format!("connecting to {addr}"))?;
@@ -64,7 +91,7 @@ impl Conn {
     /// socket by hand rather than using `TcpStream::connect`.
     pub async fn connect_plain_tuned(addr: &str, recv_buffer: Option<usize>) -> Result<Self> {
         let Some(size) = recv_buffer else {
-            return Self::connect_plain(addr).await;
+            return Self::connect_plain_untuned(addr).await;
         };
 
         let target: std::net::SocketAddr = tokio::net::lookup_host(addr)

@@ -149,9 +149,12 @@ async fn tcp_download(
     write_size: Option<usize>,
 ) -> Result<Duration> {
     let addr = format!("{}:{}", config.host, config.port);
+    // `None` means "whatever the OS gives you", which is the baseline the
+    // sweep is measured against. Using the tuned default here would compare
+    // the tuning against itself.
     let mut conn = match recv_buffer {
         Some(size) => Conn::connect_plain_tuned(&addr, Some(size)).await?,
-        None => Conn::connect_plain(&addr).await?,
+        None => Conn::connect_plain_untuned(&addr).await?,
     };
     let io = conn.as_io();
 
