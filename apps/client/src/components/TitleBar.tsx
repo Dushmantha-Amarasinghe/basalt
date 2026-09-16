@@ -1,4 +1,7 @@
+import { motion } from 'framer-motion'
 import { HexMark } from './HexMark'
+import { Sparkline } from './Sparkline'
+import { cn } from '@/lib/utils'
 
 /**
  * True when running inside the Tauri shell rather than a plain browser.
@@ -21,24 +24,73 @@ async function windowAction(action: 'minimize' | 'toggleMaximize' | 'close'): Pr
 }
 
 /**
- * Frameless title bar.
+ * The title bar shows the **connection**, not the application's own name.
  *
- * Apple-style traffic dots, but in **Windows order** (minimise, maximise,
- * close) so muscle memory still works on the platform this actually runs on.
- * Carried over from Frostbyte; only the window API changed, since Tauri
- * replaces the Electron IPC bridge.
+ * Frostbyte puts "FROSTBYTE" here because a compression tool is a thing you
+ * open, use and close — the app is the subject. Basalt is the opposite: the
+ * subject is the drive at the other end of the room, and the question you have
+ * on opening the window is always "is it there, and is anything moving?".
+ *
+ * So the wordmark is gone. In its place: the vault's name, whether it is
+ * reachable, and a live trace of what is actually crossing the link.
  */
-export function TitleBar(): React.JSX.Element {
+export function TitleBar({
+  vaultName,
+  connected,
+  throughput,
+  samples,
+}: {
+  vaultName: string
+  connected: boolean
+  throughput: number
+  samples: number[]
+}): React.JSX.Element {
+  const active = connected && throughput > 0.5
+
   return (
-    <div className="drag relative z-20 flex h-8 items-center justify-between border-b border-line pl-3">
-      <div className="flex items-center gap-2">
-        <HexMark size={13} className="text-basaltDeep" />
-        <span className="text-[10px] font-bold uppercase tracking-[0.3em] text-textDim">
-          Basalt
+    <div className="drag relative z-20 flex h-9 items-center gap-2.5 border-b border-line px-3">
+      {/*
+        The mark breathes only while data is moving. Idle it is perfectly
+        still — an animation that never stops stops meaning anything.
+      */}
+      <motion.div
+        animate={active ? { opacity: [0.55, 1, 0.55] } : { opacity: 0.55 }}
+        transition={
+          active
+            ? { duration: 2.4, repeat: Infinity, ease: 'easeInOut' }
+            : { duration: 0.4 }
+        }
+        className="text-basaltDeep"
+      >
+        <HexMark size={14} />
+      </motion.div>
+
+      <div className="flex items-baseline gap-2">
+        <span className="text-[12px] font-semibold tracking-tight text-text">
+          {vaultName}
         </span>
+        <ConnectionDot connected={connected} />
       </div>
 
-      <div className="no-drag flex h-full items-center gap-1.5 pr-2.5">
+      <div className="flex-1" />
+
+      {/* The live trace. Sits next to the window controls because it is
+          ambient information, not something you act on. */}
+      {connected && (
+        <div className="no-drag flex items-center gap-2 pr-1">
+          <Sparkline samples={samples} width={56} height={14} />
+          <span
+            className={cn(
+              'tnum w-[68px] text-right font-mono text-[10px] tabular-nums transition-colors',
+              active ? 'text-textDim' : 'text-textFaint',
+            )}
+          >
+            {throughput > 0.05 ? `${throughput.toFixed(1)} MB/s` : 'idle'}
+          </span>
+        </div>
+      )}
+
+      <div className="no-drag flex h-full items-center gap-1.5">
         <Dot
           onClick={() => void windowAction('minimize')}
           color="#FFBD2E"
@@ -59,6 +111,27 @@ export function TitleBar(): React.JSX.Element {
         />
       </div>
     </div>
+  )
+}
+
+/** A small live dot, with a slow halo while connected. */
+function ConnectionDot({ connected }: { connected: boolean }): React.JSX.Element {
+  return (
+    <span className="relative flex h-1.5 w-1.5 items-center justify-center">
+      {connected && (
+        <motion.span
+          className="absolute inset-0 rounded-full bg-[#28C840]"
+          animate={{ scale: [1, 2.6, 1], opacity: [0.45, 0, 0.45] }}
+          transition={{ duration: 2.8, repeat: Infinity, ease: 'easeOut' }}
+        />
+      )}
+      <span
+        className={cn(
+          'relative h-1.5 w-1.5 rounded-full',
+          connected ? 'bg-[#28C840]' : 'bg-textFaint',
+        )}
+      />
+    </span>
   )
 }
 
@@ -84,7 +157,6 @@ function Dot({
         className="relative flex h-3 w-3 items-center justify-center rounded-full transition-transform group-hover:scale-110"
         style={{ backgroundColor: color }}
       >
-        {/* The glyph only appears on hover, so the resting state stays quiet. */}
         <span className="absolute text-[7px] font-black leading-none text-black/50 opacity-0 transition-opacity group-hover:opacity-100">
           {symbol}
         </span>

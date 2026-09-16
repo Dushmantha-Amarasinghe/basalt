@@ -1,13 +1,16 @@
 import { memo, useCallback } from 'react'
 import { VList } from 'virtua'
 import {
+  Download,
   File as FileIcon,
   FileArchive,
   FileCode,
   FileText,
   Folder,
   Image as ImageIcon,
+  MoreHorizontal,
   Music,
+  Star,
   Video,
 } from 'lucide-react'
 import { cn, formatBytes, formatDate } from '@/lib/utils'
@@ -82,7 +85,19 @@ const Row = memo(function Row({
 
       <span className="min-w-0 flex-1 truncate">{entry.name}</span>
 
-      <span className="tnum w-20 shrink-0 text-right font-mono text-[11px] text-textFaint">
+      {/*
+        Quick actions appear on hover, in the space the metadata occupies. CSS
+        only, no React state and no Framer Motion: this has to be free during a
+        fast scroll, and a hover handler that sets state would re-render rows
+        under the cursor at whatever rate the mouse moves.
+      */}
+      <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+        <QuickAction icon={Download} label="Download" />
+        <QuickAction icon={Star} label="Star" />
+        <QuickAction icon={MoreHorizontal} label="More" />
+      </span>
+
+      <span className="tnum w-20 shrink-0 text-right font-mono text-[11px] text-textFaint group-hover:opacity-0">
         {entry.kind === 'dir' ? '—' : formatBytes(entry.size)}
       </span>
 
@@ -92,6 +107,25 @@ const Row = memo(function Row({
     </div>
   )
 })
+
+function QuickAction({
+  icon: Icon,
+  label,
+}: {
+  icon: typeof FileIcon
+  label: string
+}): React.JSX.Element {
+  return (
+    <button
+      aria-label={label}
+      title={label}
+      onClick={(e) => e.stopPropagation()}
+      className="flex h-6 w-6 items-center justify-center rounded text-textFaint transition-colors hover:bg-white/[0.07] hover:text-text"
+    >
+      <Icon size={13} />
+    </button>
+  )
+}
 
 export function FileList({
   entries,

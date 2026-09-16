@@ -1,9 +1,11 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight, Search, X } from 'lucide-react'
 import { TitleBar } from '@/components/TitleBar'
+import { useSimulatedThroughput } from '@/components/Sparkline'
 import { Sidebar, type NavKey } from '@/components/Sidebar'
 import { FileList, type Entry } from '@/components/FileList'
+import { CommandPalette } from '@/components/CommandPalette'
 import { generateEntries } from '@/lib/mockData'
 import { cn, formatBytes } from '@/lib/utils'
 
@@ -15,8 +17,14 @@ export function App(): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [path, setPath] = useState<string[]>(['Vault'])
+  const [paletteOpen, setPaletteOpen] = useState(false)
 
   const allEntries = useMemo(() => generateEntries(MOCK_ENTRIES), [])
+
+  // Live link activity. Simulated for now; the shape of the data is what the
+  // header renders, so swapping in the real feed later changes nothing here.
+  const samples = useSimulatedThroughput()
+  const throughput = samples[samples.length - 1] ?? 0
 
   const entries = useMemo(() => {
     if (!query.trim()) return allEntries
@@ -41,6 +49,19 @@ export function App(): React.JSX.Element {
     }
   }, [])
 
+  // Ctrl+K anywhere. Registered on the window rather than a focused element so
+  // it works no matter what currently has focus.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPaletteOpen((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   const selectedSize = useMemo(() => {
     if (selected.size === 0) return 0
     let total = 0
@@ -51,7 +72,12 @@ export function App(): React.JSX.Element {
   return (
     <div className="relative flex h-full flex-col">
       <div className="backdrop" />
-      <TitleBar />
+      <TitleBar
+        vaultName="Vault"
+        connected
+        throughput={throughput}
+        samples={samples}
+      />
 
       <div className="relative flex min-h-0 flex-1">
         <Sidebar
@@ -60,7 +86,7 @@ export function App(): React.JSX.Element {
           driveUsed={1_842_000_000_000}
           driveTotal={4_000_000_000_000}
           connected
-          throughput={22.7}
+          throughput={throughput}
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
@@ -74,23 +100,43 @@ export function App(): React.JSX.Element {
             onQueryChange={setQuery}
           />
 
-          <div className="min-h-0 flex-1">
+          {/*
+            Keyed on the section so switching views replays the entrance. The
+            list itself is virtualised and must not animate per row, so the
+            motion lives on the container: content lifts in as a single plane.
+          */}
+          <motion.div
+            key={nav}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+            className="min-h-0 flex-1"
+          >
             <FileList
               entries={entries}
               selected={selected}
               onSelect={handleSelect}
               onOpen={handleOpen}
             />
-          </div>
+          </motion.div>
 
           <StatusBar
             total={entries.length}
             filtered={query.trim().length > 0}
             selectedCount={selected.size}
             selectedSize={selectedSize}
+            onOpenPalette={() => setPaletteOpen(true)}
           />
         </main>
       </div>
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        entries={allEntries}
+        onNavigate={setNav}
+        onOpenEntry={handleOpen}
+      />
     </div>
   )
 }
@@ -166,11 +212,13 @@ function StatusBar({
   filtered,
   selectedCount,
   selectedSize,
+  onOpenPalette,
 }: {
   total: number
   filtered: boolean
   selectedCount: number
   selectedSize: number
+  onOpenPalette: () => void
 }): React.JSX.Element {
   return (
     <div className="flex h-7 shrink-0 items-center gap-3 border-t border-line px-4 font-mono text-[11px] text-textFaint">
@@ -187,6 +235,17 @@ function StatusBar({
           </span>
         </>
       )}
+
+      <div className="flex-1" />
+
+      <button
+        onClick={onOpenPalette}
+        className="flex items-center gap-1.5 rounded px-1.5 py-0.5 transition-colors hover:bg-white/[0.05] hover:text-textDim"
+      >
+        <kbd className="rounded border border-white/10 px-1 leading-[14px]">Ctrl</kbd>
+        <kbd className="rounded border border-white/10 px-1 leading-[14px]">K</kbd>
+        <span>commands</span>
+      </button>
     </div>
   )
 }
