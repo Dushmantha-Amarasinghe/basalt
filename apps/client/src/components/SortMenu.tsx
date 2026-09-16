@@ -62,7 +62,7 @@ export function SortMenu({
           aria-label="Sort"
           title="Sort"
           className={cn(
-            'no-drag flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-[12px] transition-colors',
+            'no-drag flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-[12px] transition-colors',
             open
               ? 'border-white/20 bg-white/[0.04] text-text'
               : 'border-transparent text-textDim hover:bg-white/[0.05] hover:text-text',

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronRight, Search, X } from 'lucide-react'
+import { Search, X } from 'lucide-react'
 import { TitleBar } from '@/components/TitleBar'
+import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { Sidebar, type NavKey } from '@/components/Sidebar'
 import { FileList, type Entry } from '@/components/FileList'
 import { EmptyState, ListView, TileView } from '@/components/FileViews'
@@ -26,7 +27,7 @@ import {
   generateVideos,
   type MediaItem,
 } from '@/lib/mockMedia'
-import { cn, formatBytes } from '@/lib/utils'
+import { formatBytes } from '@/lib/utils'
 
 /** Row count for the mock data. High on purpose: see `mockData.ts`. */
 const MOCK_ENTRIES = 100_000
@@ -294,24 +295,7 @@ function Toolbar({
   return (
     <div className="drag flex h-12 shrink-0 items-center gap-3 border-b border-line px-4">
       {path ? (
-        <nav className="flex min-w-0 items-center gap-1 text-sm">
-          {path.map((segment, index) => (
-            <div key={`${segment}-${index}`} className="flex min-w-0 items-center">
-              {index > 0 && <ChevronRight size={14} className="mx-0.5 shrink-0 text-textFaint" />}
-              <button
-                onClick={() => onNavigateTo(index)}
-                className={cn(
-                  'no-drag truncate rounded px-1.5 py-0.5 transition-colors',
-                  index === path.length - 1
-                    ? 'font-semibold text-text'
-                    : 'text-textDim hover:bg-white/[0.04] hover:text-text',
-                )}
-              >
-                {segment}
-              </button>
-            </div>
-          ))}
-        </nav>
+        <Breadcrumbs path={path} onNavigateTo={onNavigateTo} />
       ) : (
         <div className="flex items-baseline gap-2.5">
           <span className="text-sm font-semibold text-text">{title}</span>
@@ -333,7 +317,12 @@ function Toolbar({
       )}
       {onViewChange && <ViewMenu mode={view} onChange={onViewChange} />}
 
-      <div className="no-drag relative">
+      {/*
+        `shrink-0` on the controls, and nothing else: the breadcrumb trail is
+        the only element allowed to give up width, because it is the only one
+        that degrades gracefully. A squashed search field is just broken.
+      */}
+      <div className="no-drag relative shrink-0">
         <Search
           size={14}
           className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-textFaint"
