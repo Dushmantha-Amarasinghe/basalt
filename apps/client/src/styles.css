@@ -135,6 +135,15 @@ body {
   background-clip: padding-box;
 }
 
+/* Fades the bottom edge of a scrollable area.
+   A hard clip mid-row reads as a broken layout even when the container is
+   behaving correctly; a short fade says "there is more below" instead. When
+   the content fits, the fade lands on empty space and is invisible. */
+.fade-bottom {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent 100%);
+}
+
 /* The file list must hold 60 fps while scrolling 100k rows, so rows are
    isolated from each other's layout and paint work. */
 .row-contain {

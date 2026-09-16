@@ -6,6 +6,12 @@ import { Sidebar, type NavKey } from '@/components/Sidebar'
 import { FileList, type Entry } from '@/components/FileList'
 import { EmptyState, ListView, TileView } from '@/components/FileViews'
 import { ViewMenu, type ViewMode } from '@/components/ViewMenu'
+import {
+  SortMenu,
+  sortEntries,
+  type SortDirection,
+  type SortField,
+} from '@/components/SortMenu'
 import { MediaGrid } from '@/components/MediaGrid'
 import { SettingsView } from '@/components/SettingsView'
 import { TransfersPanel } from '@/components/TransfersPanel'
@@ -45,6 +51,8 @@ export function App(): React.JSX.Element {
   const [playing, setPlaying] = useState<MediaItem | null>(null)
   const [viewingIndex, setViewingIndex] = useState<number | null>(null)
   const [view, setView] = useState<ViewMode>('details')
+  const [sortField, setSortField] = useState<SortField>('name')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
 
   const allEntries = useMemo(() => generateEntries(MOCK_ENTRIES), [])
   const videos = useMemo(() => generateVideos(), [])
@@ -69,10 +77,15 @@ export function App(): React.JSX.Element {
   }, [nav, allEntries])
 
   const entries = useMemo(() => {
-    if (!query.trim()) return sectionEntries
-    const needle = query.toLowerCase()
-    return sectionEntries.filter((e) => e.name.toLowerCase().includes(needle))
-  }, [sectionEntries, query])
+    const needle = query.trim().toLowerCase()
+    const filtered = needle
+      ? sectionEntries.filter((e) => e.name.toLowerCase().includes(needle))
+      : sectionEntries
+    // Recent is already ordered by date and re-sorting it would defeat the
+    // point of the section.
+    if (nav === 'recent' && sortField === 'name') return filtered
+    return sortEntries(filtered, sortField, sortDirection)
+  }, [sectionEntries, query, nav, sortField, sortDirection])
 
   const handleSelect = useCallback((id: string, additive: boolean) => {
     setSelected((prev) => {
@@ -126,7 +139,13 @@ export function App(): React.JSX.Element {
       <div className="backdrop" />
       <TitleBar vaultName="Vault" connected />
 
-      <div className="relative flex min-h-0 flex-1">
+      {/*
+        `min-h-0` lets this shrink below its content height, which is what
+        allows the transfers panel to expand without overflowing the window.
+        `overflow-hidden` is the backstop: if anything inside still refuses to
+        shrink, it clips rather than escaping and painting over the chrome.
+      */}
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <Sidebar
           active={nav}
           onNavigate={setNav}
@@ -135,7 +154,7 @@ export function App(): React.JSX.Element {
           connected
         />
 
-        <main className="flex min-w-0 flex-1 flex-col">
+        <main className="flex min-w-0 min-h-0 flex-1 flex-col">
           {nav !== 'settings' && (
             <Toolbar
               title={TITLES[nav]}
@@ -149,6 +168,10 @@ export function App(): React.JSX.Element {
               count={isLibrary ? libraryItems.length : entries.length}
               view={view}
               onViewChange={isLibrary ? undefined : setView}
+              sortField={sortField}
+              sortDirection={sortDirection}
+              onSortFieldChange={isLibrary ? undefined : setSortField}
+              onSortDirectionChange={setSortDirection}
             />
           )}
 
@@ -250,6 +273,10 @@ function Toolbar({
   count,
   view,
   onViewChange,
+  sortField,
+  sortDirection,
+  onSortFieldChange,
+  onSortDirectionChange,
 }: {
   title: string
   path?: string[]
@@ -259,6 +286,10 @@ function Toolbar({
   count: number
   view: ViewMode
   onViewChange?: (mode: ViewMode) => void
+  sortField: SortField
+  sortDirection: SortDirection
+  onSortFieldChange?: (field: SortField) => void
+  onSortDirectionChange: (direction: SortDirection) => void
 }): React.JSX.Element {
   return (
     <div className="drag flex h-12 shrink-0 items-center gap-3 border-b border-line px-4">
@@ -292,6 +323,14 @@ function Toolbar({
 
       <div className="flex-1" />
 
+      {onSortFieldChange && (
+        <SortMenu
+          field={sortField}
+          direction={sortDirection}
+          onFieldChange={onSortFieldChange}
+          onDirectionChange={onSortDirectionChange}
+        />
+      )}
       {onViewChange && <ViewMenu mode={view} onChange={onViewChange} />}
 
       <div className="no-drag relative">

@@ -50,6 +50,13 @@ export function Sidebar({
 
   return (
     <aside className="z-10 flex w-[210px] shrink-0 flex-col border-r border-line px-3 py-4">
+      {/*
+        `min-h-0` plus `overflow-y-auto` is what stops a short window from
+        pushing the drive card and Settings out of the bottom of the sidebar.
+        Without it this column simply overflows its parent and the whole layout
+        visibly breaks.
+      */}
+      <div className="fade-bottom flex min-h-0 flex-1 flex-col overflow-y-auto">
       <nav className="flex flex-col gap-1">
         {NAV.map((item) => (
           <NavItem
@@ -76,8 +83,8 @@ export function Sidebar({
           />
         ))}
       </nav>
-
-      <div className="flex-1" />
+      <div className="min-h-4 flex-1" />
+      </div>
 
       <DriveStatus
         connected={connected}

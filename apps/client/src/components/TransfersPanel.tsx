@@ -83,7 +83,16 @@ export function TransfersPanel({
             transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
             className="overflow-hidden"
           >
-            <div className="max-h-[232px] overflow-y-auto border-t border-line px-2 py-1.5">
+            {/*
+              Capped against the viewport, not a fixed 232px. In a short window
+              a fixed cap let this panel claim more height than was left, which
+              squeezed the file list past zero and broke the whole layout.
+              `min()` keeps it to a third of the window however small that gets.
+            */}
+            <div
+              className="overflow-y-auto border-t border-line px-2 py-1.5"
+              style={{ maxHeight: 'min(232px, 32vh)' }}
+            >
               {transfers.map((t) => (
                 <TransferRow key={t.id} transfer={t} />
               ))}
