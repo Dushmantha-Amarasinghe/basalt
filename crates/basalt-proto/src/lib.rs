@@ -15,11 +15,16 @@
 
 pub mod codec;
 pub mod frame;
+pub mod hex;
 pub mod manifest;
+pub mod msg;
+pub mod ops;
 
 pub use codec::{Codec, CompressionPolicy};
 pub use frame::{Entry, EntryKind, StreamHeader};
 pub use manifest::BatchRequest;
+pub use msg::{DirEntry, PROTOCOL_VERSION};
+pub use ops::{ErrorCode, Op, STATUS_ERR, STATUS_OK, WireError};
 
 /// Wire format magic. Bumped only on breaking layout changes.
 pub const MAGIC: [u8; 4] = *b"BSLT";
@@ -52,6 +57,12 @@ pub enum ProtoError {
 
     #[error("frame declares {declared} bytes, which exceeds the {limit} byte limit")]
     FrameTooLarge { declared: u64, limit: u64 },
+
+    #[error("unknown opcode {0}")]
+    UnknownOp(u8),
+
+    #[error("malformed message: {0}")]
+    Malformed(String),
 }
 
 pub type Result<T> = std::result::Result<T, ProtoError>;
