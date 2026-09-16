@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import { HexMark } from './HexMark'
-import { Sparkline } from './Sparkline'
+import { Sparkline, ThroughputReadout, useIsActive } from './Sparkline'
 import { cn } from '@/lib/utils'
 
 /**
@@ -37,15 +37,14 @@ async function windowAction(action: 'minimize' | 'toggleMaximize' | 'close'): Pr
 export function TitleBar({
   vaultName,
   connected,
-  throughput,
-  samples,
 }: {
   vaultName: string
   connected: boolean
-  throughput: number
-  samples: number[]
 }): React.JSX.Element {
-  const active = connected && throughput > 0.5
+  // Subscribes on its own rather than taking throughput as a prop, so a
+  // changing number never re-renders whatever owns this component.
+  const moving = useIsActive()
+  const active = connected && moving
 
   return (
     <div className="drag relative z-20 flex h-9 items-center gap-2.5 border-b border-line px-3">
@@ -82,15 +81,13 @@ export function TitleBar({
           ambient information, not something you act on. */}
       {connected && (
         <div className="no-drag flex items-center gap-2 pr-1">
-          <Sparkline samples={samples} width={56} height={14} />
-          <span
+          <Sparkline width={56} height={14} />
+          <ThroughputReadout
             className={cn(
               'tnum w-[68px] text-right font-mono text-[10px] tabular-nums transition-colors',
               active ? 'text-textDim' : 'text-textFaint',
             )}
-          >
-            {throughput > 0.05 ? `${throughput.toFixed(1)} MB/s` : 'idle'}
-          </span>
+          />
         </div>
       )}
 

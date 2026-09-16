@@ -2,13 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight, Search, X } from 'lucide-react'
 import { TitleBar } from '@/components/TitleBar'
-import { useSimulatedThroughput } from '@/components/Sparkline'
 import { Sidebar, type NavKey } from '@/components/Sidebar'
 import { FileList, type Entry } from '@/components/FileList'
 import { MediaGrid } from '@/components/MediaGrid'
 import { SettingsView } from '@/components/SettingsView'
 import { TransfersPanel } from '@/components/TransfersPanel'
 import { PlayerOverlay } from '@/components/PlayerOverlay'
+import { ImageViewer } from '@/components/ImageViewer'
 import { CommandPalette } from '@/components/CommandPalette'
 import { generateEntries } from '@/lib/mockData'
 import {
@@ -41,17 +41,13 @@ export function App(): React.JSX.Element {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [transfersOpen, setTransfersOpen] = useState(false)
   const [playing, setPlaying] = useState<MediaItem | null>(null)
+  const [viewingIndex, setViewingIndex] = useState<number | null>(null)
 
   const allEntries = useMemo(() => generateEntries(MOCK_ENTRIES), [])
   const videos = useMemo(() => generateVideos(), [])
   const music = useMemo(() => generateMusic(), [])
   const photos = useMemo(() => generatePhotos(), [])
   const transfers = useMemo(() => generateTransfers(), [])
-
-  // Live link activity. Simulated for now; the shape of the data is what the
-  // header renders, so swapping in the real feed later changes nothing here.
-  const samples = useSimulatedThroughput()
-  const throughput = samples[samples.length - 1] ?? 0
 
   // Each section draws from the same corpus but presents a different slice, so
   // navigation actually goes somewhere rather than relabelling one list.
@@ -125,7 +121,7 @@ export function App(): React.JSX.Element {
   return (
     <div className="relative flex h-full flex-col">
       <div className="backdrop" />
-      <TitleBar vaultName="Vault" connected throughput={throughput} samples={samples} />
+      <TitleBar vaultName="Vault" connected />
 
       <div className="relative flex min-h-0 flex-1">
         <Sidebar
@@ -134,7 +130,6 @@ export function App(): React.JSX.Element {
           driveUsed={1_842_000_000_000}
           driveTotal={4_000_000_000_000}
           connected
-          throughput={throughput}
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
@@ -170,7 +165,12 @@ export function App(): React.JSX.Element {
               <MediaGrid
                 items={libraryItems}
                 shape={nav === 'photos' ? 'square' : 'poster'}
-                onOpen={(item) => setPlaying(item)}
+                onOpen={(item, index) => {
+                  // A photo has no timeline, so it gets a viewer rather than a
+                  // transport with a scrubber and a play button.
+                  if (nav === 'photos') setViewingIndex(index)
+                  else setPlaying(item)
+                }}
               />
             ) : (
               <FileList
@@ -209,6 +209,13 @@ export function App(): React.JSX.Element {
       />
 
       <PlayerOverlay item={playing} onClose={() => setPlaying(null)} />
+
+      <ImageViewer
+        items={photos}
+        index={viewingIndex}
+        onIndexChange={setViewingIndex}
+        onClose={() => setViewingIndex(null)}
+      />
     </div>
   )
 }
@@ -270,7 +277,7 @@ function Toolbar({
           onChange={(e) => onQueryChange(e.target.value)}
           placeholder="Search"
           spellCheck={false}
-          className="h-8 w-56 rounded-md border border-white/[0.07] bg-ink2 pl-8 pr-8 text-sm text-text placeholder:text-textFaint transition-colors focus:border-white/20"
+          className="h-8 w-56 rounded-md border border-white/[0.07] bg-ink2 pl-8 pr-9 text-sm text-text placeholder:text-textFaint transition-colors focus:border-white/20"
         />
         <AnimatePresence>
           {query && (
@@ -281,9 +288,15 @@ function Toolbar({
               transition={{ duration: 0.12 }}
               onClick={() => onQueryChange('')}
               aria-label="Clear search"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-textFaint hover:text-text"
+              /*
+                Centred by giving the button a fixed box and centring its
+                contents, rather than translating a bare icon. The icon's own
+                glyph box is not symmetrical, so `-translate-y-1/2` on it alone
+                left the cross sitting a pixel low and right of centre.
+              */
+              className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-textFaint transition-colors hover:bg-white/[0.06] hover:text-text"
             >
-              <X size={14} />
+              <X size={13} />
             </motion.button>
           )}
         </AnimatePresence>

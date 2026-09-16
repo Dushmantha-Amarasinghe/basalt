@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { motion } from 'framer-motion'
 import { Check, HardDrive, Laptop, Shield, Wifi, Zap } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -159,12 +160,46 @@ function Select({
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [current, setCurrent] = useState(value)
+  const [rect, setRect] = useState<DOMRect | null>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+
+  // The menu is portalled to <body>.
+  //
+  // Each settings section is `overflow-hidden` so its rounded corners clip its
+  // contents, which also clipped any menu opening near the bottom of a
+  // section — the list disappeared under the next card. Rendering outside the
+  // section escapes the clip entirely; the cost is having to position it by
+  // hand from the trigger's rect.
+  const measure = (): void => {
+    const el = triggerRef.current
+    if (el) setRect(el.getBoundingClientRect())
+  }
+
+  useEffect(() => {
+    if (!open) return undefined
+    const onReposition = (): void => measure()
+    // `true` captures scrolls from the settings pane, not just the window.
+    window.addEventListener('scroll', onReposition, true)
+    window.addEventListener('resize', onReposition)
+    return () => {
+      window.removeEventListener('scroll', onReposition, true)
+      window.removeEventListener('resize', onReposition)
+    }
+  }, [open])
+
+  const menuHeight = options.length * 34 + 8
+  // Flip upward when there is not enough room below.
+  const flipUp = rect ? window.innerHeight - rect.bottom < menuHeight + 12 : false
 
   return (
-    <div className="relative flex items-center justify-between px-4 py-2.5">
+    <div className="flex items-center justify-between px-4 py-2.5">
       <span className="text-[13px] text-textDim">{label}</span>
       <button
-        onClick={() => setOpen((v) => !v)}
+        ref={triggerRef}
+        onClick={() => {
+          measure()
+          setOpen((v) => !v)
+        }}
         className={cn(
           'rounded-md border bg-panel2 px-3 py-1.5 text-[12px] text-text transition-colors',
           open ? 'border-white/20' : 'border-white/10 hover:border-white/20',
@@ -173,34 +208,45 @@ function Select({
         {current}
       </button>
 
-      {open && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <motion.div
-            initial={{ opacity: 0, y: -4, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            transition={{ duration: 0.1, ease: 'easeOut' }}
-            className="absolute right-4 top-full z-20 mt-1 w-[180px] overflow-hidden rounded-md border border-white/10 bg-panel2 shadow-lift"
-          >
-            {options.map((option) => (
-              <button
-                key={option}
-                onClick={() => {
-                  setCurrent(option)
-                  setOpen(false)
-                }}
-                className={cn(
-                  'flex w-full items-center justify-between px-3 py-2 text-left text-[12px] transition-colors hover:bg-white/[0.06]',
-                  option === current ? 'bg-white/5 text-text' : 'text-textDim',
-                )}
-              >
-                {option}
-                {option === current && <Check size={12} className="text-textDim" />}
-              </button>
-            ))}
-          </motion.div>
-        </>
-      )}
+      {open &&
+        rect &&
+        createPortal(
+          <>
+            <div className="fixed inset-0 z-[60]" onClick={() => setOpen(false)} />
+            <motion.div
+              initial={{ opacity: 0, y: flipUp ? 4 : -4, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ duration: 0.1, ease: 'easeOut' }}
+              style={{
+                position: 'fixed',
+                left: rect.right - 180,
+                width: 180,
+                ...(flipUp
+                  ? { bottom: window.innerHeight - rect.top + 6 }
+                  : { top: rect.bottom + 6 }),
+              }}
+              className="z-[61] overflow-hidden rounded-md border border-white/10 bg-panel2 shadow-lift"
+            >
+              {options.map((option) => (
+                <button
+                  key={option}
+                  onClick={() => {
+                    setCurrent(option)
+                    setOpen(false)
+                  }}
+                  className={cn(
+                    'flex w-full items-center justify-between px-3 py-2 text-left text-[12px] transition-colors hover:bg-white/[0.06]',
+                    option === current ? 'bg-white/5 text-text' : 'text-textDim',
+                  )}
+                >
+                  {option}
+                  {option === current && <Check size={12} className="text-textDim" />}
+                </button>
+              ))}
+            </motion.div>
+          </>,
+          document.body,
+        )}
     </div>
   )
 }

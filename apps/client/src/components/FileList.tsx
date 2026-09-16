@@ -138,17 +138,23 @@ export function FileList({
   onSelect: (id: string, additive: boolean) => void
   onOpen: (entry: Entry) => void
 }): React.JSX.Element {
+  // Index-based, so Virtua can create elements lazily. Passing
+  // `entries.map(...)` built 100,000 React elements on **every** render even
+  // though only ~37 were ever mounted — the single largest cost in the view.
   const renderRow = useCallback(
-    (entry: Entry) => (
-      <Row
-        key={entry.id}
-        entry={entry}
-        selected={selected.has(entry.id)}
-        onSelect={onSelect}
-        onOpen={onOpen}
-      />
-    ),
-    [selected, onSelect, onOpen],
+    (index: number) => {
+      const entry = entries[index]
+      if (!entry) return <div style={{ height: ROW_HEIGHT }} />
+      return (
+        <Row
+          entry={entry}
+          selected={selected.has(entry.id)}
+          onSelect={onSelect}
+          onOpen={onOpen}
+        />
+      )
+    },
+    [entries, selected, onSelect, onOpen],
   )
 
   if (entries.length === 0) {
@@ -166,11 +172,18 @@ export function FileList({
     <div className="h-full px-2 pb-2" role="grid">
       <ColumnHeader />
       {/*
-        Virtua renders only the visible window. Without it, 100,000 rows means
-        100,000 DOM nodes and the list becomes unusable long before that.
+        Virtua renders only the visible window. `count` plus a render function
+        means elements are built lazily, and `itemSize` tells it the rows are a
+        fixed height so it never has to measure them — both matter far more at
+        100,000 rows than the virtualisation itself.
       */}
-      <VList style={{ height: 'calc(100% - 28px)' }} overscan={8}>
-        {entries.map(renderRow)}
+      <VList
+        style={{ height: 'calc(100% - 28px)' }}
+        count={entries.length}
+        itemSize={ROW_HEIGHT}
+        overscan={6}
+      >
+        {renderRow}
       </VList>
     </div>
   )

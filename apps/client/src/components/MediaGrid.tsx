@@ -24,7 +24,7 @@ export function MediaGrid({
 }: {
   items: MediaItem[]
   shape?: Shape
-  onOpen?: (item: MediaItem) => void
+  onOpen?: (item: MediaItem, index: number) => void
 }): React.JSX.Element {
   return (
     <div className="h-full overflow-y-auto px-5 py-4">
@@ -59,7 +59,7 @@ function Tile({
   item: MediaItem
   shape: Shape
   index: number
-  onOpen?: (item: MediaItem) => void
+  onOpen?: (item: MediaItem, index: number) => void
 }): React.JSX.Element {
   return (
     <motion.button
@@ -71,7 +71,7 @@ function Tile({
         ease: [0.22, 1, 0.36, 1],
       }}
       whileHover={{ y: -3 }}
-      onClick={() => onOpen?.(item)}
+      onClick={() => onOpen?.(item, index)}
       className="group text-left"
     >
       <div

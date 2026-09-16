@@ -9,8 +9,8 @@ import {
   Star,
   Video,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
-import { formatBytes } from '@/lib/utils'
+import { cn, formatBytes } from '@/lib/utils'
+import { ThroughputReadout } from './Sparkline'
 
 export type NavKey =
   | 'files'
@@ -39,14 +39,12 @@ export function Sidebar({
   driveUsed,
   driveTotal,
   connected,
-  throughput,
 }: {
   active: NavKey
   onNavigate: (key: NavKey) => void
   driveUsed: number
   driveTotal: number
   connected: boolean
-  throughput: number
 }): React.JSX.Element {
   const usedPercent = driveTotal > 0 ? (driveUsed / driveTotal) * 100 : 0
 
@@ -83,7 +81,6 @@ export function Sidebar({
 
       <DriveStatus
         connected={connected}
-        throughput={throughput}
         used={driveUsed}
         total={driveTotal}
         usedPercent={usedPercent}
@@ -153,13 +150,11 @@ function NavItem({
 
 function DriveStatus({
   connected,
-  throughput,
   used,
   total,
   usedPercent,
 }: {
   connected: boolean
-  throughput: number
   used: number
   total: number
   usedPercent: number
@@ -190,10 +185,8 @@ function DriveStatus({
         <span className="tnum font-mono text-[10px] text-textFaint">
           {formatBytes(used)} / {formatBytes(total)}
         </span>
-        {connected && throughput > 0 && (
-          <span className="tnum font-mono text-[10px] text-textDim">
-            {throughput.toFixed(1)} MB/s
-          </span>
+        {connected && (
+          <ThroughputReadout className="tnum font-mono text-[10px] text-textDim" />
         )}
       </div>
     </div>
