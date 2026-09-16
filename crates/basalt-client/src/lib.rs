@@ -14,11 +14,13 @@ pub mod pool;
 pub mod proxy;
 pub mod session;
 pub mod store;
+pub mod ui;
 
 pub use client::{Basalt, Progress, TransferKind};
 pub use pool::Pool;
 pub use session::{Session, SessionInfo};
 pub use store::{ClientStore, KnownHost};
+pub use ui::{HostSummary, Status, TransferEvent, UiError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
