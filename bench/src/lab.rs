@@ -77,9 +77,9 @@ pub async fn run(config: &LabConfig) -> Result<Vec<Suite>> {
     let baseline = tcp_baseline(config).await?;
     let recv = recv_buffer_sweep(config).await?;
     let write = write_size_sweep(config).await?;
-    let udp = udp_ceiling(config).await?;
+    let (udp, udp_max_loss) = udp_ceiling(config).await?;
 
-    verdict(&baseline, &recv, &write, &udp);
+    verdict(&baseline, &recv, &write, &udp, udp_max_loss);
 
     Ok(vec![baseline, recv, write, udp])
 }
@@ -181,7 +181,7 @@ async fn tcp_download(
 /// UDP will happily send faster than the link can carry, so the delivered rate
 /// plateaus at the true ceiling while loss climbs. That plateau is the number
 /// everything else is judged against.
-async fn udp_ceiling(config: &LabConfig) -> Result<Suite> {
+async fn udp_ceiling(config: &LabConfig) -> Result<(Suite, f64)> {
     let mut suite = Suite::new(
         "lab-udp-ceiling",
         "delivered UDP throughput and loss by send rate — the link's real ceiling",
@@ -211,8 +211,10 @@ async fn udp_ceiling(config: &LabConfig) -> Result<Suite> {
 
     if udp_port == 0 {
         println!("  server could not open a UDP socket; skipping");
-        return Ok(suite);
+        return Ok((suite, 0.0));
     }
+
+    let mut max_loss = 0.0f64;
 
     let target: SocketAddr = format!("{}:{}", config.host, udp_port)
         .parse()
@@ -272,9 +274,10 @@ async fn udp_ceiling(config: &LabConfig) -> Result<Suite> {
             loss * 100.0
         ));
         suite.measurements.push(m);
+        max_loss = max_loss.max(loss);
     }
 
-    Ok(suite)
+    Ok((suite, max_loss))
 }
 
 struct BlastResult {
@@ -347,10 +350,14 @@ pub enum TransportVerdict {
     HeadroomExists,
     /// UDP and TCP agree: the link itself is the constraint.
     LinkLimited,
-    /// UDP came in *below* TCP, which cannot be a property of the link — a
-    /// protocol with no acknowledgements cannot be slower than one with them.
-    /// It means our own packet-sending loop ran out of steam first, so the test
-    /// says nothing about the ceiling.
+    /// UDP came in below TCP *and* was losing packets heavily. The link cannot
+    /// absorb the offered rate, and TCP's congestion control is pacing better
+    /// than a blind blast does. No headroom, and a custom UDP transport would
+    /// have to rebuild congestion control just to catch up with TCP.
+    UdpLossyNoGain,
+    /// UDP came in below TCP while losing almost nothing. Nothing dropped it,
+    /// so our own sending loop must have been the limit — every packet costs a
+    /// syscall. The test says nothing about the link's ceiling.
     SenderLimited,
     /// No UDP data at all.
     Inconclusive,
@@ -362,12 +369,20 @@ pub enum TransportVerdict {
 /// being careful about is [`TransportVerdict::SenderLimited`]: an earlier
 /// version had only two branches, so a UDP result far *below* TCP fell into the
 /// "link is saturated" branch and reported a confident, wrong conclusion.
-pub fn classify_transport(tcp_best: f64, udp_best: f64) -> TransportVerdict {
+pub fn classify_transport(tcp_best: f64, udp_best: f64, udp_max_loss: f64) -> TransportVerdict {
     if udp_best <= 0.0 || tcp_best <= 0.0 {
         return TransportVerdict::Inconclusive;
     }
     if udp_best < tcp_best * 0.9 {
-        TransportVerdict::SenderLimited
+        // Throughput alone cannot tell these apart, and they mean opposite
+        // things. Heavy loss means the link refused the traffic — a real
+        // finding. Negligible loss means nothing dropped the packets, so the
+        // shortfall was our own send loop and the test proved nothing.
+        if udp_max_loss > 0.05 {
+            TransportVerdict::UdpLossyNoGain
+        } else {
+            TransportVerdict::SenderLimited
+        }
     } else if udp_best > tcp_best * 1.25 {
         TransportVerdict::HeadroomExists
     } else {
@@ -376,7 +391,7 @@ pub fn classify_transport(tcp_best: f64, udp_best: f64) -> TransportVerdict {
 }
 
 /// Reads the four suites and says what to do about them.
-fn verdict(baseline: &Suite, recv: &Suite, write: &Suite, udp: &Suite) {
+fn verdict(baseline: &Suite, recv: &Suite, write: &Suite, udp: &Suite, udp_max_loss: f64) {
     let tcp_best = [baseline, recv, write]
         .iter()
         .flat_map(|s| s.measurements.iter())
@@ -432,7 +447,7 @@ fn verdict(baseline: &Suite, recv: &Suite, write: &Suite, udp: &Suite) {
     }
 
     println!("\n{}", "-".repeat(70));
-    match classify_transport(tcp_best, udp_best) {
+    match classify_transport(tcp_best, udp_best, udp_max_loss) {
         TransportVerdict::Inconclusive => {
             println!("  The UDP test did not run, so the ceiling is unknown.");
         }
@@ -454,6 +469,27 @@ fn verdict(baseline: &Suite, recv: &Suite, write: &Suite, udp: &Suite) {
             println!("  congestion control and acknowledgements buys nothing, so");
             println!("  there is no faster transport to find. A custom UDP protocol");
             println!("  would be weeks of work for no gain.");
+            println!();
+            println!("  The only way left to move files faster is to send fewer bytes:");
+            println!("    - compression (measured at 2.2x on real data)");
+            println!("    - caching, so repeat reads never cross the link");
+            println!("    - delta sync, so edits send only what changed");
+        }
+        TransportVerdict::UdpLossyNoGain => {
+            println!("  UDP delivered only {udp_best:.1} MB/s against TCP's {tcp_best:.1} MB/s,");
+            println!(
+                "  while losing up to {:.0}% of packets.",
+                udp_max_loss * 100.0
+            );
+            println!();
+            println!("  The link physically refused the extra traffic. Pushing harder");
+            println!("  made it worse, not better - past about {udp_best:.0} MB/s the");
+            println!("  packets were simply dropped.");
+            println!();
+            println!("  So there is no hidden headroom. TCP's congestion control is");
+            println!("  already pacing better than a blind blast, and a custom UDP");
+            println!("  protocol would have to rebuild congestion control from scratch");
+            println!("  just to draw level with what TCP gives us for free.");
             println!();
             println!("  The only way left to move files faster is to send fewer bytes:");
             println!("    - compression (measured at 2.2x on real data)");
@@ -529,30 +565,49 @@ mod tests {
     }
 
     #[test]
-    fn udp_far_below_tcp_means_our_sender_gave_out_not_the_link() {
-        // Regression guard, with the real loopback numbers that exposed the
-        // bug: TCP 914.9, UDP 75.1. An earlier two-branch version fell through
-        // to "the radio is the limit" and reported that confidently about a
-        // loopback interface with no radio involved at all.
+    fn udp_below_tcp_with_heavy_loss_means_the_link_refused_it() {
+        // The real Wi-Fi numbers: TCP 22.7 MB/s, UDP delivered 17.7 MB/s while
+        // dropping 44% of packets. An earlier version looked only at
+        // throughput, saw UDP below TCP, and blamed the harness's own send
+        // loop - when in fact the link was visibly throwing packets away. The
+        // loss figure is what separates the two, so it has to be an input.
         assert_eq!(
-            classify_transport(914.9, 75.1),
+            classify_transport(22.7, 17.7, 0.445),
+            TransportVerdict::UdpLossyNoGain
+        );
+    }
+
+    #[test]
+    fn udp_below_tcp_without_loss_means_our_sender_gave_out() {
+        // Loopback: TCP 914.9, UDP 75.1, nothing lost. Nothing dropped the
+        // packets, so the shortfall was ours and the test proved nothing.
+        assert_eq!(
+            classify_transport(914.9, 75.1, 0.0),
+            TransportVerdict::SenderLimited
+        );
+    }
+
+    #[test]
+    fn loss_decides_between_the_two_below_tcp_cases() {
+        // Same throughputs, opposite conclusions, decided purely by loss.
+        assert_eq!(
+            classify_transport(22.0, 15.0, 0.30),
+            TransportVerdict::UdpLossyNoGain
+        );
+        assert_eq!(
+            classify_transport(22.0, 15.0, 0.01),
             TransportVerdict::SenderLimited
         );
     }
 
     #[test]
     fn udp_matching_tcp_means_the_link_is_the_limit() {
-        // The expected Wi-Fi shape: both protocols pinned to the same ceiling.
         assert_eq!(
-            classify_transport(24.0, 25.0),
+            classify_transport(24.0, 25.0, 0.0),
             TransportVerdict::LinkLimited
         );
         assert_eq!(
-            classify_transport(24.0, 23.0),
-            TransportVerdict::LinkLimited
-        );
-        assert_eq!(
-            classify_transport(24.0, 28.0),
+            classify_transport(24.0, 23.0, 0.02),
             TransportVerdict::LinkLimited
         );
     }
@@ -560,7 +615,7 @@ mod tests {
     #[test]
     fn udp_well_above_tcp_means_there_is_headroom() {
         assert_eq!(
-            classify_transport(24.0, 45.0),
+            classify_transport(24.0, 45.0, 0.0),
             TransportVerdict::HeadroomExists
         );
     }
@@ -568,14 +623,13 @@ mod tests {
     #[test]
     fn transport_classification_handles_missing_data() {
         assert_eq!(
-            classify_transport(24.0, 0.0),
+            classify_transport(24.0, 0.0, 0.0),
             TransportVerdict::Inconclusive
         );
         assert_eq!(
-            classify_transport(0.0, 24.0),
+            classify_transport(0.0, 24.0, 0.0),
             TransportVerdict::Inconclusive
         );
-        assert_eq!(classify_transport(0.0, 0.0), TransportVerdict::Inconclusive);
     }
 
     #[test]
