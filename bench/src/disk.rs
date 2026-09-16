@@ -395,9 +395,16 @@ fn interpret_curve(suite: &Suite, kind: DriveKind) {
                 "  -> scales cleanly: still {:.0}% of peak at {max_threads} threads, no collapse.",
                 tail_ratio * 100.0
             );
+            // Deliberately says nothing about read *ordering*. Queue depth and
+            // ordering are separate questions measured by separate sections,
+            // and on the real drive the answers differed: concurrency scaled
+            // cleanly (no scheduler needed) while sorting was still worth
+            // 2.71x. Claiming "no scheduler needed" here used to read as
+            // "ordering does not matter", contradicting the very next section.
             println!(
-                "     On this drive a simple bounded queue around {peak_threads} is enough;\n\
-                 \x20    the elevator-sorting scheduler is not earning its keep."
+                "     A plain bounded queue at {peak_threads} is enough here — no need to\n\
+                 \x20    throttle or reorder for the sake of the head. See the access\n\
+                 \x20    order section below for whether sorting still pays."
             );
         }
     }

@@ -192,14 +192,38 @@ pub enum DriveKind {
 }
 
 impl DriveKind {
-    /// Disk queue depth the I/O scheduler should use.
+    /// Disk queue depth to read small files with.
     ///
-    /// A spinning disk collapses under parallel random reads because every
-    /// concurrent reader drags the head somewhere else. Flash gains from depth.
-    /// The Phase 0 curve measures whether these defaults are right.
+    /// This used to return 2 for spinning disks, on the textbook reasoning that
+    /// a platter has one head and parallel random reads make it thrash.
+    /// **Measurement on the actual USB drive contradicted that**, and the
+    /// measurement wins:
+    ///
+    /// ```text
+    ///  1 thread  -> 10.1 MB/s
+    ///  2 threads -> 11.5
+    ///  4 threads -> 14.3
+    ///  8 threads -> 18.9
+    /// 16 threads -> 24.7 MB/s   (2.45x, still climbing)
+    /// ```
+    ///
+    /// Windows reports a seek penalty on this drive, so the textbook rule
+    /// should have applied — but throughput rose monotonically all the way to
+    /// 16. A USB bridge does its own queuing and reordering, and the drive has
+    /// a cache, so the head is not simply following the request order.
+    ///
+    /// This matters more than it looks: at one thread the drive delivers
+    /// 10 MB/s, well *under* the 22.7 MB/s link. Read small files serially and
+    /// the disk becomes the bottleneck, not the network.
+    ///
+    /// Re-run `basalt-bench disk` on any new drive; this is a starting point,
+    /// not a law.
     pub fn suggested_queue_depth(self) -> usize {
         match self {
-            DriveKind::Spinning | DriveKind::Unknown => 2,
+            // Measured optimum was 16 and had not yet plateaued. 12 keeps most
+            // of the gain while leaving headroom for other work on a machine
+            // with only 8 threads.
+            DriveKind::Spinning | DriveKind::Unknown => 12,
             DriveKind::Solid => 16,
         }
     }
@@ -380,14 +404,21 @@ mod tests {
     }
 
     #[test]
-    fn spinning_disks_get_a_low_queue_depth() {
-        // The core scheduler assumption: parallel random reads destroy a
-        // spinning disk, so depth stays low. Flash gets depth.
-        assert!(DriveKind::Spinning.suggested_queue_depth() <= 4);
-        assert!(
-            DriveKind::Unknown.suggested_queue_depth() <= 4,
-            "unknown must be conservative"
-        );
-        assert!(DriveKind::Solid.suggested_queue_depth() > 4);
+    fn queue_depth_is_high_enough_to_outrun_the_link() {
+        // The queue depth exists so the disk never becomes the bottleneck.
+        // Measured on the real USB drive: 1 thread gives 10.1 MB/s against a
+        // 22.7 MB/s link, so serial reads lose outright. Throughput rose
+        // monotonically to 24.7 MB/s at 16 threads.
+        //
+        // This replaces a test asserting the opposite (depth <= 4 for spinning
+        // disks). That encoded the textbook head-thrashing rule, which the
+        // measurement disproved on this hardware.
+        for kind in [DriveKind::Spinning, DriveKind::Unknown, DriveKind::Solid] {
+            assert!(
+                kind.suggested_queue_depth() >= 8,
+                "{kind:?} depth {} is too low to keep the disk ahead of the link",
+                kind.suggested_queue_depth()
+            );
+        }
     }
 }

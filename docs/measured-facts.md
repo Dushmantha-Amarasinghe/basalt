@@ -152,9 +152,89 @@ would recur on every device ever added.
   - caching — not built; a local hit is ~50x faster than the radio
   - delta sync — not built; edits send only changed blocks
 
+## Laptop B (the NAS)
+
+AMD Ryzen 5 PRO 3500U, 8 threads, **5.9 GB RAM**, Windows 11 Pro.
+
+The small memory matters: it caps how much can be spent on read-ahead buffers
+and caches on the host side. Budget conservatively.
+
+### Compression on B: comfortably fast enough
+
+zstd-1: **260 MB/s (prose), 350 MB/s (code), 288 MB/s (json)**. Roughly 12–15x
+the 22.7 MB/s link, so compression stays far ahead of the radio even on the
+weaker machine. Compression is confirmed viable.
+
+Level choice is now settled by measurement rather than preference — zstd-9 on B:
+
+| Level | Prose compress |
+|---|---|
+| 1 | 260 MB/s |
+| 3 | 244 MB/s |
+| 6 | 55 MB/s |
+| 9 | **19.6 MB/s — below the link** |
+
+At level 9 the compressor becomes slower than the network, so it would actively
+slow transfers down. **zstd-1 stays the default.**
+
+### The USB hard drive: the real bottleneck for small files
+
+Sequential read is fine: **~100 MB/s**, flat across block sizes from 64 KiB to
+8 MiB, about 4.4x the link. Streaming a film will never be disk-bound.
+
+Small files are a different story:
+
+| Threads | Throughput |
+|---|---|
+| 1 | **10.1 MB/s** |
+| 2 | 11.5 |
+| 4 | 14.3 |
+| 8 | 18.9 |
+| 16 | **24.7 MB/s** |
+
+**At one thread the drive delivers less than half the link speed.** The original
+plan assumed the disk was 4–8x faster than the network and therefore had slack;
+for small files that is simply false. The disk and the link are within ~10% of
+each other, and only with high concurrency.
+
+### Correction: the I/O scheduler was designed backwards
+
+The plan called for an HDD-aware scheduler that *caps* disk concurrency at 2–4,
+on the textbook reasoning that a platter has one head and parallel random reads
+cause thrashing. Windows does report a seek penalty on this drive, so that rule
+should have applied.
+
+It did not. Throughput rose monotonically all the way to 16 threads, 2.45x
+faster than serial, with no sign of collapse. A USB bridge does its own queuing
+and reordering and the drive has a cache, so the head does not simply follow
+request order.
+
+**`suggested_queue_depth` changed from 2 to 12 for spinning disks**, and the
+test asserting the old behaviour was replaced with one asserting the new. Read
+small files with high parallelism.
+
+### Sorting the manifest: confirmed, 2.71x
+
+| Order | Throughput |
+|---|---|
+| Sorted (on-disk order) | **11.5 MB/s** |
+| Shuffled | 4.2 MB/s |
+
+On the NVMe drive this measured only 1.13x and the harness reported that sorting
+"buys little". On the real USB drive it is **2.71x**. The batch path sorts its
+manifest before reading, and that decision is now justified by data rather than
+by argument.
+
+Note these two findings are independent and both hold: use a *high* queue depth
+**and** sort the requests.
+
+### Directory listing
+
+20,000 entries in **11 ms**, with or without metadata. Not a problem.
+
 ## Still unmeasured
 
-- Laptop B's Wi-Fi radio type and link rate (B may be the weaker end)
-- Laptop B's compression speed
-- Disk behaviour of the actual USB hard drive (`basalt-bench disk` on B) —
-  the concurrency curve there decides whether the host needs an I/O scheduler
+- **Laptop B's Wi-Fi radio type and link rate.** `basalt-bench env` returned
+  `"wifi": null` on B — the `netsh wlan show interfaces` parser failed there,
+  even though B is definitely on Wi-Fi (`Get-NetConnectionProfile` shows
+  `InterfaceAlias: WiFi`, `Name: FST-5G`). Parser bug, still open.
