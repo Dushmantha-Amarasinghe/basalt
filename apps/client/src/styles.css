@@ -1,0 +1,152 @@
+@import '@fontsource-variable/plus-jakarta-sans';
+@import '@fontsource-variable/geist-mono';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Chromium's blue focus ring has no place in this palette; every focusable
+   element supplies its own state instead. */
+*:focus,
+*:focus-visible {
+  outline: none;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: 'Plus Jakarta Sans Variable', system-ui, sans-serif;
+  background: #0b0b0c;
+  color: #f4f4f5;
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Digits that sit in columns must not jitter as they change. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* ---- Backdrop: a soft light from above, no colour cast ---- */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 75% at 50% -15%, #161618 0%, #0b0b0c 58%),
+    #0b0b0c;
+}
+
+/* A very fine grain stops the large flat areas from banding. */
+.backdrop::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ---- Surfaces: solid graphite, hairline borders ---- */
+.glass {
+  background: #151517;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.glass-strong {
+  background: #1c1c1f;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+/* Selected or active emphasis: a subtle light edge, never a glow. */
+.basalt-edge {
+  background: #1c1c1f;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.hairline {
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* Frameless window drag regions. */
+.drag {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Progress shimmer, neutral. */
+.shimmer-mask {
+  position: relative;
+  overflow: hidden;
+}
+.shimmer-mask::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 45%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  animation: shimmer 2.4s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+  background-clip: padding-box;
+}
+
+/* The file list must hold 60 fps while scrolling 100k rows, so rows are
+   isolated from each other's layout and paint work. */
+.row-contain {
+  contain: layout style paint;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

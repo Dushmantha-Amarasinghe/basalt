@@ -24,3 +24,7 @@ Thumbs.db
 *.mkv
 *.mp4
 *.avi
+
+# Tauri shell build output (kept out of the workspace target dir)
+/target-tauri/
+/target-probe/
