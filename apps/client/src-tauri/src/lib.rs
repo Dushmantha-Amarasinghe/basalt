@@ -25,6 +25,18 @@ use tauri::{Emitter, Manager, State};
 /// that matters more than it looks.
 type Answer<T> = Result<T, UiError>;
 
+/// Bytes that crossed the link, and how long that took.
+///
+/// A rate cannot be reconstructed from the bytes alone: whoever receives this
+/// has no reliable way to know how long the window was, and guessing from
+/// arrival times is what produced a display reading 35 MB/s over a 22 MB/s
+/// link.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+struct ByteWindow {
+    bytes: u64,
+    millis: f64,
+}
+
 struct AppState {
     client: Arc<Basalt>,
     proxy: tokio::sync::Mutex<Option<Arc<MediaProxy>>>,
@@ -268,25 +280,40 @@ async fn upload(
     Ok(result?)
 }
 
-/// Downloads a file to a temporary location and hands it to whatever the
-/// system opens that type with.
+/// Hands a file to a player that can actually decode it.
 ///
-/// The escape hatch for everything the window cannot decode — MKV above all,
-/// where Chromium parses the container but drops any audio that is not Opus or
-/// Vorbis. Until there is a real demuxer in the app, "open it in VLC" has to be
-/// one click rather than a manual download.
+/// **Streamed, not downloaded.** The player is given a URL from the media
+/// proxy and seeks through it with range requests, so a 3 GB episode starts
+/// playing at once instead of after two minutes of copying, and nothing is
+/// written to this machine's disk.
+///
+/// Falls back to downloading only when no streaming-capable player is
+/// installed, and says which of the two happened so the interface can explain
+/// the wait.
 #[tauri::command]
 async fn open_externally(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     remote: String,
     id: String,
-) -> Answer<String> {
+) -> Answer<OpenResult> {
+    if let Some(player) = basalt_client::players::find() {
+        let url = state.proxy().await?.url_for(&remote);
+        basalt_client::players::launch(&player, &url).map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("could not start {}: {e}", player.name),
+        })?;
+        return Ok(OpenResult {
+            player: player.name.to_string(),
+            streamed: true,
+        });
+    }
+
+    // Nothing installed that takes a URL. Copy it out and let Windows decide
+    // what opens it — slower, and honest about being slower.
     use tauri_plugin_opener::OpenerExt;
 
     let name = remote.rsplit('/').next().unwrap_or(&remote).to_string();
-    // A per-app subfolder, so these are easy to find and clear out, and a
-    // second viewing of the same file reuses what is already there.
     let dir = std::env::temp_dir().join("Basalt");
     std::fs::create_dir_all(&dir).map_err(|e| UiError::from(basalt_client::ClientError::Io(e)))?;
     let local = dir.join(&name);
@@ -313,7 +340,24 @@ async fn open_externally(
             kind: "error".into(),
             message: format!("could not open {shown}: {e}"),
         })?;
-    Ok(shown)
+    Ok(OpenResult {
+        player: "the default app".into(),
+        streamed: false,
+    })
+}
+
+/// Which player took the file, and whether it was streamed or copied first.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenResult {
+    player: String,
+    streamed: bool,
+}
+
+/// Whether a player that can stream a URL is installed.
+#[tauri::command]
+fn external_player() -> Option<String> {
+    basalt_client::players::find().map(|p| p.name.to_string())
 }
 
 #[tauri::command]
@@ -357,16 +401,30 @@ pub fn run() {
                 let client = Arc::clone(&client);
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let mut last = 0u64;
+                    let mut last_total = 0u64;
+                    let mut last_at = std::time::Instant::now();
                     let mut interval =
-                        tokio::time::interval(std::time::Duration::from_millis(250));
+                        tokio::time::interval(std::time::Duration::from_millis(125));
                     loop {
                         interval.tick().await;
                         let total = client.bytes_moved();
-                        let delta = total.saturating_sub(last);
-                        last = total;
+                        let delta = total.saturating_sub(last_total);
+                        let elapsed = last_at.elapsed();
+                        last_total = total;
+                        last_at = std::time::Instant::now();
+
+                        // The measured interval travels with the bytes. The
+                        // interface used to divide this by its own tick length
+                        // instead, and reported every speed about twice what it
+                        // really was.
                         if delta > 0 {
-                            let _ = handle.emit("basalt://bytes", delta);
+                            let _ = handle.emit(
+                                "basalt://bytes",
+                                ByteWindow {
+                                    bytes: delta,
+                                    millis: elapsed.as_secs_f64() * 1000.0,
+                                },
+                            );
                         }
                     }
                 });
@@ -412,6 +470,7 @@ pub fn run() {
             download,
             upload,
             open_externally,
+            external_player,
             cancel_transfer,
         ])
         .run(tauri::generate_context!())

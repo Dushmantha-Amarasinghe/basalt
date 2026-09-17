@@ -106,22 +106,31 @@ in order to support WebM — so it accepts WebM's codecs and silently drops
 everything else. An MKV with an ordinary AAC track therefore shows a picture
 and no audio, even though the very same AAC inside an MP4 plays perfectly.
 
-The app detects this and says so, and offers **Open in your player** — it
-fetches the file and hands it to whatever you normally watch films with.
+The app detects this and says so, and offers **Play in your player**. That
+**streams** — the player is handed a local URL and seeks through it with range
+requests, so a 3 GB episode starts at once and nothing is written to your disk.
 
-To stream it instead of downloading, get a URL and paste it into VLC or mpv:
+It looks for VLC, mpv, MPC-HC and PotPlayer, wherever they are installed. To
+see which one it found:
 
 ```bash
-basalt.exe url films/holiday.mkv
+basalt.exe player
 ```
 
-That serves the file over a local address with full seeking, and a real player
-gets every track including the audio. Verified on a 2.2 GB 4K HEVC file:
-seeking ten minutes in took about two seconds.
+You can also do it from the command line, or get a URL to paste in yourself:
+
+```bash
+basalt.exe play "Season 1/Episode 1.mkv"
+basalt.exe url "Season 1/Episode 1.mkv"
+```
 
 **A video will not open at all**
-AVI, MOV and WMV are containers the window cannot read. Same answer: **Open in
-your player**, or use `basalt url`.
+AVI, MOV and WMV are containers the window cannot read. Same answer: **Play in
+your player**.
+
+**"No player found"**
+Install VLC or mpv. Until then `basalt url` prints an address you can paste
+into anything.
 
 ---
 

@@ -98,6 +98,19 @@ describe('the messages', () => {
     expect(unplayableMessage('a.avi')).toContain('your usual player')
   })
 
+  // The escape hatch streams over a local URL. Saying "download" would send
+  // someone off to wait two minutes for something that starts instantly.
+  it('promises streaming rather than a download', () => {
+    for (const message of [
+      silenceMessage('a.mkv'),
+      silenceMessage('a.mp4'),
+      unplayableMessage('a.avi'),
+    ]) {
+      expect(message).toContain('streams')
+      expect(message).toContain('nothing is downloaded')
+    }
+  })
+
   it('names the format it cannot play', () => {
     expect(unplayableMessage('films/a.avi')).toContain('AVI')
   })

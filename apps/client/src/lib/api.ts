@@ -138,9 +138,15 @@ export const api = {
   upload: (local: string, remote: string, overwrite: boolean, id: string) =>
     call<number>('upload', { local, remote, overwrite, id }),
   cancelTransfer: (id: string) => call<boolean>('cancel_transfer', { id }),
-  /** Downloads to a temporary file and opens it with the system's player. */
+  /**
+   * Hands a file to a player that can decode it — streamed over a local URL
+   * where possible, copied out only when nothing streaming-capable is
+   * installed.
+   */
   openExternally: (remote: string, id: string) =>
-    call<string>('open_externally', { remote, id }),
+    call<OpenResult>('open_externally', { remote, id }),
+  /** The name of an installed player that can stream, if there is one. */
+  externalPlayer: () => call<string | null>('external_player'),
 }
 
 /** Subscribes to transfer progress. Returns an unsubscribe function. */
@@ -155,19 +161,36 @@ export async function onTransfer(
   return stop
 }
 
+/** Bytes that crossed the link, and the interval they were measured over. */
+export interface OpenResult {
+  player: string
+  /** False when the file had to be copied out first. */
+  streamed: boolean
+}
+
+export interface ByteWindow {
+  bytes: number
+  millis: number
+}
+
 /**
  * Subscribes to bytes crossing the link.
  *
  * Separate from transfer progress because most of what moves is not a
  * transfer: streaming a film runs through the media proxy and would otherwise
  * leave the throughput trace flat while the link is saturated.
+ *
+ * The interval comes with the bytes deliberately — deriving it from when the
+ * event arrived is what made every displayed speed roughly twice the truth.
  */
 export async function onBytes(
-  handler: (bytes: number) => void,
+  handler: (window: ByteWindow) => void,
 ): Promise<() => void> {
   if (!inTauri()) return () => {}
   const { listen } = await import('@tauri-apps/api/event')
-  const stop = await listen<number>('basalt://bytes', (e) => handler(e.payload))
+  const stop = await listen<ByteWindow>('basalt://bytes', (e) =>
+    handler(e.payload),
+  )
   return stop
 }
 
@@ -284,7 +307,9 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     case 'copy_entry':
       return undefined as T
     case 'open_externally':
-      return '' as T
+      return { player: 'VLC', streamed: true } as T
+    case 'external_player':
+      return 'VLC' as T
     case 'media_url':
       return '' as T
     case 'make_dir':

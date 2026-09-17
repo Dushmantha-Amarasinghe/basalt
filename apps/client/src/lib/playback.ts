@@ -107,20 +107,24 @@ export function silenceMessage(name: string): string {
       `No sound. This window reads the ${ext} container only well enough for ` +
       'WebM, so it plays Opus and Vorbis and drops everything else — AAC, ' +
       'AC3, Dolby Digital Plus (DD+ / E-AC3) and DTS. A 5.1 film almost ' +
-      'always carries one of those. Open it in your usual player instead.'
+      'always carries one of those. Play it in your usual player — it streams, \n' +
+      'nothing is downloaded.'
     )
   }
   return (
     'No sound. Either this file has no audio track, or its audio format — ' +
     'often AC3, Dolby Digital Plus or DTS — is one this window cannot ' +
-    'decode. Open it in your usual player instead.'
+    'decode. Play it in your usual player — it streams, nothing is downloaded.'
   )
 }
 
 /** Why the picture is missing too. */
 export function unplayableMessage(name: string): string {
   const ext = extensionOf(name).toUpperCase() || 'this file'
-  return `This window cannot play ${ext}. Open it in your usual player instead.`
+  return (
+    `This window cannot play ${ext}. Play it in your usual player — it streams, ` +
+    'nothing is downloaded.'
+  )
 }
 
 /** Audio and video formats the window handles, for help text. */

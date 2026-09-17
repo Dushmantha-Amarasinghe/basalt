@@ -245,7 +245,7 @@ export function PlayerOverlay({
                 className="absolute bottom-6 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-md border border-white/[0.16] bg-panel2/95 px-3.5 py-2 text-[12px] text-text backdrop-blur transition-colors hover:bg-white/[0.08]"
               >
                 <ExternalLink size={13} />
-                Open in your player
+                Play in your player
               </motion.button>
             )}
 
