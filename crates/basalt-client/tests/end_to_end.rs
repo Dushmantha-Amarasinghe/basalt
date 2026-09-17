@@ -637,6 +637,87 @@ async fn a_full_folder_needs_the_recursive_flag() {
 }
 
 #[tokio::test]
+async fn copying_happens_on_the_host_without_moving_bytes_over_the_link() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+
+    let before = client.bytes_moved();
+    client
+        .copy("films/short.mkv", "films/copy.mkv")
+        .await
+        .unwrap();
+    let after = client.bytes_moved();
+
+    assert_eq!(
+        std::fs::read(fixture.vault_path("films/copy.mkv")).unwrap(),
+        sample_bytes(50_000)
+    );
+    assert!(
+        fixture.vault_path("films/short.mkv").exists(),
+        "the original stays put"
+    );
+    assert!(
+        after - before < 1000,
+        "a 50 KB copy moved {} bytes over the link; it should move only the request",
+        after - before
+    );
+}
+
+#[tokio::test]
+async fn copying_a_folder_brings_everything_under_it() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+
+    client.copy("docs", "docs-copy").await.unwrap();
+
+    let copied = client.list("docs-copy").await.unwrap();
+    assert_eq!(copied.len(), 20);
+    assert_eq!(
+        std::fs::read(fixture.vault_path("docs-copy/doc-00.txt")).unwrap(),
+        std::fs::read(fixture.vault_path("docs/doc-00.txt")).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn copying_is_refused_where_it_should_be() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+
+    // Onto something that exists.
+    assert_eq!(
+        client.copy("notes.txt", "docs").await.unwrap_err().kind(),
+        "exists"
+    );
+    // Into itself, which would never finish.
+    assert!(client.copy("docs", "docs/inner").await.is_err());
+    // Out of the vault.
+    assert!(client.copy("notes.txt", "../escaped.txt").await.is_err());
+    assert!(!fixture.dir.join("escaped.txt").exists());
+    // From outside it.
+    assert!(client.copy("../host.json", "stolen.json").await.is_err());
+    assert!(!fixture.vault_path("stolen.json").exists());
+}
+
+// Moving is a rename, which is what makes drag-and-drop and cut-and-paste
+// instant rather than a transfer in each direction.
+#[tokio::test]
+async fn moving_a_file_into_a_folder_is_instant_and_keeps_its_contents() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+
+    let before = client.bytes_moved();
+    client.rename("notes.txt", "docs/notes.txt").await.unwrap();
+    let after = client.bytes_moved();
+
+    assert!(!fixture.vault_path("notes.txt").exists());
+    assert_eq!(
+        std::fs::read(fixture.vault_path("docs/notes.txt")).unwrap(),
+        b"hello from the vault"
+    );
+    assert!(after - before < 1000, "a move must not transfer the file");
+}
+
+#[tokio::test]
 async fn a_read_only_device_can_browse_but_not_change_anything() {
     let fixture = start_host().await;
     let client = fixture.paired_client().await;
@@ -666,6 +747,7 @@ async fn a_read_only_device_can_browse_but_not_change_anything() {
         ("mkdir", client.mkdir("blocked").await),
         ("rename", client.rename("notes.txt", "moved.txt").await),
         ("remove", client.remove("notes.txt", false).await),
+        ("copy", client.copy("notes.txt", "copied.txt").await),
         (
             "upload",
             client

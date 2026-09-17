@@ -66,9 +66,23 @@ pub enum Op {
     Remove = 16,
     /// Free and total bytes on the vault's volume.
     Space = 17,
+    /// Duplicate a file or folder **on the host**.
+    ///
+    /// Pasting could have been done by downloading and uploading again, which
+    /// would cost two trips across a 22.7 MB/s link for a file that never
+    /// needed to leave the drive. Copying host-side turns a two-minute
+    /// operation on a 2 GB film into a disk-speed one.
+    Copy = 18,
 }
 
 impl Op {
+    /// The highest opcode this build knows about.
+    ///
+    /// Adding a variant means bumping this, and the tests below fail loudly if
+    /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
+    /// exactly the signal that the table and the enum have drifted apart.
+    pub const LAST: u8 = Op::Copy as u8;
+
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
             1 => Op::Ping,
@@ -88,6 +102,7 @@ impl Op {
             15 => Op::Rename,
             16 => Op::Remove,
             17 => Op::Space,
+            18 => Op::Copy,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -170,7 +185,7 @@ mod tests {
     fn every_opcode_round_trips() {
         // Walking the numeric range rather than a hand-written list, so a new
         // variant that someone forgets to add to `from_u8` is caught here.
-        for raw in 1..=(Op::Space as u8) {
+        for raw in 1..=Op::LAST {
             let op = Op::from_u8(raw).unwrap_or_else(|_| panic!("opcode {raw} is unmapped"));
             assert_eq!(op as u8, raw);
         }
@@ -179,8 +194,10 @@ mod tests {
     #[test]
     fn unknown_opcodes_are_rejected() {
         assert!(Op::from_u8(0).is_err());
-        assert!(Op::from_u8(Op::Space as u8 + 1).is_err());
         assert!(Op::from_u8(255).is_err());
+        // The guard against adding a variant and forgetting `LAST`: if this
+        // starts parsing, the enum has grown past what the tests cover.
+        assert!(Op::from_u8(Op::LAST + 1).is_err());
     }
 
     #[test]
@@ -201,6 +218,7 @@ mod tests {
             Op::Rename,
             Op::Remove,
             Op::Space,
+            Op::Copy,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

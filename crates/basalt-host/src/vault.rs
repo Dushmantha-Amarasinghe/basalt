@@ -246,6 +246,38 @@ impl Vault {
         std::fs::rename(&source, &target).map_err(|e| from_io(from, e))
     }
 
+    /// Duplicates a file or folder inside the vault.
+    ///
+    /// Host-side, because the alternative is downloading and uploading again:
+    /// two crossings of a 22.7 MB/s link for bytes that never needed to leave
+    /// the drive. A 2 GB film goes from about three minutes to disk speed.
+    pub fn copy(&self, from: &str, to: &str) -> Result<()> {
+        self.require_writable()?;
+        let source = self.resolve(from)?;
+        let target = self.resolve_new(to)?;
+
+        if target.exists() {
+            return Err(HostError::Exists(to.to_string()));
+        }
+        // Copying a folder into itself would recurse until the disk filled.
+        // `resolve` has already canonicalised both, so this comparison is
+        // against real paths rather than the strings the client sent.
+        if target.starts_with(&source) {
+            return Err(HostError::Denied(format!(
+                "{to} is inside {from}, so copying would never finish"
+            )));
+        }
+
+        let meta = std::fs::metadata(&source).map_err(|e| from_io(from, e))?;
+        if meta.is_dir() {
+            copy_tree(&source, &target).map_err(|e| from_io(from, e))
+        } else {
+            std::fs::copy(&source, &target)
+                .map(|_| ())
+                .map_err(|e| from_io(from, e))
+        }
+    }
+
     pub fn remove(&self, rel: &str, recursive: bool) -> Result<()> {
         self.require_writable()?;
         let path = self.resolve(rel)?;
@@ -285,6 +317,34 @@ impl Vault {
     pub fn space(&self) -> (u64, u64) {
         crate::space::for_path(&self.root)
     }
+}
+
+/// Copies a directory and everything under it.
+///
+/// Iterative rather than recursive: a deeply nested tree would otherwise be
+/// able to exhaust the stack, and a drive full of someone else's folders is
+/// not something to take on trust.
+fn copy_tree(source: &Path, target: &Path) -> std::io::Result<()> {
+    let mut pending = vec![(source.to_path_buf(), target.to_path_buf())];
+
+    while let Some((from, to)) = pending.pop() {
+        std::fs::create_dir_all(&to)?;
+        for entry in std::fs::read_dir(&from)? {
+            // One unreadable entry does not abandon the copy, for the same
+            // reason a listing tolerates one: a single locked file in a large
+            // folder should not mean nothing gets copied.
+            let Ok(entry) = entry else { continue };
+            let Ok(meta) = entry.metadata() else { continue };
+            let destination = to.join(entry.file_name());
+
+            if meta.is_dir() {
+                pending.push((entry.path(), destination));
+            } else {
+                std::fs::copy(entry.path(), destination)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Modification time as Unix seconds, zero when the filesystem will not say.
@@ -583,6 +643,99 @@ mod tests {
         assert!(t.dir.exists());
     }
 
+    // --- copying -----------------------------------------------------------
+
+    #[test]
+    fn a_file_copies_and_leaves_the_original() {
+        let t = temp_vault();
+        t.vault.copy("notes.txt", "notes-copy.txt").unwrap();
+        assert_eq!(
+            std::fs::read(t.dir.join("notes-copy.txt")).unwrap(),
+            b"hello world"
+        );
+        assert!(t.dir.join("notes.txt").exists(), "the original stays put");
+    }
+
+    #[test]
+    fn a_folder_copies_with_everything_under_it() {
+        let t = temp_vault();
+        std::fs::create_dir_all(t.dir.join("films").join("nested").join("deep")).unwrap();
+        std::fs::write(
+            t.dir
+                .join("films")
+                .join("nested")
+                .join("deep")
+                .join("x.txt"),
+            b"buried",
+        )
+        .unwrap();
+
+        t.vault.copy("films", "films-copy").unwrap();
+
+        assert_eq!(
+            std::fs::read(t.dir.join("films-copy").join("a.mkv"))
+                .unwrap()
+                .len(),
+            5000
+        );
+        assert_eq!(
+            std::fs::read(
+                t.dir
+                    .join("films-copy")
+                    .join("nested")
+                    .join("deep")
+                    .join("x.txt")
+            )
+            .unwrap(),
+            b"buried"
+        );
+    }
+
+    #[test]
+    fn copying_onto_something_that_exists_is_refused() {
+        let t = temp_vault();
+        assert_eq!(
+            t.vault.copy("notes.txt", "films").unwrap_err().code(),
+            basalt_proto::ErrorCode::Exists
+        );
+    }
+
+    // Without the containment check this fills the drive.
+    #[test]
+    fn a_folder_cannot_be_copied_inside_itself() {
+        let t = temp_vault();
+        assert!(t.vault.copy("films", "films/inner").is_err());
+        assert!(!t.dir.join("films").join("inner").exists());
+    }
+
+    #[test]
+    fn copying_cannot_read_or_write_outside_the_vault() {
+        let t = temp_vault();
+        assert!(t.vault.copy("../outside.txt", "stolen.txt").is_err());
+        assert!(t.vault.copy("notes.txt", "../escaped.txt").is_err());
+        assert!(!t.dir.parent().unwrap().join("escaped.txt").exists());
+    }
+
+    #[test]
+    fn copying_something_missing_is_not_found() {
+        let t = temp_vault();
+        assert_eq!(
+            t.vault.copy("nope.txt", "copy.txt").unwrap_err().code(),
+            basalt_proto::ErrorCode::NotFound
+        );
+    }
+
+    #[test]
+    fn an_empty_folder_copies_as_an_empty_folder() {
+        let t = temp_vault();
+        t.vault.copy("empty", "empty-copy").unwrap();
+        assert!(t.dir.join("empty-copy").is_dir());
+        assert_eq!(
+            std::fs::read_dir(t.dir.join("empty-copy")).unwrap().count(),
+            0
+        );
+    }
+
     #[test]
     fn a_read_only_vault_refuses_every_mutation() {
         let t = temp_vault();
@@ -591,6 +744,7 @@ mod tests {
         assert!(ro.mkdir("x").is_err());
         assert!(ro.rename("notes.txt", "x.txt").is_err());
         assert!(ro.remove("notes.txt", false).is_err());
+        assert!(ro.copy("notes.txt", "x.txt").is_err());
         // Reading still works — that is the point of read-only.
         assert!(ro.list("").is_ok());
         assert!(ro.read_range("notes.txt", 0, 5).is_ok());

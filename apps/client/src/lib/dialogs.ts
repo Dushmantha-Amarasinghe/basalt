@@ -45,6 +45,33 @@ export async function confirmAction(
   return confirm(message, { title, kind: 'warning' })
 }
 
+/**
+ * Files dragged into the window from Explorer.
+ *
+ * This cannot be done with HTML drag-and-drop: a webview is given a `File`
+ * object with no path, and the upload needs a real path on disk to read from.
+ * Tauri intercepts the drop at the window level and hands over the actual
+ * paths, which is the only way this works at all.
+ *
+ * Returns an unsubscribe function; a no-op outside the desktop shell.
+ */
+export async function onExternalFileDrop(handlers: {
+  onEnter: () => void
+  onLeave: () => void
+  onDrop: (paths: string[]) => void
+}): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { getCurrentWebview } = await import('@tauri-apps/api/webview')
+  const webview = getCurrentWebview()
+
+  return webview.onDragDropEvent((event) => {
+    const payload = event.payload as { type: string; paths?: string[] }
+    if (payload.type === 'over' || payload.type === 'enter') handlers.onEnter()
+    else if (payload.type === 'leave') handlers.onLeave()
+    else if (payload.type === 'drop') handlers.onDrop(payload.paths ?? [])
+  })
+}
+
 /** The last segment of a local path, whichever separator it uses. */
 export function baseName(path: string): string {
   const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))

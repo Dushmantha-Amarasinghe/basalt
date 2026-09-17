@@ -66,6 +66,14 @@ pub struct Basalt {
     pool: tokio::sync::RwLock<Option<Pool>>,
     info: std::sync::Mutex<Option<SessionInfo>>,
     device_name: String,
+    /// Every payload byte that has crossed the link since the app started.
+    ///
+    /// One counter in one place rather than reporting from each call site,
+    /// because the interface's throughput trace has to reflect *everything* on
+    /// the link — a film being streamed through the media proxy moves far more
+    /// data than any download, and a trace that only counted downloads would be
+    /// wrong in exactly the moment someone is watching it.
+    bytes_moved: std::sync::atomic::AtomicU64,
 }
 
 impl Basalt {
@@ -81,11 +89,21 @@ impl Basalt {
             pool: tokio::sync::RwLock::new(None),
             info: std::sync::Mutex::new(None),
             device_name,
+            bytes_moved: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
     pub fn device_name(&self) -> &str {
         &self.device_name
+    }
+
+    /// Total payload bytes moved since startup. Monotonic; callers take deltas.
+    pub fn bytes_moved(&self) -> u64 {
+        self.bytes_moved.load(Ordering::Relaxed)
+    }
+
+    fn count(&self, bytes: u64) {
+        self.bytes_moved.fetch_add(bytes, Ordering::Relaxed);
     }
 
     pub fn known_hosts(&self) -> Vec<KnownHost> {
@@ -254,7 +272,9 @@ impl Basalt {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
         let result = lease.read_range(path, offset, length).await;
-        lease.check(result)
+        let data = lease.check(result)?;
+        self.count(data.len() as u64);
+        Ok(data)
     }
 
     pub async fn mkdir(&self, path: &str) -> Result<()> {
@@ -268,6 +288,14 @@ impl Basalt {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
         let result = lease.rename(from, to).await;
+        lease.check(result)
+    }
+
+    /// Duplicates a path on the host. Nothing crosses the link but the request.
+    pub async fn copy(&self, from: &str, to: &str) -> Result<()> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.copy(from, to).await;
         lease.check(result)
     }
 
@@ -287,7 +315,9 @@ impl Basalt {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
         let result = lease.read_batch(paths).await;
-        lease.check(result)
+        let entries = lease.check(result)?;
+        self.count(entries.iter().map(|e| e.data.len() as u64).sum());
+        Ok(entries)
     }
 
     // -----------------------------------------------------------------------
@@ -336,6 +366,7 @@ impl Basalt {
             let want = CHUNK_BYTES.min(total - done);
             let result = lease.read_range_into(remote, done, want, &mut file).await;
             let got = lease.check(result)?;
+            self.count(got);
             if got == 0 {
                 return Err(ClientError::Protocol(format!(
                     "the host stopped sending {remote} at {done} of {total} bytes"
@@ -421,6 +452,7 @@ impl Basalt {
 
             let result = lease.write_chunk(&begin.upload, sent, &buf[..n]).await;
             lease.check(result)?;
+            self.count(n as u64);
             sent += n as u64;
 
             if let Some(report) = &progress {

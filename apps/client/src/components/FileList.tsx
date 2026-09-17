@@ -1,4 +1,4 @@
-import { memo, useCallback } from 'react'
+import { memo, useCallback, useState } from 'react'
 import { VList } from 'virtua'
 import {
   Download,
@@ -10,7 +10,6 @@ import {
   Image as ImageIcon,
   MoreHorizontal,
   Music,
-  Star,
   Video,
 } from 'lucide-react'
 import { cn, formatBytes, formatDate } from '@/lib/utils'
@@ -23,6 +22,28 @@ export interface Entry {
   size: number
   modified: number
 }
+
+/**
+ * Everything a row can do, as one object.
+ *
+ * Passed down whole rather than as separate props so the memoised rows keep
+ * comparing equal: one stable object beats six callbacks that each have to be
+ * individually memoised at the call site, and forgetting one of those would
+ * silently re-render every visible row on every keystroke.
+ */
+export interface RowHandlers {
+  onSelect: (id: string, modifiers: { additive: boolean; range: boolean }) => void
+  onOpen: (entry: Entry) => void
+  onContextMenu: (entry: Entry, event: { clientX: number; clientY: number }) => void
+  onDownload: (entry: Entry) => void
+  /** Drag started on a row. Returns the paths being dragged. */
+  onDragStart: (entry: Entry) => string[]
+  /** Something was dropped onto a folder row. */
+  onDropInto: (entry: Entry, paths: string[]) => void
+}
+
+/** The drag payload type. Internal, so Explorer drops are not confused for it. */
+export const DRAG_MIME = 'application/x-basalt-paths'
 
 const ROW_HEIGHT = 34
 
@@ -39,6 +60,19 @@ export function iconFor(entry: Entry): typeof FileIcon {
   return FileIcon
 }
 
+/** Reads dragged vault paths out of a drop event, if they are ours. */
+export function draggedPaths(transfer: DataTransfer | null): string[] {
+  if (!transfer) return []
+  try {
+    const raw = transfer.getData(DRAG_MIME)
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((p) => typeof p === 'string') : []
+  } catch {
+    return []
+  }
+}
+
 /**
  * One row.
  *
@@ -50,22 +84,62 @@ export function iconFor(entry: Entry): typeof FileIcon {
 const Row = memo(function Row({
   entry,
   selected,
-  onSelect,
-  onOpen,
+  cut,
+  dropTarget,
+  handlers,
 }: {
   entry: Entry
   selected: boolean
-  onSelect: (id: string, additive: boolean) => void
-  onOpen: (entry: Entry) => void
+  /** Dimmed because it is on the clipboard waiting to be moved. */
+  cut: boolean
+  dropTarget: boolean
+  handlers: RowHandlers
 }): React.JSX.Element {
   const Icon = iconFor(entry)
+  const isDir = entry.kind === 'dir'
 
   return (
     <div
       role="row"
       aria-selected={selected}
-      onClick={(e) => onSelect(entry.id, e.ctrlKey || e.metaKey)}
-      onDoubleClick={() => onOpen(entry)}
+      draggable
+      onClick={(e) =>
+        handlers.onSelect(entry.id, {
+          additive: e.ctrlKey || e.metaKey,
+          range: e.shiftKey,
+        })
+      }
+      onDoubleClick={() => handlers.onOpen(entry)}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        handlers.onContextMenu(entry, e)
+      }}
+      onDragStart={(e) => {
+        const paths = handlers.onDragStart(entry)
+        e.dataTransfer.setData(DRAG_MIME, JSON.stringify(paths))
+        e.dataTransfer.effectAllowed = 'move'
+      }}
+      // Only folders accept a drop, and only from inside the app.
+      onDragOver={
+        isDir
+          ? (e) => {
+              if (!e.dataTransfer.types.includes(DRAG_MIME)) return
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'move'
+            }
+          : undefined
+      }
+      onDrop={
+        isDir
+          ? (e) => {
+              const paths = draggedPaths(e.dataTransfer)
+              if (paths.length === 0) return
+              e.preventDefault()
+              e.stopPropagation()
+              handlers.onDropInto(entry, paths)
+            }
+          : undefined
+      }
       style={{ height: ROW_HEIGHT }}
       className={cn(
         'row-contain group flex cursor-default items-center gap-3 rounded-md px-3 text-sm',
@@ -73,18 +147,20 @@ const Row = memo(function Row({
         selected
           ? 'bg-basalt/[0.09] text-text ring-1 ring-inset ring-basalt/20'
           : 'text-textDim hover:bg-white/[0.035] hover:text-text',
+        dropTarget && 'bg-basalt/[0.14] ring-1 ring-inset ring-basalt/45',
+        cut && 'opacity-45',
       )}
     >
       <Icon
         size={16}
         className={cn(
-          'shrink-0',
-          entry.kind === 'dir' ? 'text-basaltDeep' : 'text-textFaint',
+          'pointer-events-none shrink-0',
+          isDir ? 'text-basaltDeep' : 'text-textFaint',
           selected && 'text-basalt',
         )}
       />
 
-      <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+      <span className="pointer-events-none min-w-0 flex-1 truncate">{entry.name}</span>
 
       {/*
         Quick actions appear on hover, in the space the metadata occupies. CSS
@@ -93,16 +169,25 @@ const Row = memo(function Row({
         under the cursor at whatever rate the mouse moves.
       */}
       <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
-        <QuickAction icon={Download} label="Download" />
-        <QuickAction icon={Star} label="Star" />
-        <QuickAction icon={MoreHorizontal} label="More" />
+        {!isDir && (
+          <QuickAction
+            icon={Download}
+            label="Download"
+            onClick={() => handlers.onDownload(entry)}
+          />
+        )}
+        <QuickAction
+          icon={MoreHorizontal}
+          label="More"
+          onClick={(e) => handlers.onContextMenu(entry, e)}
+        />
       </span>
 
-      <span className="tnum w-20 shrink-0 text-right font-mono text-[11px] text-textFaint group-hover:opacity-0">
-        {entry.kind === 'dir' ? '—' : formatBytes(entry.size)}
+      <span className="tnum pointer-events-none w-20 shrink-0 text-right font-mono text-[11px] text-textFaint group-hover:opacity-0">
+        {isDir ? '—' : formatBytes(entry.size)}
       </span>
 
-      <span className="tnum w-28 shrink-0 text-right font-mono text-[11px] text-textFaint">
+      <span className="tnum pointer-events-none w-28 shrink-0 text-right font-mono text-[11px] text-textFaint">
         {formatDate(entry.modified)}
       </span>
     </div>
@@ -112,15 +197,20 @@ const Row = memo(function Row({
 function QuickAction({
   icon: Icon,
   label,
+  onClick,
 }: {
   icon: typeof FileIcon
   label: string
+  onClick: (event: { clientX: number; clientY: number }) => void
 }): React.JSX.Element {
   return (
     <button
       aria-label={label}
       title={label}
-      onClick={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation()
+        onClick(e)
+      }}
       className="flex h-6 w-6 items-center justify-center rounded text-textFaint transition-colors hover:bg-white/[0.07] hover:text-text"
     >
       <Icon size={13} />
@@ -131,14 +221,20 @@ function QuickAction({
 export function FileList({
   entries,
   selected,
-  onSelect,
-  onOpen,
+  cutPaths,
+  handlers,
+  onBackgroundContextMenu,
 }: {
   entries: Entry[]
   selected: Set<string>
-  onSelect: (id: string, additive: boolean) => void
-  onOpen: (entry: Entry) => void
+  /** Paths on the clipboard awaiting a move, drawn dimmed. */
+  cutPaths?: Set<string>
+  handlers: RowHandlers
+  /** Right-click on empty space, for New folder / Paste. */
+  onBackgroundContextMenu?: (event: { clientX: number; clientY: number }) => void
 }): React.JSX.Element {
+  const [dropTarget, setDropTarget] = useState<string | null>(null)
+
   // Index-based, so Virtua can create elements lazily. Passing
   // `entries.map(...)` built 100,000 React elements on **every** render even
   // though only ~37 were ever mounted — the single largest cost in the view.
@@ -147,21 +243,44 @@ export function FileList({
       const entry = entries[index]
       if (!entry) return <div style={{ height: ROW_HEIGHT }} />
       return (
-        <Row
-          entry={entry}
-          selected={selected.has(entry.id)}
-          onSelect={onSelect}
-          onOpen={onOpen}
-        />
+        <div
+          onDragEnter={
+            entry.kind === 'dir' ? () => setDropTarget(entry.id) : undefined
+          }
+          onDragLeave={
+            entry.kind === 'dir'
+              ? () => setDropTarget((id) => (id === entry.id ? null : id))
+              : undefined
+          }
+          onDrop={() => setDropTarget(null)}
+        >
+          <Row
+            entry={entry}
+            selected={selected.has(entry.id)}
+            cut={cutPaths?.has(entry.id) ?? false}
+            dropTarget={dropTarget === entry.id}
+            handlers={handlers}
+          />
+        </div>
       )
     },
-    [entries, selected, onSelect, onOpen],
+    [entries, selected, cutPaths, dropTarget, handlers],
   )
 
   if (entries.length === 0) return <EmptyState />
 
   return (
-    <div className="h-full px-2 pb-2" role="grid">
+    <div
+      className="h-full px-2 pb-2"
+      role="grid"
+      onContextMenu={(e) => {
+        // Only when the click missed every row; a row handles its own and
+        // stops this from firing by preventing the default first.
+        if (e.defaultPrevented) return
+        e.preventDefault()
+        onBackgroundContextMenu?.(e)
+      }}
+    >
       <ColumnHeader />
       {/*
         Virtua renders only the visible window. `count` plus a render function

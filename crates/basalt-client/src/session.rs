@@ -410,6 +410,19 @@ impl Session {
         .map_err(Into::into)
     }
 
+    pub async fn copy(&mut self, from: &str, to: &str) -> Result<()> {
+        call_unit(
+            &mut self.stream,
+            Op::Copy,
+            &CopyRequest {
+                from: from.to_string(),
+                to: to.to_string(),
+            },
+        )
+        .await
+        .map_err(Into::into)
+    }
+
     pub async fn remove(&mut self, path: &str, recursive: bool) -> Result<()> {
         call_unit(
             &mut self.stream,

@@ -1,8 +1,8 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { VList } from 'virtua'
 import { Folder } from 'lucide-react'
-import type { Entry } from './FileList'
-import { iconFor } from './FileList'
+import type { Entry, RowHandlers } from './FileList'
+import { DRAG_MIME, draggedPaths, iconFor } from './FileList'
 import { cn, formatBytes } from '@/lib/utils'
 
 /**
@@ -54,25 +54,61 @@ function rowCountFor(total: number, perRow: number): number {
 const Tile = memo(function Tile({
   entry,
   selected,
-  onSelect,
-  onOpen,
+  cut,
+  handlers,
 }: {
   entry: Entry
   selected: boolean
-  onSelect: (id: string, additive: boolean) => void
-  onOpen: (entry: Entry) => void
+  cut: boolean
+  handlers: RowHandlers
 }): React.JSX.Element {
   const Icon = iconFor(entry)
+  const isDir = entry.kind === 'dir'
   return (
     <button
-      onClick={(e) => onSelect(entry.id, e.ctrlKey || e.metaKey)}
-      onDoubleClick={() => onOpen(entry)}
+      draggable
+      onClick={(e) =>
+        handlers.onSelect(entry.id, {
+          additive: e.ctrlKey || e.metaKey,
+          range: e.shiftKey,
+        })
+      }
+      onDoubleClick={() => handlers.onOpen(entry)}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        handlers.onContextMenu(entry, e)
+      }}
+      onDragStart={(e) => {
+        e.dataTransfer.setData(DRAG_MIME, JSON.stringify(handlers.onDragStart(entry)))
+        e.dataTransfer.effectAllowed = 'move'
+      }}
+      onDragOver={
+        isDir
+          ? (e) => {
+              if (!e.dataTransfer.types.includes(DRAG_MIME)) return
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'move'
+            }
+          : undefined
+      }
+      onDrop={
+        isDir
+          ? (e) => {
+              const paths = draggedPaths(e.dataTransfer)
+              if (paths.length === 0) return
+              e.preventDefault()
+              e.stopPropagation()
+              handlers.onDropInto(entry, paths)
+            }
+          : undefined
+      }
       style={{ width: TILE_WIDTH, height: TILE_HEIGHT }}
       className={cn(
         'row-contain flex flex-col items-center justify-center gap-2 rounded-md px-2 text-center transition-colors',
         selected
           ? 'bg-basalt/[0.09] ring-1 ring-inset ring-basalt/20'
           : 'hover:bg-white/[0.035]',
+        cut && 'opacity-45',
       )}
     >
       <Icon
@@ -101,13 +137,15 @@ const Tile = memo(function Tile({
 export function TileView({
   entries,
   selected,
-  onSelect,
-  onOpen,
+  cutPaths,
+  handlers,
+  onBackgroundContextMenu,
 }: {
   entries: Entry[]
   selected: Set<string>
-  onSelect: (id: string, additive: boolean) => void
-  onOpen: (entry: Entry) => void
+  cutPaths?: Set<string>
+  handlers: RowHandlers
+  onBackgroundContextMenu?: (event: { clientX: number; clientY: number }) => void
 }): React.JSX.Element {
   const [ref, width] = useContainerWidth()
   const perRow = Math.max(1, Math.floor((width - 16) / TILE_WIDTH))
@@ -124,18 +162,26 @@ export function TileView({
               key={entry.id}
               entry={entry}
               selected={selected.has(entry.id)}
-              onSelect={onSelect}
-              onOpen={onOpen}
+              cut={cutPaths?.has(entry.id) ?? false}
+              handlers={handlers}
             />
           ))}
         </div>
       )
     },
-    [entries, perRow, selected, onSelect, onOpen],
+    [entries, perRow, selected, cutPaths, handlers],
   )
 
   return (
-    <div ref={ref} className="h-full pb-2 pt-2">
+    <div
+      ref={ref}
+      className="h-full pb-2 pt-2"
+      onContextMenu={(e) => {
+        if (e.defaultPrevented) return
+        e.preventDefault()
+        onBackgroundContextMenu?.(e)
+      }}
+    >
       {width > 0 && (
         <VList style={{ height: '100%' }} count={rows} itemSize={TILE_HEIGHT + 8} overscan={3}>
           {renderRow}
@@ -152,25 +198,61 @@ export function TileView({
 const ListCell = memo(function ListCell({
   entry,
   selected,
-  onSelect,
-  onOpen,
+  cut,
+  handlers,
 }: {
   entry: Entry
   selected: boolean
-  onSelect: (id: string, additive: boolean) => void
-  onOpen: (entry: Entry) => void
+  cut: boolean
+  handlers: RowHandlers
 }): React.JSX.Element {
   const Icon = iconFor(entry)
+  const isDir = entry.kind === 'dir'
   return (
     <button
-      onClick={(e) => onSelect(entry.id, e.ctrlKey || e.metaKey)}
-      onDoubleClick={() => onOpen(entry)}
+      draggable
+      onClick={(e) =>
+        handlers.onSelect(entry.id, {
+          additive: e.ctrlKey || e.metaKey,
+          range: e.shiftKey,
+        })
+      }
+      onDoubleClick={() => handlers.onOpen(entry)}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        handlers.onContextMenu(entry, e)
+      }}
+      onDragStart={(e) => {
+        e.dataTransfer.setData(DRAG_MIME, JSON.stringify(handlers.onDragStart(entry)))
+        e.dataTransfer.effectAllowed = 'move'
+      }}
+      onDragOver={
+        isDir
+          ? (e) => {
+              if (!e.dataTransfer.types.includes(DRAG_MIME)) return
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'move'
+            }
+          : undefined
+      }
+      onDrop={
+        isDir
+          ? (e) => {
+              const paths = draggedPaths(e.dataTransfer)
+              if (paths.length === 0) return
+              e.preventDefault()
+              e.stopPropagation()
+              handlers.onDropInto(entry, paths)
+            }
+          : undefined
+      }
       style={{ width: LIST_COLUMN_WIDTH, height: LIST_ROW_HEIGHT }}
       className={cn(
         'row-contain flex items-center gap-2 rounded px-2 text-left text-[12px] transition-colors',
         selected
           ? 'bg-basalt/[0.09] text-text ring-1 ring-inset ring-basalt/20'
           : 'text-textDim hover:bg-white/[0.035] hover:text-text',
+        cut && 'opacity-45',
       )}
     >
       <Icon
@@ -189,13 +271,15 @@ const ListCell = memo(function ListCell({
 export function ListView({
   entries,
   selected,
-  onSelect,
-  onOpen,
+  cutPaths,
+  handlers,
+  onBackgroundContextMenu,
 }: {
   entries: Entry[]
   selected: Set<string>
-  onSelect: (id: string, additive: boolean) => void
-  onOpen: (entry: Entry) => void
+  cutPaths?: Set<string>
+  handlers: RowHandlers
+  onBackgroundContextMenu?: (event: { clientX: number; clientY: number }) => void
 }): React.JSX.Element {
   const [ref, width] = useContainerWidth()
   const perRow = Math.max(1, Math.floor((width - 16) / LIST_COLUMN_WIDTH))
@@ -212,18 +296,26 @@ export function ListView({
               key={entry.id}
               entry={entry}
               selected={selected.has(entry.id)}
-              onSelect={onSelect}
-              onOpen={onOpen}
+              cut={cutPaths?.has(entry.id) ?? false}
+              handlers={handlers}
             />
           ))}
         </div>
       )
     },
-    [entries, perRow, selected, onSelect, onOpen],
+    [entries, perRow, selected, cutPaths, handlers],
   )
 
   return (
-    <div ref={ref} className="h-full pb-2 pt-2">
+    <div
+      ref={ref}
+      className="h-full pb-2 pt-2"
+      onContextMenu={(e) => {
+        if (e.defaultPrevented) return
+        e.preventDefault()
+        onBackgroundContextMenu?.(e)
+      }}
+    >
       {width > 0 && (
         <VList
           style={{ height: '100%' }}
