@@ -143,21 +143,30 @@ paired with {} ({})",
         }
 
         Command::Find => {
-            let found = client.discover().await?;
+            // The same call the app makes, so this command exercises the
+            // ordering and the already-paired marking rather than a parallel
+            // path that could drift away from them.
+            let found = client.discover_hosts().await?;
             if found.is_empty() {
                 println!("nothing answered. Is the host running on this network?");
             }
             for host in &found {
                 println!(
-                    "{}  {}  ({})  {}",
+                    "{}  {}  ({})  {}{}{}",
                     host.address,
-                    host.beacon.host_name,
-                    host.beacon.vault,
-                    if host.beacon.requires_pin {
+                    host.host_name,
+                    host.vault,
+                    if host.requires_pin {
                         "PIN required"
                     } else {
                         "no PIN"
-                    }
+                    },
+                    if host.paired { "  · paired" } else { "" },
+                    if host.has_vault {
+                        ""
+                    } else {
+                        "  · no drive shared yet"
+                    },
                 );
             }
         }

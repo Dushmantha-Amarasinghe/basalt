@@ -159,11 +159,43 @@ impl Basalt {
         Ok(basalt_net::discovery::scan(basalt_net::discovery::SCAN_WINDOW).await?)
     }
 
+    /// The same list, ready for a person to pick from.
+    ///
+    /// Marks the ones this device already knows, and puts them in a stable
+    /// order. The order matters more than it sounds: the interface rescans on a
+    /// timer, and a list that reshuffles itself between scans is one you cannot
+    /// click on.
+    pub async fn discover_hosts(&self) -> Result<Vec<crate::ui::DiscoveredHost>> {
+        let found = self.discover().await?;
+        let known: std::collections::HashSet<String> = self
+            .known_hosts()
+            .into_iter()
+            .map(|host| host.host_id)
+            .collect();
+
+        let mut hosts: Vec<_> = found
+            .iter()
+            .map(|f| crate::ui::DiscoveredHost::new(f, known.contains(&f.beacon.host_id)))
+            .collect();
+        crate::ui::sort_hosts(&mut hosts);
+        Ok(hosts)
+    }
+
     /// Asks a host to pair, and says whether it wants a PIN.
     ///
     /// The host is displaying the request from this moment — with this device's
     /// name against the number to read across — so the interface can show a PIN
     /// field knowing one is on screen at the other end.
+    /// The same, from the `ip:port` a discovered host reported.
+    ///
+    /// Resolution lives here rather than in the Tauri shell so the shell needs
+    /// no knowledge of the network layer at all — and so that turning a bad
+    /// address into a sensible error is covered by a test.
+    pub async fn begin_pairing_at(&self, address: &str) -> Result<bool> {
+        let addr = basalt_net::socket::resolve(address, basalt_net::DEFAULT_PORT).await?;
+        self.begin_pairing(addr).await
+    }
+
     pub async fn begin_pairing(&self, address: SocketAddr) -> Result<bool> {
         let (session, challenge) = Session::begin_pair(address, &self.device_name).await?;
         let requires_pin = challenge.requires_pin;

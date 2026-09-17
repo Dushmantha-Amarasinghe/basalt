@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use basalt_client::client::{Cancel, ProgressFn};
 use basalt_client::proxy::MediaProxy;
-use basalt_client::{Basalt, HostSummary, Status, TransferEvent, UiError};
+use basalt_client::{Basalt, DiscoveredHost, Status, TransferEvent, UiError};
 use tauri::{Emitter, Manager, State};
 
 /// Every command answers with this: the value, or an error the interface can
@@ -69,15 +69,50 @@ fn status(state: State<'_, AppState>) -> Status {
     status_of(&state.client)
 }
 
+/// Every Basalt host answering on this network.
+///
+/// This is what replaced typing an address. It takes about a second — the scan
+/// window — so the interface shows the previous list while it runs rather than
+/// emptying itself on every sweep.
 #[tauri::command]
-async fn probe(state: State<'_, AppState>, address: String) -> Answer<HostSummary> {
-    Ok(state.client.probe(&address).await?.into())
+async fn discover(state: State<'_, AppState>) -> Answer<Vec<DiscoveredHost>> {
+    Ok(state.client.discover_hosts().await?)
 }
 
+/// Asks a host to pair, and reports whether it wants a PIN.
+///
+/// From this moment the host is displaying the request — this device's name
+/// against the number to read across — so the interface can show a PIN field
+/// knowing one is on screen at the other end.
 #[tauri::command]
-async fn pair(state: State<'_, AppState>, address: String, pin: String) -> Answer<Status> {
-    state.client.pair(&address, &pin).await?;
+async fn begin_pairing(state: State<'_, AppState>, address: String) -> Answer<bool> {
+    Ok(state.client.begin_pairing_at(&address).await?)
+}
+
+/// Completes the request begun above, on the same session.
+///
+/// `pin` is empty when the host did not ask for one. Two calls rather than one
+/// because they answer different questions, and because a single call would
+/// mean typing a PIN at a host that might not be there.
+#[tauri::command]
+async fn finish_pairing(state: State<'_, AppState>, pin: String) -> Answer<Status> {
+    let pin = pin.trim();
+    state
+        .client
+        .finish_pairing(if pin.is_empty() { None } else { Some(pin) })
+        .await?;
     Ok(status_of(&state.client))
+}
+
+/// Abandons a request, for when the user backs out of the PIN screen.
+///
+/// Worth doing rather than letting it lapse: the host is showing a card with
+/// this device's name on it, and leaving it there for three minutes after
+/// somebody changed their mind is untidy at best and confusing at worst.
+#[tauri::command]
+async fn cancel_pairing(state: State<'_, AppState>) -> Answer<()> {
+    state.client.cancel_pairing().await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -157,11 +192,7 @@ async fn rename_entry(state: State<'_, AppState>, from: String, to: String) -> A
 }
 
 #[tauri::command]
-async fn remove_entry(
-    state: State<'_, AppState>,
-    path: String,
-    recursive: bool,
-) -> Answer<()> {
+async fn remove_entry(state: State<'_, AppState>, path: String, recursive: bool) -> Answer<()> {
     Ok(state.client.remove(&path, recursive).await?)
 }
 
@@ -418,8 +449,7 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let mut last_total = 0u64;
                     let mut last_at = std::time::Instant::now();
-                    let mut interval =
-                        tokio::time::interval(std::time::Duration::from_millis(125));
+                    let mut interval = tokio::time::interval(std::time::Duration::from_millis(125));
                     loop {
                         interval.tick().await;
                         let total = client.bytes_moved();
@@ -463,8 +493,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             status,
-            probe,
-            pair,
+            discover,
+            begin_pairing,
+            finish_pairing,
+            cancel_pairing,
             connect_saved,
             connect_to,
             disconnect,

@@ -36,11 +36,23 @@ export interface Status {
   deviceName: string
 }
 
-export interface HostSummary {
+/**
+ * A host found on the network.
+ *
+ * This is what replaced typing an address. The address is still here because it
+ * is worth showing in small type, but nobody enters one: the identity is what
+ * gets pinned, and the address is only how this device reached it today.
+ */
+export interface DiscoveredHost {
   hostId: string
   hostName: string
   vault: string
-  pairingOpen: boolean
+  address: string
+  requiresPin: boolean
+  /** False until somebody has chosen a drive on that machine. */
+  hasVault: boolean
+  /** Whether this device has already paired with it. */
+  paired: boolean
 }
 
 export interface TransferEvent {
@@ -115,8 +127,14 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 
 export const api = {
   status: () => call<Status>('status'),
-  probe: (address: string) => call<HostSummary>('probe', { address }),
-  pair: (address: string, pin: string) => call<Status>('pair', { address, pin }),
+  /** Every host answering on this network. Takes about a second. */
+  discover: () => call<DiscoveredHost[]>('discover'),
+  /** Asks a host to pair. Resolves to whether it wants a PIN. */
+  beginPairing: (address: string) => call<boolean>('begin_pairing', { address }),
+  /** Completes it. Pass an empty string when no PIN was asked for. */
+  finishPairing: (pin: string) => call<Status>('finish_pairing', { pin }),
+  cancelPairing: () => call<void>('cancel_pairing'),
+
   connectSaved: () => call<Status>('connect_saved'),
   connectTo: (hostId: string, address?: string) =>
     call<Status>('connect_to', { hostId, address: address ?? null }),
@@ -256,25 +274,88 @@ const MOCK_STATUS: Status = {
   deviceName: 'Browser',
 }
 
+/**
+ * `?unpaired` in the preview opens on the pairing screen.
+ *
+ * Without this the screen is unreachable in a browser, because the stand-in
+ * status is always connected — and pairing is by design the one screen a user
+ * sees once and never again, so it would otherwise be the least reviewable
+ * part of the app rather than the most.
+ */
+function previewIsUnpaired(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).has('unpaired')
+  )
+}
+
+/**
+ * Three hosts, covering the three rows the list has to draw.
+ *
+ * In the order `basalt_client::ui::sort_hosts` would return them — already
+ * paired first, then ones with a drive, then by name. The preview teaching a
+ * different order from the app would be worse than no preview.
+ */
+const MOCK_HOSTS: DiscoveredHost[] = [
+  {
+    hostId: 'known111aa11bb22cc33dd44ee55ff66',
+    hostName: 'ATTIC-PC',
+    vault: 'Backups',
+    address: '192.168.1.42:7742',
+    requiresPin: false,
+    hasVault: true,
+    paired: true,
+  },
+  {
+    hostId: 'demo0000aa11bb22cc33dd44ee55ff66',
+    hostName: 'STUDY-LAPTOP',
+    vault: 'Films',
+    address: '192.168.1.90:7742',
+    requiresPin: true,
+    hasVault: true,
+    paired: false,
+  },
+  {
+    hostId: 'empty222aa11bb22cc33dd44ee55ff66',
+    hostName: 'DESKTOP-4F2A',
+    vault: 'Vault',
+    address: '192.168.1.17:7742',
+    requiresPin: true,
+    hasVault: false,
+    paired: false,
+  },
+]
+
 let mockEntries: Entry[] | null = null
 
 async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   switch (cmd) {
     case 'status':
+      return (
+        previewIsUnpaired()
+          ? { ...MOCK_STATUS, connected: false, hasPaired: false }
+          : MOCK_STATUS
+      ) as T
     case 'connect_saved':
-    case 'pair':
     case 'connect_to':
       return MOCK_STATUS as T
     case 'disconnect':
     case 'forget_host':
       return { ...MOCK_STATUS, connected: false } as T
-    case 'probe':
-      return {
-        hostId: 'demo0000',
-        hostName: 'Demo Host',
-        vault: 'Vault',
-        pairingOpen: true,
-      } as T
+    case 'discover':
+      // A slow answer on purpose: the real scan waits out a broadcast window
+      // of about a second, and a list that appears instantly in the preview
+      // would hide whatever the waiting state looks like.
+      await new Promise((resolve) => setTimeout(resolve, 900))
+      return MOCK_HOSTS as T
+    case 'begin_pairing':
+      return MOCK_HOSTS.some(
+        (host) => host.address === args?.address && host.requiresPin,
+      ) as T
+    case 'finish_pairing':
+      return MOCK_STATUS as T
+    case 'cancel_pairing':
+      return undefined as T
     case 'space':
       return [1_842_000_000_000, 4_000_000_000_000] as T
     case 'list_dir': {
