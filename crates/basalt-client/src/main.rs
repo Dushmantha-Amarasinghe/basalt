@@ -39,12 +39,9 @@ enum Command {
     /// Pair with a host, by address.
     ///
     /// The app discovers hosts instead; this is for when something is wrong and
-    /// you want to take discovery out of the picture.
-    Pair {
-        address: String,
-        /// Omit for a host that does not ask for one.
-        pin: Option<String>,
-    },
+    /// you want to take discovery out of the picture. The PIN is asked for here
+    /// rather than passed as an argument — see the command itself for why.
+    Pair { address: String },
 
     /// List every Basalt host answering on this network.
     Find,
@@ -117,16 +114,31 @@ async fn main() -> Result<()> {
             );
         }
 
-        Command::Pair { address, pin } => {
+        Command::Pair { address } => {
             let addr = basalt_net::socket::resolve(&address, basalt_net::DEFAULT_PORT).await?;
+
+            // Asking is what makes the host generate and display the PIN, so
+            // the number is only valid for *this* attempt. Reading it from
+            // stdin keeps one session open across both steps; taking it as an
+            // argument would mean a second run, a second request, and a second
+            // PIN — leaving the one on the host's screen already stale.
             let requires_pin = client.begin_pairing(addr).await?;
-            if requires_pin && pin.is_none() {
-                anyhow::bail!(
-                    "this host asks for a PIN, and is showing one now.                      Run the same command again with it."
-                );
-            }
+            let pin = if requires_pin {
+                println!("This host is showing a PIN. Type it here:");
+                let mut typed = String::new();
+                std::io::stdin().read_line(&mut typed)?;
+                Some(typed.trim().to_string())
+            } else {
+                println!("This host does not ask for a PIN.");
+                None
+            };
+
             let info = client.finish_pairing(pin.as_deref()).await?;
-            println!("paired with {} ({})", info.host_name, info.vault);
+            println!(
+                "
+paired with {} ({})",
+                info.host_name, info.vault
+            );
             println!("identity {}", info.host_id);
         }
 

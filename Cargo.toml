@@ -10,7 +10,7 @@ members = [
 # The Tauri shell builds through its own toolchain and pulls in a very large
 # dependency tree. Keeping it out of the workspace keeps `cargo test` (and so
 # the pre-commit hook) fast; build it with `npm run app:build` instead.
-exclude = ["apps/client/src-tauri"]
+exclude = ["apps/client/src-tauri", "apps/host/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

@@ -90,6 +90,75 @@ impl Host {
         self.persist()
     }
 
+    /// Where the served drive lives, if one has been chosen.
+    pub fn vault_path(&self) -> Option<std::path::PathBuf> {
+        self.config.lock().expect("config lock").vault_path.clone()
+    }
+
+    pub fn port(&self) -> u16 {
+        self.config.lock().expect("config lock").port
+    }
+
+    /// Renames the host. Clients see this before they pair.
+    pub fn set_host_name(&self, name: &str) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(HostError::BadRequest("a host needs a name".into()));
+        }
+        self.config.lock().expect("config lock").host_name = name.chars().take(64).collect();
+        self.persist()
+    }
+
+    /// Whether Windows starts this host at login.
+    ///
+    /// Read from the registry rather than from the config, because the user can
+    /// turn it off in Task Manager's Startup tab without this app ever running.
+    /// The config field is only a mirror, and the registry is the truth.
+    pub fn start_with_windows(&self) -> bool {
+        crate::autostart::is_enabled()
+    }
+
+    pub fn set_start_with_windows(&self, enabled: bool) -> Result<()> {
+        crate::autostart::set_enabled(enabled)?;
+        self.config.lock().expect("config lock").start_with_windows = enabled;
+        self.persist()
+    }
+
+    /// Everything the host's own window needs to draw itself once.
+    pub async fn status(&self, serving: bool) -> crate::ui::HostStatus {
+        let vault = self.vault().await.map(|vault| {
+            let (free, total) = vault.space();
+            crate::ui::VaultView {
+                path: vault.root().to_string_lossy().into_owned(),
+                name: vault.name().to_string(),
+                free,
+                total,
+                available: crate::drives::is_available(vault.root()),
+            }
+        });
+
+        let (host_name, port, require_pin) = {
+            let config = self.config.lock().expect("config lock");
+            (config.host_name.clone(), config.port, config.require_pin)
+        };
+
+        crate::ui::HostStatus {
+            host_id: self.identity.host_id.clone(),
+            host_name,
+            port,
+            require_pin,
+            start_with_windows: self.start_with_windows(),
+            vault,
+            addresses: basalt_net::discovery::local_addresses()
+                .into_iter()
+                .map(|ip| ip.to_string())
+                .collect(),
+            device_count: self.registry.lock().expect("registry lock").device_count(),
+            serving,
+            problem: None,
+        }
+    }
+
     /// Devices waiting to be let in, with the PIN each was given.
     pub fn pending_pairings(&self) -> Vec<PairingRequest> {
         self.registry
