@@ -393,6 +393,21 @@ pub fn run() {
             let store_path = basalt_client::store::default_path();
             let client = Arc::new(Basalt::open(store_path)?);
 
+            // Registered **before** anything else in this closure.
+            //
+            // The window is created from the config and starts loading as soon
+            // as it exists, and the first thing the interface does is ask for
+            // the connection status. If that call lands before the state is
+            // managed, Tauri answers "state not managed", the interface has
+            // nothing to show, and the app sits on its splash screen looking
+            // exactly like a crash. Spawning tasks first was enough to lose
+            // that race.
+            app.manage(AppState {
+                client: Arc::clone(&client),
+                proxy: tokio::sync::Mutex::new(None),
+                transfers: Mutex::new(HashMap::new()),
+            });
+
             // Feed the throughput trace from the one counter that sees every
             // byte — downloads, uploads, listings and, above all, a film being
             // streamed through the media proxy. Emitting only when something
@@ -439,16 +454,11 @@ pub fn run() {
                     let connected = client.connect_saved().await.is_ok();
                     let _ = handle.emit("basalt://status", status_of(&client));
                     if !connected {
-                        tracing_note("no saved host reachable at startup");
+                        eprintln!("basalt: no saved host reachable at startup");
                     }
                 });
             }
 
-            app.manage(AppState {
-                client,
-                proxy: tokio::sync::Mutex::new(None),
-                transfers: Mutex::new(HashMap::new()),
-            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -475,10 +485,4 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Basalt");
-}
-
-/// Startup diagnostics go to stderr, which is visible in a debug build and
-/// harmless in a release one.
-fn tracing_note(message: &str) {
-    eprintln!("basalt: {message}");
 }
