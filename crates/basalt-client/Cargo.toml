@@ -29,5 +29,8 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Registry"] }
+
 [dev-dependencies]
 basalt-host = { workspace = true }

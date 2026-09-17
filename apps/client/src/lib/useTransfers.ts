@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, onBytes, onTransfer, type TransferEvent } from './api'
-import { recordBytes } from './throughput'
+import { recordWindow } from './throughput'
 
 /**
  * The transfer queue, fed by events from the backend.
@@ -48,7 +48,7 @@ export function useTransfers(): Transfers {
   // only used to draw the queue.
   useEffect(() => {
     let stop: (() => void) | undefined
-    void onBytes(recordBytes).then((fn) => {
+    void onBytes((w) => recordWindow(w.bytes, w.millis)).then((fn) => {
       stop = fn
     })
     return () => stop?.()

@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  IDLE_AFTER_MS,
   IDLE_FLOOR_RATE,
   SAMPLE_COUNT,
-  TICK_MS,
   getCurrent,
   getCurrentMbps,
   getSamples,
-  recordBytes,
+  recordWindow,
   resetThroughput,
   subscribeThroughput,
 } from './throughput'
@@ -33,136 +33,138 @@ describe('throughput store', () => {
   })
 
   it('reads as idle until something actually moves', () => {
-    vi.useFakeTimers()
-    whileSubscribed(() => {
-      vi.advanceTimersByTime(TICK_MS * 20)
-      expect(getCurrent()).toBe(0)
-      expect(getCurrentMbps()).toBe(0)
-    })
+    expect(getCurrent()).toBe(0)
+    expect(getCurrentMbps()).toBe(0)
   })
 
-  // The bug this replaced: the store generated a plausible random signal, so
-  // the header reported a speed the app had invented.
+  // The first bug: the store generated a plausible random signal, so the header
+  // reported a speed the app had invented.
   it('reports a rate derived from the bytes it was given', () => {
-    vi.useFakeTimers()
-    whileSubscribed(() => {
-      // 1 MB across one 120 ms tick is a little over 8 MB/s.
-      recordBytes(1_000_000)
-      vi.advanceTimersByTime(TICK_MS)
-
-      const expected = 1_000_000 / (TICK_MS / 1000)
-      expect(getCurrent()).toBeCloseTo(expected, -3)
-      expect(getCurrentMbps()).toBeCloseTo(expected / 1e6, 1)
-    })
+    recordWindow(1_000_000, 100)
+    expect(getCurrent()).toBeCloseTo(10_000_000, -3)
+    expect(getCurrentMbps()).toBeCloseTo(10, 1)
   })
 
-  it('falls back to idle once the bytes stop', () => {
-    vi.useFakeTimers()
-    whileSubscribed(() => {
-      recordBytes(5_000_000)
-      vi.advanceTimersByTime(TICK_MS)
-      expect(getCurrent()).toBeGreaterThan(0)
+  /*
+   * The second bug, and the reason `recordWindow` takes two arguments.
+   *
+   * The backend measured bytes over 250 ms and this file divided them by its
+   * own 120 ms tick, so a real 15.5 MB/s was displayed as 35.5 — over a link
+   * whose measured ceiling is 22.7. A rate is a measurement over an interval,
+   * and the interval has to travel with it.
+   */
+  it('uses the interval it was given, not the one it might have assumed', () => {
+    recordWindow(4_000_000, 250)
+    const quarterSecond = getCurrent()
 
-      vi.advanceTimersByTime(TICK_MS * 2)
-      expect(getCurrent()).toBe(0)
-    })
+    resetThroughput()
+    recordWindow(4_000_000, 120)
+    const eighthSecond = getCurrent()
+
+    expect(quarterSecond).toBeCloseTo(16_000_000, -4)
+    expect(eighthSecond).toBeGreaterThan(quarterSecond)
+    // The exact ratio that was being displayed.
+    expect(eighthSecond / quarterSecond).toBeCloseTo(250 / 120, 2)
+  })
+
+  it('never reports a rate the link could not produce', () => {
+    // 22.7 MB/s is the measured ceiling. Reporting a window honestly can never
+    // exceed what actually arrived in it.
+    recordWindow(2_800_000, 125)
+    expect(getCurrentMbps()).toBeLessThan(23)
   })
 
   it('ignores a trickle rather than showing a speed for nothing', () => {
-    vi.useFakeTimers()
-    whileSubscribed(() => {
-      // The floor is a rate, so the test has to reason in rates: a quarter of
-      // the floor over one tick, which is a few hundred bytes.
-      recordBytes((IDLE_FLOOR_RATE / 4) * (TICK_MS / 1000))
-      vi.advanceTimersByTime(TICK_MS)
-      expect(getCurrent()).toBe(0)
-    })
+    recordWindow((IDLE_FLOOR_RATE / 4) * 0.125, 125)
+    expect(getCurrent()).toBe(0)
   })
 
   it('shows a rate that is only just above the floor', () => {
-    vi.useFakeTimers()
-    whileSubscribed(() => {
-      recordBytes(IDLE_FLOOR_RATE * 2 * (TICK_MS / 1000))
-      vi.advanceTimersByTime(TICK_MS)
-      expect(getCurrent()).toBeGreaterThan(IDLE_FLOOR_RATE)
+    recordWindow(IDLE_FLOOR_RATE * 2 * 0.125, 125)
+    expect(getCurrent()).toBeGreaterThan(IDLE_FLOOR_RATE)
+  })
+
+  it('ignores nonsense rather than dividing by it', () => {
+    recordWindow(1_000_000, 0)
+    expect(getCurrent()).toBe(0)
+    recordWindow(1_000_000, -50)
+    expect(getCurrent()).toBe(0)
+    recordWindow(-1_000_000, 125)
+    expect(getCurrent()).toBe(0)
+    recordWindow(Number.NaN, 125)
+    expect(getCurrent()).toBe(0)
+    recordWindow(1_000_000, Number.POSITIVE_INFINITY)
+    expect(getCurrent()).toBe(0)
+
+    for (const value of getSamples()) expect(value).toBeGreaterThanOrEqual(0)
+  })
+
+  it('notifies subscribers when a window arrives', () => {
+    whileSubscribed((listener) => {
+      recordWindow(1_000_000, 125)
+      recordWindow(1_000_000, 125)
+      expect(listener).toHaveBeenCalledTimes(2)
     })
   })
 
-  // A resumed transfer restarts its byte count from the resume offset, and a
-  // negative delta must not drag the trace below zero.
-  it('ignores negative and nonsense deltas', () => {
+  // The backend stops sending once nothing is moving, so something local has to
+  // close the trace out — otherwise a finished transfer leaves its last rate
+  // frozen on screen.
+  it('falls back to idle when the reports stop', () => {
     vi.useFakeTimers()
     whileSubscribed(() => {
-      recordBytes(-5_000_000)
-      recordBytes(Number.NaN)
-      recordBytes(Number.POSITIVE_INFINITY)
-      vi.advanceTimersByTime(TICK_MS)
+      recordWindow(5_000_000, 125)
+      expect(getCurrent()).toBeGreaterThan(0)
+
+      vi.advanceTimersByTime(IDLE_AFTER_MS * 3)
       expect(getCurrent()).toBe(0)
-      for (const value of getSamples()) expect(value).toBeGreaterThanOrEqual(0)
     })
   })
 
-  it('accumulates everything recorded within one tick', () => {
-    vi.useFakeTimers()
-    whileSubscribed(() => {
-      recordBytes(400_000)
-      recordBytes(400_000)
-      recordBytes(200_000)
-      vi.advanceTimersByTime(TICK_MS)
-      expect(getCurrent()).toBeCloseTo(1_000_000 / (TICK_MS / 1000), -3)
-    })
-  })
-
-  it('notifies subscribers on every tick', () => {
+  it('does not keep repainting once it has settled at idle', () => {
     vi.useFakeTimers()
     whileSubscribed((listener) => {
-      vi.advanceTimersByTime(TICK_MS * 3)
-      expect(listener).toHaveBeenCalledTimes(3)
+      recordWindow(5_000_000, 125)
+      vi.advanceTimersByTime(IDLE_AFTER_MS * 2)
+      const afterSettling = listener.mock.calls.length
+
+      vi.advanceTimersByTime(IDLE_AFTER_MS * 20)
+      expect(listener.mock.calls.length).toBe(afterSettling)
     })
   })
 
-  it('stops ticking once the last subscriber leaves', () => {
+  it('stops its watchdog once the last subscriber leaves', () => {
     vi.useFakeTimers()
     const listener = vi.fn()
     subscribeThroughput(listener)()
-    vi.advanceTimersByTime(TICK_MS * 5)
+    vi.advanceTimersByTime(IDLE_AFTER_MS * 5)
     expect(listener).not.toHaveBeenCalled()
   })
 
   // Two components subscribe in the real app (the canvas trace and the text
   // readout). If one unmounting killed the timer, the other would freeze.
-  it('keeps ticking while any subscriber remains', () => {
-    vi.useFakeTimers()
+  it('keeps working while any subscriber remains', () => {
     const a = vi.fn()
     const b = vi.fn()
     const unsubA = subscribeThroughput(a)
     const unsubB = subscribeThroughput(b)
 
     unsubA()
-    vi.advanceTimersByTime(TICK_MS * 2)
-    expect(b).toHaveBeenCalledTimes(2)
+    recordWindow(1_000_000, 125)
+    expect(b).toHaveBeenCalledTimes(1)
     unsubB()
   })
 
-  it('reuses one buffer rather than allocating per tick', () => {
-    vi.useFakeTimers()
+  it('reuses one buffer rather than allocating per sample', () => {
     const before = getSamples()
-    whileSubscribed(() => {
-      recordBytes(1_000_000)
-      vi.advanceTimersByTime(TICK_MS * 10)
-      expect(getSamples()).toBe(before)
-    })
+    for (let i = 0; i < 10; i += 1) recordWindow(1_000_000, 125)
+    expect(getSamples()).toBe(before)
   })
 
   it('clears on demand, for when the connection drops', () => {
-    vi.useFakeTimers()
-    whileSubscribed(() => {
-      recordBytes(9_000_000)
-      vi.advanceTimersByTime(TICK_MS)
-      expect(getCurrent()).toBeGreaterThan(0)
-
-      resetThroughput()
-      for (const value of getSamples()) expect(value).toBe(0)
-    })
+    recordWindow(9_000_000, 125)
+    expect(getCurrent()).toBeGreaterThan(0)
+    resetThroughput()
+    for (const value of getSamples()) expect(value).toBe(0)
   })
 })

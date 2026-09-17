@@ -264,23 +264,27 @@ export function App(): React.JSX.Element {
 
   // --- opening -------------------------------------------------------------
 
-  /** Downloads to a temporary file and hands it to the system's player. */
+  /**
+   * Hands a file to a player that can decode it.
+   *
+   * Streamed over a local URL when VLC, mpv or similar is installed, so a 3 GB
+   * episode starts at once and nothing lands on this disk. A transfer row is
+   * only opened for the fallback, where the file really is being copied — a
+   * progress bar for something that is streaming would be a lie.
+   */
   const openExternally = useCallback(
     async (path: string) => {
       const id = transferId()
-      transfers.start({
-        id,
-        kind: 'download',
-        name: nameOf(path),
-        path,
-        total: 0,
-      })
-      setTransfersOpen(true)
       try {
-        await api.openExternally(path, id)
-        transfers.finish(id)
+        const result = await api.openExternally(path, id)
+        if (result.streamed) {
+          setNotice(`Streaming to ${result.player}. Nothing is being downloaded.`)
+        } else {
+          transfers.finish(id)
+        }
       } catch (e) {
         transfers.finish(id, e instanceof Error ? e.message : String(e))
+        setNotice(e instanceof Error ? e.message : String(e))
       }
     },
     [transfers],
@@ -390,7 +394,7 @@ export function App(): React.JSX.Element {
       if (!many && entry.kind === 'file') {
         items.push({
           id: 'open-external',
-          label: 'Open in your player',
+          label: 'Play in your player',
           icon: ExternalLink,
           run: () => void openExternally(entry.id),
         })

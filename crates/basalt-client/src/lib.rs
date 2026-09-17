@@ -10,6 +10,7 @@
 //! against a real host in one process.
 
 pub mod client;
+pub mod players;
 pub mod pool;
 pub mod proxy;
 pub mod session;

@@ -73,6 +73,12 @@ enum Command {
     /// same mechanism the app's own player uses.
     Url { path: String },
 
+    /// Play a file in an installed player, streamed rather than downloaded.
+    Play { path: String },
+
+    /// Show which media player the app would hand a file to.
+    Player,
+
     /// Show what this device is paired with.
     Status,
 
@@ -106,6 +112,13 @@ async fn main() -> Result<()> {
             println!("paired with {} ({})", info.host_name, info.vault);
             println!("identity {}", info.host_id);
         }
+
+        Command::Player => match basalt_client::players::find() {
+            Some(player) => println!("{} at {}", player.name, player.path.display()),
+            None => println!(
+                "none found. Install VLC or mpv to stream files the window                      cannot decode."
+            ),
+        },
 
         Command::Status => {
             match client.status() {
@@ -205,6 +218,28 @@ open that in VLC or mpv. ctrl-c to stop serving.",
                 human(entry.size)
             );
             // The proxy lives on a background task, so this has to stay alive.
+            std::future::pending::<()>().await;
+        }
+
+        Command::Play { path } => {
+            let entry = client.stat(&path).await?;
+            let player = basalt_client::players::find().context(
+                "no player found that can open a URL. Install VLC or mpv, or use                  `basalt url` and paste the address in yourself.",
+            )?;
+            let proxy = basalt_client::proxy::MediaProxy::start(Arc::clone(client)).await?;
+            let url = proxy.url_for(&path);
+
+            basalt_client::players::launch(&player, &url)
+                .with_context(|| format!("starting {}", player.name))?;
+            println!(
+                "streaming {} ({}) to {}
+nothing is being downloaded. ctrl-c when done.",
+                entry.name,
+                human(entry.size),
+                player.name
+            );
+            // The proxy lives on a background task, so this has to stay alive
+            // for as long as the player is reading from it.
             std::future::pending::<()>().await;
         }
 
