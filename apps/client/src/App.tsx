@@ -675,7 +675,7 @@ export function App(): React.JSX.Element {
 
   // --- screens -------------------------------------------------------------
 
-  if (!vault.status) return <Splash />
+  if (!vault.status) return <Splash failed={vault.startupFailed} />
 
   if (!connected && !vault.status.hasPaired) {
     return (
@@ -950,10 +950,21 @@ export function App(): React.JSX.Element {
  * Deliberately not a spinner over an empty window: the mark is already the
  * app's identity, and breathing it reads as "starting" without implying
  * anything is slow.
+ *
+ * It says so in words after a moment, though. A dark window with a faint mark
+ * in the middle is, at a glance, indistinguishable from a crashed application —
+ * which is exactly how a startup bug here was first reported.
  */
-function Splash(): React.JSX.Element {
+function Splash({ failed }: { failed: boolean }): React.JSX.Element {
+  const [slow, setSlow] = useState(false)
+
+  useEffect(() => {
+    const timer = setTimeout(() => setSlow(true), 1500)
+    return () => clearTimeout(timer)
+  }, [])
+
   return (
-    <div className="relative flex h-full items-center justify-center">
+    <div className="relative flex h-full flex-col items-center justify-center gap-5">
       <div className="backdrop" />
       <motion.span
         animate={{ opacity: [0.35, 1, 0.35] }}
@@ -962,6 +973,22 @@ function Splash(): React.JSX.Element {
       >
         <HexMark size={30} />
       </motion.span>
+
+      <AnimatePresence>
+        {(slow || failed) && (
+          <motion.div
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="relative z-10 max-w-[320px] text-center"
+          >
+            <p className="text-[12px] leading-relaxed text-textDim">
+              {failed
+                ? 'Basalt is running but its backend is not answering. Still trying — if this does not clear, close the window and open it again.'
+                : 'Starting…'}
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

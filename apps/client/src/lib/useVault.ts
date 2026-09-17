@@ -21,6 +21,21 @@ import { ApiError, api, onStatus, toEntries, type Status } from './api'
 const RETRY_MIN_MS = 2_000
 const RETRY_MAX_MS = 30_000
 
+/** Attempts before the interface admits, in words, that nothing is answering. */
+export const STARTUP_ATTEMPTS_BEFORE_COMPLAINING = 4
+
+/**
+ * How long to wait before asking the backend for its status again.
+ *
+ * Quick at first, because the usual cause is the backend being a fraction of a
+ * second behind the window, then backing off so a genuinely dead backend is not
+ * polled forever. It never stops: a first call that fails must not be able to
+ * strand the app on its splash screen, which is exactly what it used to do.
+ */
+export function startupRetryDelay(attempt: number): number {
+  return Math.min(100 * 2 ** Math.max(0, attempt - 1), 4000)
+}
+
 export interface Vault {
   status: Status | null
   /** Vault-relative directory. `''` is the root. */
@@ -31,6 +46,8 @@ export interface Vault {
   space: [number, number] | null
   /** Set while the client is trying to get back to a host it knows. */
   reconnecting: boolean
+  /** The backend never answered. The window is up but nothing is behind it. */
+  startupFailed: boolean
 
   open: (dir: string) => void
   refresh: () => void
@@ -46,6 +63,8 @@ export function useVault(): Vault {
   const [error, setError] = useState<ApiError | null>(null)
   const [space, setSpace] = useState<[number, number] | null>(null)
   const [reconnecting, setReconnecting] = useState(false)
+  /** Set when the backend has not answered at all, after several attempts. */
+  const [startupFailed, setStartupFailed] = useState(false)
 
   // Which directory the newest request was for. A reply for anything else is
   // stale and must not be shown.
@@ -100,22 +119,41 @@ export function useVault(): Vault {
     }
   }, [load])
 
-  // First load: ask where we stand, then list the root if connected.
+  /**
+   * First load: ask where we stand, then list the root if connected.
+   *
+   * Retried, because the first version gave up after one failure and the app
+   * stayed on its splash screen forever — indistinguishable from a crash. The
+   * failure that exposed it was a startup race in the backend, since fixed, but
+   * the real fault was here: nothing should be able to leave the interface with
+   * no state and no way to get any.
+   */
   useEffect(() => {
     let cancelled = false
-    void (async () => {
+    let attempt = 0
+
+    const ask = async (): Promise<void> => {
       try {
         const initial = await api.status()
         if (cancelled) return
         setStatus(initial)
+        setStartupFailed(false)
         if (initial.connected) {
           void load('')
           api.space().then(setSpace).catch(() => {})
         }
       } catch (e) {
-        if (!cancelled) setError(new ApiError('error', String(e)))
+        if (cancelled) return
+        attempt += 1
+        if (attempt >= STARTUP_ATTEMPTS_BEFORE_COMPLAINING) {
+          setStartupFailed(true)
+          setError(new ApiError('error', String(e)))
+        }
+        setTimeout(() => void ask(), startupRetryDelay(attempt))
       }
-    })()
+    }
+
+    void ask()
     return () => {
       cancelled = true
     }
@@ -162,6 +200,7 @@ export function useVault(): Vault {
     error,
     space,
     reconnecting,
+    startupFailed,
     open,
     refresh,
     reconnect,
