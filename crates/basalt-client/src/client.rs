@@ -4,6 +4,7 @@
 //! browse, transfer. Each call takes a connection from the pool and gives it
 //! back, so a download and a folder listing never wait on each other.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +13,7 @@ use basalt_proto::msg::{DirEntry, HelloResponse};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::pool::Pool;
-use crate::session::{Session, SessionInfo};
+use crate::session::{PairChallenge, Session, SessionInfo};
 use crate::store::{ClientStore, KnownHost};
 use crate::{ClientError, Result};
 
@@ -66,6 +67,11 @@ pub struct Basalt {
     pool: tokio::sync::RwLock<Option<Pool>>,
     info: std::sync::Mutex<Option<SessionInfo>>,
     device_name: String,
+    /// A pairing in progress, held open between the two steps.
+    ///
+    /// The host generated its PIN when the first step arrived and is showing
+    /// it now; reconnecting for the second step would produce a different one.
+    pending: tokio::sync::Mutex<Option<(Session, PairChallenge)>>,
     /// Every payload byte that has crossed the link since the app started.
     ///
     /// One counter in one place rather than reporting from each call site,
@@ -89,6 +95,7 @@ impl Basalt {
             pool: tokio::sync::RwLock::new(None),
             info: std::sync::Mutex::new(None),
             device_name,
+            pending: tokio::sync::Mutex::new(None),
             bytes_moved: std::sync::atomic::AtomicU64::new(0),
         })
     }
@@ -128,17 +135,68 @@ impl Basalt {
     // Connecting
     // -----------------------------------------------------------------------
 
-    /// Looks at a host without pairing, so the user can confirm what they found.
+    /// Looks at a host without pairing.
+    ///
+    /// Only used by the command line now — the app discovers hosts rather than
+    /// being told where one is — but it is the quickest way to answer "is
+    /// anything listening at this address" when something is wrong.
     pub async fn probe(&self, address: &str) -> Result<HelloResponse> {
         let addr = basalt_net::socket::resolve(address, basalt_net::DEFAULT_PORT).await?;
         Session::probe(addr, &self.device_name).await
     }
 
-    /// Pairs with a host and stays connected to it.
-    pub async fn pair(&self, address: &str, pin: &str) -> Result<SessionInfo> {
+    /// Pairs with a host at a known address, for the command line.
+    pub async fn pair(&self, address: &str, pin: Option<&str>) -> Result<SessionInfo> {
         let addr = basalt_net::socket::resolve(address, basalt_net::DEFAULT_PORT).await?;
-        let (session, token) = Session::pair(addr, pin, &self.device_name).await?;
+        self.pair_with(addr, pin).await
+    }
+
+    /// Every Basalt host answering on this network.
+    ///
+    /// The list a person picks from. Nothing here is trusted: a reply can claim
+    /// anything, and the TLS pin decides the truth a moment later.
+    pub async fn discover(&self) -> Result<Vec<basalt_net::discovery::Found>> {
+        Ok(basalt_net::discovery::scan(basalt_net::discovery::SCAN_WINDOW).await?)
+    }
+
+    /// Asks a host to pair, and says whether it wants a PIN.
+    ///
+    /// The host is displaying the request from this moment — with this device's
+    /// name against the number to read across — so the interface can show a PIN
+    /// field knowing one is on screen at the other end.
+    pub async fn begin_pairing(&self, address: SocketAddr) -> Result<bool> {
+        let (session, challenge) = Session::begin_pair(address, &self.device_name).await?;
+        let requires_pin = challenge.requires_pin;
+        *self.pending.lock().await = Some((session, challenge));
+        Ok(requires_pin)
+    }
+
+    /// Completes the pairing begun by [`Basalt::begin_pairing`].
+    ///
+    /// Uses the session that request was made on, so the PIN the host is
+    /// showing is the one being checked.
+    pub async fn finish_pairing(&self, pin: Option<&str>) -> Result<SessionInfo> {
+        let (mut session, challenge) = self
+            .pending
+            .lock()
+            .await
+            .take()
+            .ok_or(ClientError::NotConnected)?;
+
+        let token = match session.finish_pair(&challenge, pin).await {
+            Ok(token) => token,
+            Err(e) => {
+                // A wrong PIN is worth another go against the same request —
+                // the host is still showing it and still counting attempts.
+                if matches!(e, ClientError::BadPin(_) | ClientError::PinRequired) {
+                    *self.pending.lock().await = Some((session, challenge));
+                }
+                return Err(e);
+            }
+        };
+
         let info = session.info().clone();
+        let addr = info.address;
 
         {
             let mut store = self.store.lock().expect("store lock");
@@ -162,10 +220,23 @@ impl Basalt {
         Ok(info)
     }
 
+    /// Abandons a pairing in progress.
+    pub async fn cancel_pairing(&self) {
+        *self.pending.lock().await = None;
+    }
+
+    /// Pairs in one call, for the command line and for tests.
+    pub async fn pair_with(&self, address: SocketAddr, pin: Option<&str>) -> Result<SessionInfo> {
+        self.begin_pairing(address).await?;
+        self.finish_pairing(pin).await
+    }
+
     /// Reconnects to a host already paired with.
     ///
-    /// `address` overrides the remembered one, for the case where the router
-    /// has handed the host a different one.
+    /// The remembered address is tried first because it usually still works and
+    /// costs one round trip. If it does not, the network is asked where the
+    /// pinned key is *now* — which is what makes a changed address a non-event
+    /// rather than something the user has to go and look up.
     pub async fn connect(&self, host_id: &str, address: Option<&str>) -> Result<SessionInfo> {
         let known = self
             .store
@@ -175,14 +246,53 @@ impl Basalt {
             .cloned()
             .ok_or(ClientError::NotConnected)?;
 
-        let target = address
+        let hint = match address
             .map(str::to_string)
             .or_else(|| known.last_address.clone())
-            .ok_or(ClientError::HostNotFound)?;
-        let addr = basalt_net::socket::resolve(&target, basalt_net::DEFAULT_PORT).await?;
+        {
+            Some(target) => basalt_net::socket::resolve(&target, basalt_net::DEFAULT_PORT)
+                .await
+                .ok(),
+            None => None,
+        };
 
-        let session =
-            Session::connect(addr, &known.host_id, &known.token, &self.device_name).await?;
+        let mut session = None;
+        if let Some(addr) = hint {
+            match Session::connect(addr, &known.host_id, &known.token, &self.device_name).await {
+                Ok(open) => session = Some(open),
+                // Only a transport failure is worth looking elsewhere for. A
+                // host that answered and said no — a revoked token, a key that
+                // is not the pinned one — will say exactly the same thing at
+                // whatever address discovery turns up, and searching would
+                // turn a clear "you have been removed" into a vague "offline".
+                Err(e) if !e.is_transient() => return Err(e),
+                Err(_) => {}
+            }
+        }
+
+        let session = match session {
+            Some(session) => session,
+            None => {
+                // Ask the network. Only a host presenting the pinned key will
+                // do, so a wrong answer costs a failed handshake and nothing
+                // more.
+                let found = basalt_net::discovery::find_host(
+                    &known.host_id,
+                    std::time::Duration::from_secs(3),
+                )
+                .await?
+                .ok_or(ClientError::HostNotFound)?;
+
+                Session::connect(
+                    found.address,
+                    &known.host_id,
+                    &known.token,
+                    &self.device_name,
+                )
+                .await?
+            }
+        };
+        let addr = session.info().address;
         let info = session.info().clone();
 
         {

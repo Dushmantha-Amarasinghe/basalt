@@ -14,11 +14,13 @@ pub mod error;
 pub mod registry;
 pub mod server;
 pub mod space;
+pub mod traffic;
 pub mod uploads;
 pub mod vault;
 
 pub use config::HostConfig;
 pub use error::{HostError, Result};
-pub use registry::{Device, Registry};
+pub use registry::{Device, PairingRequest, Registry};
 pub use server::{Host, bind, serve};
+pub use traffic::{DeviceTraffic, Traffic};
 pub use vault::Vault;

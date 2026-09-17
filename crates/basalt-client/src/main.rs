@@ -36,8 +36,18 @@ enum Command {
     /// Ask a host what it is, without pairing.
     Probe { address: String },
 
-    /// Pair with a host using the PIN on its screen.
-    Pair { address: String, pin: String },
+    /// Pair with a host, by address.
+    ///
+    /// The app discovers hosts instead; this is for when something is wrong and
+    /// you want to take discovery out of the picture.
+    Pair {
+        address: String,
+        /// Omit for a host that does not ask for one.
+        pin: Option<String>,
+    },
+
+    /// List every Basalt host answering on this network.
+    Find,
 
     /// List a folder.
     Ls {
@@ -108,9 +118,36 @@ async fn main() -> Result<()> {
         }
 
         Command::Pair { address, pin } => {
-            let info = client.pair(&address, &pin).await?;
+            let addr = basalt_net::socket::resolve(&address, basalt_net::DEFAULT_PORT).await?;
+            let requires_pin = client.begin_pairing(addr).await?;
+            if requires_pin && pin.is_none() {
+                anyhow::bail!(
+                    "this host asks for a PIN, and is showing one now.                      Run the same command again with it."
+                );
+            }
+            let info = client.finish_pairing(pin.as_deref()).await?;
             println!("paired with {} ({})", info.host_name, info.vault);
             println!("identity {}", info.host_id);
+        }
+
+        Command::Find => {
+            let found = client.discover().await?;
+            if found.is_empty() {
+                println!("nothing answered. Is the host running on this network?");
+            }
+            for host in &found {
+                println!(
+                    "{}  {}  ({})  {}",
+                    host.address,
+                    host.beacon.host_name,
+                    host.beacon.vault,
+                    if host.beacon.requires_pin {
+                        "PIN required"
+                    } else {
+                        "no PIN"
+                    }
+                );
+            }
         }
 
         Command::Player => match basalt_client::players::find() {

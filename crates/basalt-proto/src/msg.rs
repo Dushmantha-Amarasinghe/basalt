@@ -13,8 +13,17 @@ use serde::{Deserialize, Serialize};
 use crate::hex;
 use crate::{ProtoError, Result};
 
+/// Defaulting an absent boolean to true, for fields where the safe reading
+/// of silence is "yes".
+fn default_true() -> bool {
+    true
+}
+
 /// Bumped on any breaking change to these bodies or to the op table.
-pub const PROTOCOL_VERSION: u16 = 1;
+///
+/// 2 — pairing became a *request* the host displays, rather than a window the
+/// host opens in advance, and the PIN became optional.
+pub const PROTOCOL_VERSION: u16 = 2;
 
 // ---------------------------------------------------------------------------
 // Handshake
@@ -43,18 +52,33 @@ pub struct HelloResponse {
 pub struct PairBeginRequest {
     /// 32 random bytes, hex.
     pub client_nonce: String,
+    /// Shown on the host beside the PIN, so the person reading it can see
+    /// which machine is asking.
+    #[serde(default)]
+    pub device_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairBeginResponse {
     /// 32 random bytes, hex.
     pub server_nonce: String,
+    /// Identifies this attempt. The host has generated a PIN against it and is
+    /// displaying both.
+    pub request: String,
+    /// Whether the host will check a PIN. When false the client may finish
+    /// without one — the host has been set to let anyone on the network in.
+    #[serde(default = "default_true")]
+    pub requires_pin: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairFinishRequest {
+    /// The id from [`PairBeginResponse`].
+    pub request: String,
     /// `HMAC-SHA256(pin, spki_hash ‖ client_nonce ‖ server_nonce)`, hex.
-    pub proof: String,
+    /// Absent when the host said no PIN was required.
+    #[serde(default)]
+    pub proof: Option<String>,
     pub device_name: String,
 }
 

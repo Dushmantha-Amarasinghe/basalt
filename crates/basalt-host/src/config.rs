@@ -14,6 +14,12 @@ use serde::{Deserialize, Serialize};
 use crate::error::{HostError, Result};
 use crate::registry::Device;
 
+/// An absent boolean reads as true, for the fields where that is the safe way
+/// to read silence.
+fn default_true() -> bool {
+    true
+}
+
 /// On-disk host state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostConfig {
@@ -27,6 +33,19 @@ pub struct HostConfig {
     /// What this machine calls itself, shown to clients before pairing.
     pub host_name: String,
     pub port: u16,
+
+    /// Whether pairing asks for a PIN.
+    ///
+    /// Defaults to on, including for a config written before this field
+    /// existed. With it off, anyone on the network can read the drive — not a
+    /// default to choose on somebody's behalf.
+    #[serde(default = "default_true")]
+    pub require_pin: bool,
+
+    /// Whether the host starts with Windows. Mirrors the registry entry, so
+    /// the app can draw the switch without reading the registry every time.
+    #[serde(default)]
+    pub start_with_windows: bool,
 
     #[serde(default)]
     pub devices: Vec<Device>,
@@ -44,6 +63,8 @@ impl HostConfig {
             vault_name: "Vault".to_string(),
             host_name: host_name.to_string(),
             port: basalt_net::DEFAULT_PORT,
+            require_pin: true,
+            start_with_windows: false,
             devices: Vec::new(),
         })
     }

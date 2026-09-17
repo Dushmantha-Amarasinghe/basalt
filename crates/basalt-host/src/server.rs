@@ -12,7 +12,6 @@ use std::time::Instant;
 
 use basalt_net::framing::{read_request, write_err, write_ok, write_response_header};
 use basalt_net::identity::HostIdentity;
-use basalt_net::pairing;
 use basalt_net::tls::server_config;
 use basalt_proto::codec::{Codec, CompressionPolicy};
 use basalt_proto::frame::{BatchWriter, sanitize_relative_path};
@@ -26,7 +25,8 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::config::HostConfig;
 use crate::error::{HostError, Result};
-use crate::registry::{Device, Registry};
+use crate::registry::{Device, PairingRequest, Registry};
+use crate::traffic::Traffic;
 use crate::uploads::{Uploads, is_temp_name};
 use crate::vault::Vault;
 
@@ -38,12 +38,13 @@ pub struct Host {
     vault: tokio::sync::RwLock<Option<Arc<Vault>>>,
     registry: std::sync::Mutex<Registry>,
     uploads: Uploads,
+    traffic: Traffic,
 }
 
 impl Host {
     pub fn new(config: HostConfig, config_path: std::path::PathBuf) -> Result<Arc<Self>> {
         let identity = config.identity()?;
-        let registry = Registry::new(config.devices.clone());
+        let registry = Registry::new(config.devices.clone(), config.require_pin);
 
         let vault = match &config.vault_path {
             Some(path) => Some(Arc::new(Vault::open(path, &config.vault_name)?)),
@@ -57,6 +58,7 @@ impl Host {
             vault: tokio::sync::RwLock::new(vault),
             registry: std::sync::Mutex::new(registry),
             uploads: Uploads::default(),
+            traffic: Traffic::default(),
         }))
     }
 
@@ -88,23 +90,66 @@ impl Host {
         self.persist()
     }
 
-    /// Opens a pairing window and returns the PIN to display.
-    pub fn open_pairing(&self) -> Result<String> {
+    /// Devices waiting to be let in, with the PIN each was given.
+    pub fn pending_pairings(&self) -> Vec<PairingRequest> {
         self.registry
             .lock()
             .expect("registry lock")
-            .open_pairing(Instant::now())
+            .pending(Instant::now())
     }
 
-    pub fn close_pairing(&self) {
-        self.registry.lock().expect("registry lock").close_pairing();
+    /// Refuses a waiting request.
+    pub fn deny_pairing(&self, id: &str) -> bool {
+        self.registry.lock().expect("registry lock").deny(id)
     }
 
-    pub fn pairing_open(&self) -> bool {
+    pub fn require_pin(&self) -> bool {
+        self.registry.lock().expect("registry lock").require_pin()
+    }
+
+    /// Turns the PIN requirement on or off.
+    ///
+    /// With it off, anyone on this network who finds the host can read the
+    /// drive. That is a real decision, so the host app says so in as many words
+    /// rather than presenting it as a preference.
+    pub fn set_require_pin(&self, require: bool) -> Result<()> {
         self.registry
             .lock()
             .expect("registry lock")
-            .pairing_open(Instant::now())
+            .set_require_pin(require);
+        self.config.lock().expect("config lock").require_pin = require;
+        self.persist()
+    }
+
+    /// Everything each device has moved since the host started.
+    pub fn traffic(&self) -> std::collections::HashMap<String, crate::traffic::DeviceTraffic> {
+        self.traffic.snapshot()
+    }
+
+    /// What this host broadcasts about itself.
+    pub fn beacon(&self) -> basalt_net::discovery::Beacon {
+        let config = self.config.lock().expect("config lock");
+        basalt_net::discovery::Beacon {
+            host_id: self.identity.host_id.clone(),
+            host_name: config.host_name.clone(),
+            vault: config.vault_name.clone(),
+            port: config.port,
+            requires_pin: config.require_pin,
+            has_vault: config.vault_path.is_some(),
+        }
+    }
+
+    /// Renames a device in the list.
+    pub fn rename_device(&self, token_hash: &str, name: &str) -> Result<bool> {
+        let changed = self
+            .registry
+            .lock()
+            .expect("registry lock")
+            .rename(token_hash, name);
+        if changed {
+            self.persist()?;
+        }
+        Ok(changed)
     }
 
     pub fn devices(&self) -> Vec<Device> {
@@ -139,6 +184,7 @@ impl Host {
             .expect("registry lock")
             .revoke(token_hash);
         if removed {
+            self.traffic.forget(token_hash);
             self.persist()?;
         }
         Ok(removed)
@@ -212,6 +258,18 @@ pub async fn serve(server: BoundServer) -> Result<()> {
         ..
     } = server;
 
+    // Announce on the local network for as long as this host is serving, so
+    // clients never have to be told an address. A failure here is not fatal —
+    // a host nobody can discover is still a host somebody can reach directly.
+    {
+        let host = Arc::clone(&host);
+        tokio::spawn(async move {
+            if let Err(e) = basalt_net::discovery::respond(move || host.beacon()).await {
+                tracing::warn!("discovery is not running: {e}");
+            }
+        });
+    }
+
     loop {
         let (stream, peer) = listener.accept().await?;
         basalt_net::socket::tune(&stream);
@@ -237,8 +295,13 @@ pub async fn serve(server: BoundServer) -> Result<()> {
 #[derive(Default)]
 struct Session {
     device: Option<Device>,
-    client_nonce: Option<String>,
-    server_nonce: Option<String>,
+}
+
+impl Session {
+    /// The token hash this connection authenticated with, for accounting.
+    fn device_key(&self) -> Option<String> {
+        self.device.as_ref().map(|d| d.token_hash.clone())
+    }
 }
 
 impl Session {
@@ -252,14 +315,25 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut session = Session::default();
+    // Undone when this connection ends, however it ends.
+    let mut counted: Option<String> = None;
 
-    loop {
+    let result = loop {
         let (op, payload) = match read_request(&mut stream).await {
             Ok(v) => v,
             // A peer that goes away between requests is the normal end of a
             // pooled connection, not a failure.
-            Err(_) => return Ok(()),
+            Err(_) => break Ok(()),
         };
+
+        // Register the connection the moment it has a device to attribute it
+        // to, so the host can show how many each one holds open.
+        if counted.is_none()
+            && let Some(key) = session.device_key()
+        {
+            host.traffic.connected(&key);
+            counted = Some(key);
+        }
 
         if !op.allowed_unauthenticated() && session.device.is_none() {
             write_err(
@@ -276,9 +350,16 @@ where
             // pooling this connection and will use it again.
             let code = e.code();
             tracing::debug!("{op:?} failed: {e}");
-            write_err(&mut stream, code, &e.to_string()).await?;
+            if let Err(e) = write_err(&mut stream, code, &e.to_string()).await {
+                break Err(e.into());
+            }
         }
+    };
+
+    if let Some(key) = counted {
+        host.traffic.disconnected(&key);
     }
+    result
 }
 
 async fn dispatch<S>(
@@ -302,7 +383,7 @@ where
                     protocol: PROTOCOL_VERSION,
                     vault: host.vault_name(),
                     host_id: host.host_id().to_string(),
-                    pairing_open: host.pairing_open(),
+                    pairing_open: true,
                     host_name: host.host_name(),
                 },
             )
@@ -311,33 +392,26 @@ where
 
         Op::PairBegin => {
             let req: PairBeginRequest = decode(payload)?;
-            if !host.pairing_open() {
-                return Err(HostError::PairingRefused(
-                    "this host is not accepting new devices right now".into(),
-                ));
-            }
-            let server_nonce = pairing::random_nonce()
-                .map_err(|e| HostError::PairingRefused(format!("no randomness: {e}")))?;
-            session.client_nonce = Some(req.client_nonce);
-            session.server_nonce = Some(server_nonce.clone());
-            reply(stream, &PairBeginResponse { server_nonce }).await?;
+            // The host records the attempt and displays it, rather than needing
+            // a window opened in advance. That is what lets it show *which*
+            // machine is asking, beside the number to read across.
+            let request = {
+                let mut registry = host.registry.lock().expect("registry lock");
+                registry.begin_pairing(Instant::now(), &req.device_name, &req.client_nonce)?
+            };
+            reply(
+                stream,
+                &PairBeginResponse {
+                    server_nonce: request.server_nonce.clone(),
+                    request: request.id.clone(),
+                    requires_pin: request.pin.is_some(),
+                },
+            )
+            .await?;
         }
 
         Op::PairFinish => {
             let req: PairFinishRequest = decode(payload)?;
-            let (Some(client_nonce), Some(server_nonce)) =
-                (session.client_nonce.clone(), session.server_nonce.clone())
-            else {
-                return Err(HostError::PairingRefused(
-                    "pairing was not started on this connection".into(),
-                ));
-            };
-            // Consume the nonces whatever happens, so one PairBegin buys
-            // exactly one attempt rather than an unlimited number against the
-            // same challenge.
-            session.client_nonce = None;
-            session.server_nonce = None;
-
             let token = {
                 let mut registry = host.registry.lock().expect("registry lock");
                 // The host id comes from this host's own identity. Taking it
@@ -346,9 +420,8 @@ where
                 registry.finish_pairing(
                     Instant::now(),
                     host.host_id(),
-                    &client_nonce,
-                    &server_nonce,
-                    &req.proof,
+                    &req.request,
+                    req.proof.as_deref(),
                     &req.device_name,
                 )?
             };
@@ -439,6 +512,9 @@ where
             write_response_header(stream, STATUS_OK, data.len() as u64).await?;
             stream.write_all(&data).await?;
             stream.flush().await?;
+            if let Some(key) = session.device_key() {
+                host.traffic.sent(&key, data.len() as u64);
+            }
         }
 
         Op::ReadBatch => {
@@ -450,6 +526,9 @@ where
             write_response_header(stream, STATUS_OK, body.len() as u64).await?;
             stream.write_all(&body).await?;
             stream.flush().await?;
+            if let Some(key) = session.device_key() {
+                host.traffic.sent(&key, body.len() as u64);
+            }
         }
 
         Op::WriteBegin => {
@@ -480,6 +559,9 @@ where
             require_write(session)?;
             let (id, offset, data) = decode_chunk(payload)?;
             host.uploads.write_chunk(&id, offset, data).await?;
+            if let Some(key) = session.device_key() {
+                host.traffic.received(&key, data.len() as u64);
+            }
             write_ok(stream, &[]).await?;
         }
 

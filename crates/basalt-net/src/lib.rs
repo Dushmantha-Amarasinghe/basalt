@@ -9,6 +9,7 @@
 //! `basalt-host` and `basalt-client` each depend on this and not on each other,
 //! which is what lets the integration tests run both in one process.
 
+pub mod discovery;
 pub mod framing;
 pub mod identity;
 pub mod pairing;
@@ -16,6 +17,7 @@ pub mod socket;
 pub mod tls;
 
 pub use basalt_proto::{ErrorCode, Op, WireError};
+pub use discovery::{Beacon, Found};
 pub use identity::HostIdentity;
 pub use socket::DEFAULT_PORT;
 pub use tls::Trust;

@@ -54,6 +54,11 @@ pub enum ClientError {
     #[error("the host is not accepting new devices. Open pairing on the host and try again.")]
     PairingClosed,
 
+    /// The host asked for a PIN and none was supplied. Not a failure — the
+    /// interface asks for one and tries again.
+    #[error("this host asks for a PIN. It is showing one now.")]
+    PinRequired,
+
     #[error("{0}")]
     BadPin(String),
 
@@ -86,6 +91,7 @@ impl ClientError {
             ClientError::WrongHost { .. } => "wronghost",
             ClientError::Incompatible { .. } => "incompatible",
             ClientError::PairingClosed | ClientError::BadPin(_) => "pairing",
+            ClientError::PinRequired => "pinrequired",
             ClientError::Net(e) => match e.code() {
                 Some(E::NotFound) => "notfound",
                 Some(E::Denied) => "denied",
