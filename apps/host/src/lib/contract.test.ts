@@ -21,7 +21,7 @@
  * parses are ones this project writes by hand in a consistent style.
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -190,6 +190,65 @@ describe('the shell and the interface agree', () => {
     for (const name of commands.keys()) {
       expect(registered).toContain(name)
     }
+  })
+})
+
+/**
+ * Every Tauri plugin call the interface makes must be granted in the
+ * capability file.
+ *
+ * This is a second, separate way for the two halves to disagree, and it fails
+ * even more quietly than a renamed field: an ungranted call rejects at the ACL,
+ * and if nothing is catching, the button simply does nothing. That is exactly
+ * how `dialog:allow-confirm` went missing — Forget this vault, Pair with a
+ * different vault and Delete all looked like dead controls, with no error in
+ * the console and nothing in the logs.
+ */
+function sourceFiles(dir: string): string[] {
+  const out: string[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name)
+    if (entry.isDirectory()) out.push(...sourceFiles(full))
+    else if (/\.tsx?$/.test(entry.name) && !entry.name.endsWith('.test.ts')) {
+      out.push(full)
+    }
+  }
+  return out
+}
+
+/** `const { confirm, save } = await import('@tauri-apps/plugin-dialog')` */
+function pluginCalls(sources: string[]): Set<string> {
+  const needed = new Set<string>()
+  const pattern =
+    /(?:const|let)\s*\{([^}]*)\}\s*=\s*await import\(\s*'@tauri-apps\/plugin-(\w+)'\s*\)/g
+
+  for (const source of sources) {
+    const text = readFileSync(source, 'utf8')
+    for (const match of text.matchAll(pattern)) {
+      const [, names, plugin] = match
+      for (const raw of (names ?? '').split(',')) {
+        // `{ open: openPath }` — the permission follows the imported name.
+        const name = raw.split(':')[0]!.trim()
+        if (name) needed.add(`${plugin}:allow-${name}`)
+      }
+    }
+  }
+  return needed
+}
+
+describe('plugin permissions', () => {
+  const capability = JSON.parse(
+    read('../../src-tauri/capabilities/default.json'),
+  ) as { permissions: string[] }
+  const granted = new Set(capability.permissions)
+  const needed = [...pluginCalls(sourceFiles(path.resolve(here, '..')))]
+
+  it('finds plugin calls at all, so an empty scan cannot pass', () => {
+    expect(needed.length).toBeGreaterThan(0)
+  })
+
+  it.each(needed)('%s is granted in the capability file', (permission) => {
+    expect(granted).toContain(permission)
   })
 })
 

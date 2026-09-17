@@ -15,6 +15,7 @@
     "core:event:default",
     "dialog:allow-open",
     "dialog:allow-save",
+    "dialog:allow-confirm",
     "opener:allow-open-path",
     "opener:allow-open-url"
   ]
