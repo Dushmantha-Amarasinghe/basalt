@@ -66,6 +66,13 @@ enum Command {
         recursive: bool,
     },
 
+    /// Stream a file over a local URL any player can open.
+    ///
+    /// Prints the URL and keeps serving until stopped. Paste it into VLC or
+    /// mpv to watch a film off the vault without downloading it first — the
+    /// same mechanism the app's own player uses.
+    Url { path: String },
+
     /// Show what this device is paired with.
     Status,
 
@@ -183,6 +190,22 @@ async fn run_connected(client: &Arc<Basalt>, command: Command) -> Result<()> {
                 .upload(&local, &remote, overwrite, Some(bar("up")), None)
                 .await?;
             done(bytes, start);
+        }
+
+        Command::Url { path } => {
+            // Confirm it exists before printing a URL that would 404.
+            let entry = client.stat(&path).await?;
+            let proxy = basalt_client::proxy::MediaProxy::start(Arc::clone(client)).await?;
+            println!("{}", proxy.url_for(&path));
+            println!(
+                "
+{} · {}
+open that in VLC or mpv. ctrl-c to stop serving.",
+                entry.name,
+                human(entry.size)
+            );
+            // The proxy lives on a background task, so this has to stay alive.
+            std::future::pending::<()>().await;
         }
 
         Command::Mkdir { path } => {

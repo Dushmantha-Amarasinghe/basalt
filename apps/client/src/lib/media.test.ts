@@ -71,10 +71,16 @@ describe('isPlayable', () => {
     }
   })
 
-  // Naming these honestly is the point: showing a black rectangle for an MKV
-  // and letting the user work it out would be worse than saying so.
-  it('refuses the formats that need a real decoder', () => {
-    for (const name of ['a.mkv', 'a.avi', 'a.mov', 'a.wmv', 'a.txt', 'noext']) {
+  // MKV opens the player on purpose, even though the window only half
+  // understands it: the picture usually runs, and the player is where the
+  // reason for the silence gets explained. Silently downloading it instead
+  // would leave the user with no idea why.
+  it('opens the player for matroska so the limitation can be explained', () => {
+    expect(isPlayable('a.mkv')).toBe(true)
+  })
+
+  it('refuses the containers it cannot open at all', () => {
+    for (const name of ['a.avi', 'a.mov', 'a.wmv', 'a.txt', 'noext']) {
       expect(isPlayable(name), name).toBe(false)
     }
   })

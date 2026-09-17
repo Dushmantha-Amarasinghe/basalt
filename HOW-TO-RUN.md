@@ -100,10 +100,28 @@ Run this once on the host machine, in PowerShell **as administrator**:
 New-NetFirewallRule -DisplayName "Basalt Host" -Direction Inbound -Protocol TCP -LocalPort 7742 -Action Allow
 ```
 
-**A video shows "cannot decode this file"**
-The window plays what Chromium plays — MP4, WebM, MP3, FLAC. MKV, HEVC and AC3
-need a real decoder, which is the next piece of work. Download the file to
-watch it in another player for now.
+**A video plays but there is no sound**
+Almost always an MKV. The window is Chromium, and Chromium only reads Matroska
+in order to support WebM — so it accepts WebM's codecs and silently drops
+everything else. An MKV with an ordinary AAC track therefore shows a picture
+and no audio, even though the very same AAC inside an MP4 plays perfectly.
+
+The app detects this and says so, and offers **Open in your player** — it
+fetches the file and hands it to whatever you normally watch films with.
+
+To stream it instead of downloading, get a URL and paste it into VLC or mpv:
+
+```bash
+basalt.exe url films/holiday.mkv
+```
+
+That serves the file over a local address with full seeking, and a real player
+gets every track including the audio. Verified on a 2.2 GB 4K HEVC file:
+seeking ten minutes in took about two seconds.
+
+**A video will not open at all**
+AVI, MOV and WMV are containers the window cannot read. Same answer: **Open in
+your player**, or use `basalt url`.
 
 ---
 

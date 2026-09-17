@@ -268,6 +268,54 @@ async fn upload(
     Ok(result?)
 }
 
+/// Downloads a file to a temporary location and hands it to whatever the
+/// system opens that type with.
+///
+/// The escape hatch for everything the window cannot decode — MKV above all,
+/// where Chromium parses the container but drops any audio that is not Opus or
+/// Vorbis. Until there is a real demuxer in the app, "open it in VLC" has to be
+/// one click rather than a manual download.
+#[tauri::command]
+async fn open_externally(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    remote: String,
+    id: String,
+) -> Answer<String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let name = remote.rsplit('/').next().unwrap_or(&remote).to_string();
+    // A per-app subfolder, so these are easy to find and clear out, and a
+    // second viewing of the same file reuses what is already there.
+    let dir = std::env::temp_dir().join("Basalt");
+    std::fs::create_dir_all(&dir).map_err(|e| UiError::from(basalt_client::ClientError::Io(e)))?;
+    let local = dir.join(&name);
+
+    let cancel = Cancel::new();
+    state
+        .transfers
+        .lock()
+        .expect("transfers lock")
+        .insert(id.clone(), cancel.clone());
+
+    let report = progress_reporter(app.clone(), id.clone(), name, "download");
+    let result = state
+        .client
+        .download(&remote, &local, Some(report), Some(cancel))
+        .await;
+    state.transfers.lock().expect("transfers lock").remove(&id);
+    result?;
+
+    let shown = local.display().to_string();
+    app.opener()
+        .open_path(shown.clone(), None::<&str>)
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("could not open {shown}: {e}"),
+        })?;
+    Ok(shown)
+}
+
 #[tauri::command]
 fn cancel_transfer(state: State<'_, AppState>, id: String) -> bool {
     match state.transfers.lock().expect("transfers lock").get(&id) {
@@ -363,6 +411,7 @@ pub fn run() {
             media_url,
             download,
             upload,
+            open_externally,
             cancel_transfer,
         ])
         .run(tauri::generate_context!())

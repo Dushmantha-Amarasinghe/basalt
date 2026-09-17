@@ -55,13 +55,4 @@ export function entriesToMedia(entries: Entry[]): MediaItem[] {
   return entries.map(entryToMedia)
 }
 
-/** Whether the built-in player is likely to be able to decode this. */
-export function isPlayable(name: string): boolean {
-  const ext = name.split('.').pop()?.toLowerCase() ?? ''
-  // WebView2 is Chromium, so this is Chromium's list. MKV, HEVC and AC3 are
-  // the common gaps, and they need a real decoder rather than a better guess —
-  // that is what the mpv sidecar is for, later.
-  return ['mp4', 'm4v', 'webm', 'mp3', 'm4a', 'wav', 'ogg', 'opus', 'flac'].includes(
-    ext,
-  )
-}
+export { isPlayable } from './playback'
