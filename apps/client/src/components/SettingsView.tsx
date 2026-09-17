@@ -38,6 +38,12 @@ export function SettingsView({
             mono
           />
           <Row label="Access" value={status?.writable ? 'read and write' : 'read only'} />
+          <Note>
+            The address is where the host answered today, not something this app
+            remembers and depends on. When the router gives it a different one,
+            this app finds it again by its pinned identity — which is why you
+            were never asked to type one.
+          </Note>
           <Action label="Forget this vault" danger onClick={onForget} />
         </Section>
 

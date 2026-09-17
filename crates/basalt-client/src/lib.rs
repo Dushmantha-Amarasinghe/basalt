@@ -21,7 +21,7 @@ pub use client::{Basalt, Progress, TransferKind};
 pub use pool::Pool;
 pub use session::{Session, SessionInfo};
 pub use store::{ClientStore, KnownHost};
-pub use ui::{HostSummary, Status, TransferEvent, UiError};
+pub use ui::{DiscoveredHost, Status, TransferEvent, UiError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {

@@ -68,9 +68,8 @@ That is the last time you do any of this. From then on the app reconnects on
 its own whenever the host is up — including after the router gives the host a
 different address, which it finds again by itself.
 
-> The client's own pairing screen is still being rewritten around this. Until
-> that lands, `basalt find` from the command line lists what is out there and
-> `basalt pair <address>` joins it.
+A host that has not been given a drive yet is still listed, greyed out and
+labelled, rather than left out with no explanation.
 
 ---
 
@@ -152,13 +151,19 @@ problem is the network or the app:
 target\release\basalt.exe find
 target\release\basalt.exe probe 192.168.1.11
 target\release\basalt.exe pair 192.168.1.11
+target\release\basalt.exe status
 target\release\basalt.exe ls
 target\release\basalt.exe get films/holiday.mp4 C:\Users\you\Downloads\holiday.mp4
 target\release\basalt.exe put C:\Users\you\clip.mp4 films/clip.mp4
 ```
 
-It drives exactly the same code the app does, so anything that works here works
-there — and every failure is printed in full rather than turned into a banner.
+It drives exactly the same code the app does — `find` is literally the call the
+pairing screen makes — so anything that works here works there, and every
+failure is printed in full rather than turned into a banner.
+
+`probe` and `pair` still take an address, unlike the app. That is deliberate:
+when discovery is the thing that is broken, a tool that depends on discovery
+cannot tell you why.
 
 ---
 

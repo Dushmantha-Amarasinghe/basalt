@@ -48,24 +48,56 @@ impl Status {
     }
 }
 
+/// A host found on the network, ready to be shown in a list.
+///
+/// This replaces typing an address. Everything needed to draw a row and decide
+/// what tapping it does is here: whether it wants a PIN, whether it has a drive
+/// to share yet, and whether this device already knows it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HostSummary {
+pub struct DiscoveredHost {
     pub host_id: String,
     pub host_name: String,
     pub vault: String,
-    pub pairing_open: bool,
+    /// Where it answered from, `ip:port`.
+    ///
+    /// Shown small, and never typed. It is here because the identity is what
+    /// gets pinned and the address is only how this device reached it today.
+    pub address: String,
+    pub requires_pin: bool,
+    /// False until somebody has chosen a drive on that machine.
+    pub has_vault: bool,
+    /// Whether this device has already paired with it.
+    pub paired: bool,
 }
 
-impl From<basalt_proto::msg::HelloResponse> for HostSummary {
-    fn from(hello: basalt_proto::msg::HelloResponse) -> Self {
+impl DiscoveredHost {
+    pub fn new(found: &basalt_net::discovery::Found, paired: bool) -> Self {
         Self {
-            host_id: hello.host_id,
-            host_name: hello.host_name,
-            vault: hello.vault,
-            pairing_open: hello.pairing_open,
+            host_id: found.beacon.host_id.clone(),
+            host_name: found.beacon.host_name.clone(),
+            vault: found.beacon.vault.clone(),
+            address: found.address.to_string(),
+            requires_pin: found.beacon.requires_pin,
+            has_vault: found.beacon.has_vault,
+            paired,
         }
     }
+}
+
+/// Puts a discovered list in an order that does not move under the cursor.
+///
+/// Hosts already paired with first, then ones with a drive to share, then by
+/// name. The host id breaks ties so two machines with the same name — which
+/// happens, `DESKTOP-4F2A` twice — never swap places between scans.
+pub fn sort_hosts(hosts: &mut [DiscoveredHost]) {
+    hosts.sort_by(|a, b| {
+        b.paired
+            .cmp(&a.paired)
+            .then(b.has_vault.cmp(&a.has_vault))
+            .then_with(|| a.host_name.to_lowercase().cmp(&b.host_name.to_lowercase()))
+            .then_with(|| a.host_id.cmp(&b.host_id))
+    });
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -138,18 +170,128 @@ mod tests {
         );
     }
 
+    fn found(host_id: &str, requires_pin: bool, has_vault: bool) -> basalt_net::discovery::Found {
+        basalt_net::discovery::Found {
+            beacon: basalt_net::discovery::Beacon {
+                host_id: host_id.into(),
+                host_name: "laptop-b".into(),
+                vault: "Films".into(),
+                port: 7742,
+                requires_pin,
+                has_vault,
+            },
+            address: "192.168.1.90:7742".parse().unwrap(),
+        }
+    }
+
     #[test]
-    fn host_summary_matches_what_the_interface_reads() {
-        let summary = HostSummary {
-            host_id: "aa".into(),
-            host_name: "laptop-b".into(),
-            vault: "Vault".into(),
-            pairing_open: true,
-        };
+    fn a_discovered_host_matches_what_the_interface_reads() {
+        let host = DiscoveredHost::new(&found("aa", true, true), false);
         assert_eq!(
-            keys(&summary),
-            vec!["hostId", "hostName", "pairingOpen", "vault"]
+            keys(&host),
+            vec![
+                "address",
+                "hasVault",
+                "hostId",
+                "hostName",
+                "paired",
+                "requiresPin",
+                "vault",
+            ]
         );
+    }
+
+    /// The address comes from the datagram's sender, not from the payload — a
+    /// host cannot talk a client into connecting somewhere else by lying in
+    /// its beacon.
+    #[test]
+    fn a_discovered_host_carries_the_address_it_answered_from() {
+        let host = DiscoveredHost::new(&found("aa", true, true), false);
+        assert_eq!(host.address, "192.168.1.90:7742");
+        assert_eq!(host.host_name, "laptop-b");
+        assert_eq!(host.vault, "Films");
+        assert!(host.requires_pin);
+        assert!(host.has_vault);
+        assert!(!host.paired);
+    }
+
+    #[test]
+    fn a_host_with_no_drive_yet_says_so() {
+        // Worth listing anyway: seeing the machine and being told it has no
+        // drive is a much better answer than an empty list.
+        let host = DiscoveredHost::new(&found("aa", false, false), true);
+        assert!(!host.has_vault);
+        assert!(!host.requires_pin);
+        assert!(host.paired);
+    }
+
+    fn host(name: &str, host_id: &str, paired: bool, has_vault: bool) -> DiscoveredHost {
+        DiscoveredHost {
+            host_id: host_id.into(),
+            host_name: name.into(),
+            vault: "Vault".into(),
+            address: "192.168.1.90:7742".into(),
+            requires_pin: true,
+            has_vault,
+            paired,
+        }
+    }
+
+    #[test]
+    fn a_host_already_paired_with_comes_first() {
+        let mut hosts = vec![
+            host("Zebra", "cc", false, true),
+            host("Apple", "aa", true, true),
+        ];
+        sort_hosts(&mut hosts);
+        assert_eq!(hosts[0].host_name, "Apple");
+    }
+
+    #[test]
+    fn a_host_with_no_drive_sinks_below_one_that_has_one() {
+        let mut hosts = vec![
+            host("Apple", "aa", false, false),
+            host("Zebra", "cc", false, true),
+        ];
+        sort_hosts(&mut hosts);
+        assert_eq!(hosts[0].host_name, "Zebra");
+    }
+
+    #[test]
+    fn otherwise_they_are_in_name_order_regardless_of_case() {
+        let mut hosts = vec![
+            host("zebra", "cc", false, true),
+            host("Apple", "aa", false, true),
+            host("Mango", "bb", false, true),
+        ];
+        sort_hosts(&mut hosts);
+        let names: Vec<_> = hosts.iter().map(|h| h.host_name.as_str()).collect();
+        assert_eq!(names, ["Apple", "Mango", "zebra"]);
+    }
+
+    /// The reason the sort exists: the interface rescans on a timer, and rows
+    /// that swap places between scans cannot be clicked reliably.
+    #[test]
+    fn two_machines_with_the_same_name_keep_a_stable_order() {
+        let mut first = vec![
+            host("DESKTOP-4F2A", "bb", false, true),
+            host("DESKTOP-4F2A", "aa", false, true),
+        ];
+        let mut second = vec![
+            host("DESKTOP-4F2A", "aa", false, true),
+            host("DESKTOP-4F2A", "bb", false, true),
+        ];
+        sort_hosts(&mut first);
+        sort_hosts(&mut second);
+        assert_eq!(first[0].host_id, "aa");
+        assert_eq!(second[0].host_id, "aa");
+    }
+
+    #[test]
+    fn sorting_an_empty_list_is_fine() {
+        let mut hosts: Vec<DiscoveredHost> = Vec::new();
+        sort_hosts(&mut hosts);
+        assert!(hosts.is_empty());
     }
 
     #[test]
@@ -190,12 +332,6 @@ mod tests {
     #[test]
     fn no_field_anywhere_reaches_javascript_in_snake_case() {
         let status = Status::new(None, false, "Laptop A");
-        let summary = HostSummary {
-            host_id: "aa".into(),
-            host_name: "b".into(),
-            vault: "v".into(),
-            pairing_open: false,
-        };
         let event = TransferEvent {
             id: "t".into(),
             kind: "upload",
@@ -207,10 +343,12 @@ mod tests {
             rate: 0.0,
         };
 
+        let host = DiscoveredHost::new(&found("aa", true, true), false);
+
         for key in keys(&status)
             .iter()
-            .chain(&keys(&summary))
             .chain(&keys(&event))
+            .chain(&keys(&host))
         {
             assert!(
                 !key.contains('_'),

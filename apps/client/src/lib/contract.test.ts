@@ -1,0 +1,195 @@
+/**
+ * The contract between the Rust client and this interface.
+ *
+ * Neither side can check the other at compile time: the Tauri shell is outside
+ * the Cargo workspace, and TypeScript has never heard of `serde`. The gap
+ * between them is where this project's most expensive bug lived — Tauri
+ * converts command *arguments* from camelCase to snake_case but leaves
+ * *responses* exactly as serde wrote them, so a Rust field named `host_id`
+ * arrives as `host_id` while the interface reads `hostId` and silently gets
+ * `undefined`. The app runs, connects, and shows nothing.
+ *
+ * So this test reads the actual Rust source and checks three things:
+ *
+ * 1. Every command `api.ts` calls exists in the shell.
+ * 2. Every argument it passes is a parameter of that command.
+ * 3. Every response interface matches its `#[serde(rename_all = "camelCase")]`
+ *    struct in `basalt-client::ui`, field for field.
+ *
+ * Reading source with regular expressions is crude, and it is the right amount
+ * of machinery here: the alternative is no check at all, and the shapes it
+ * parses are ones this project writes by hand in a consistent style.
+ */
+
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
+import { describe, expect, it } from 'vitest'
+
+const here = path.dirname(fileURLToPath(import.meta.url))
+const read = (relative: string): string =>
+  readFileSync(path.resolve(here, relative), 'utf8')
+
+const shell = read('../../src-tauri/src/lib.rs')
+const uiRust = read('../../../../crates/basalt-client/src/ui.rs')
+const apiTs = read('./api.ts')
+
+function camel(snake: string): string {
+  return snake.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())
+}
+
+function snake(camelCase: string): string {
+  return camelCase.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)
+}
+
+function uncomment(source: string): string {
+  return source.replace(/^\s*\/\/.*$/gm, '')
+}
+
+// ---------------------------------------------------------------------------
+// Reading the Rust
+// ---------------------------------------------------------------------------
+
+function rustCommands(source: string): Map<string, string[]> {
+  const commands = new Map<string, string[]>()
+  const pattern = /#\[tauri::command\]\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*\(([^)]*)\)/g
+
+  for (const match of source.matchAll(pattern)) {
+    const [, name, rawParams] = match
+    const params = (rawParams ?? '')
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map((p) => {
+        const [ident, ...rest] = p.split(':')
+        return { ident: ident!.trim(), type: rest.join(':') }
+      })
+      // Tauri injects these; the interface never passes them.
+      .filter((p) => !/State\s*<|AppHandle|Window|Webview|Channel/.test(p.type))
+      .map((p) => p.ident)
+
+    commands.set(name!, params)
+  }
+  return commands
+}
+
+function rustStructs(source: string): Map<string, string[]> {
+  const structs = new Map<string, string[]>()
+  const pattern =
+    /#\[serde\(rename_all = "camelCase"\)\]\s*pub struct (\w+) \{([\s\S]*?)\n\}/g
+
+  for (const match of source.matchAll(pattern)) {
+    const [, name, body] = match
+    const fields = uncomment(body!)
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('pub '))
+      .map((line) => line.slice(4).split(':')[0]!.trim())
+      .map(camel)
+    structs.set(name!, fields.sort())
+  }
+  return structs
+}
+
+// ---------------------------------------------------------------------------
+// Reading the TypeScript
+// ---------------------------------------------------------------------------
+
+function tsInvocations(source: string): { command: string; args: string[] }[] {
+  const found: { command: string; args: string[] }[] = []
+  const pattern = /call<[^>]*>\(\s*'(\w+)'\s*(?:,\s*\{([^}]*)\})?\s*\)/g
+
+  for (const match of source.matchAll(pattern)) {
+    const [, command, rawArgs] = match
+    const args = (rawArgs ?? '')
+      .split(',')
+      .map((a) => a.split(':')[0]!.trim())
+      .filter(Boolean)
+    found.push({ command: command!, args })
+  }
+  return found
+}
+
+function tsInterfaces(source: string): Map<string, string[]> {
+  const interfaces = new Map<string, string[]>()
+  const pattern = /export interface (\w+) \{([\s\S]*?)\n\}/g
+
+  for (const match of source.matchAll(pattern)) {
+    const [, name, body] = match
+    const fields = uncomment(body!)
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /^\w+\??\s*:/.test(line))
+      .map((line) => line.split(/[?:]/)[0]!.trim())
+    interfaces.set(name!, fields.sort())
+  }
+  return interfaces
+}
+
+// ---------------------------------------------------------------------------
+// The checks
+// ---------------------------------------------------------------------------
+
+const commands = rustCommands(shell)
+const invocations = tsInvocations(apiTs)
+const structs = rustStructs(uiRust)
+const interfaces = tsInterfaces(apiTs)
+
+describe('the shell and the interface agree', () => {
+  it('finds commands on both sides, so an empty parse cannot pass', () => {
+    expect(commands.size).toBeGreaterThan(15)
+    expect(invocations.length).toBeGreaterThan(15)
+    expect(structs.size).toBeGreaterThan(2)
+  })
+
+  it.each(invocations)('$command exists in the shell', ({ command }) => {
+    expect([...commands.keys()]).toContain(command)
+  })
+
+  it.each(invocations.filter((i) => i.args.length > 0))(
+    '$command takes the arguments the interface sends',
+    ({ command, args }) => {
+      const declared = commands.get(command) ?? []
+      // Tauri lowercases the camelCase the interface sends into the snake_case
+      // the function declares, so compare in Rust's spelling.
+      for (const arg of args) {
+        expect(declared).toContain(snake(arg))
+      }
+    },
+  )
+
+  it('every command is registered in the invoke handler', () => {
+    const handler = shell.match(/generate_handler!\[([\s\S]*?)\]/)?.[1] ?? ''
+    const registered = handler
+      .split(',')
+      .map((name) => name.trim())
+      .filter(Boolean)
+
+    for (const name of commands.keys()) {
+      expect(registered).toContain(name)
+    }
+  })
+
+  it('every command is reachable from the interface', () => {
+    const called = new Set(invocations.map((i) => i.command))
+    const unreachable = [...commands.keys()].filter((name) => !called.has(name))
+    expect(unreachable).toEqual([])
+  })
+})
+
+describe('response shapes', () => {
+  // The exact bug: `host_id` on the wire, `hostId` in the interface, every
+  // field undefined and no error anywhere.
+  it.each(['Status', 'DiscoveredHost', 'TransferEvent'])(
+    '%s has the same fields in Rust and TypeScript',
+    (name) => {
+      const rustFields = structs.get(name)
+      const tsFields = interfaces.get(name)
+
+      expect(rustFields, `${name} not found in basalt-client::ui`).toBeDefined()
+      expect(tsFields, `${name} not found in api.ts`).toBeDefined()
+      expect(tsFields).toEqual(rustFields)
+    },
+  )
+})
