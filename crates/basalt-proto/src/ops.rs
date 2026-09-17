@@ -73,6 +73,18 @@ pub enum Op {
     /// needed to leave the drive. Copying host-side turns a two-minute
     /// operation on a 2 GB film into a disk-speed one.
     Copy = 18,
+    /// Subscribe to changes on the drive. **Streams.**
+    ///
+    /// The one operation that does not answer once and stop. The host keeps the
+    /// connection and writes a fresh OK response for every change it sees,
+    /// until the client hangs up. That needs no new framing — a response is
+    /// already self-delimiting — and it keeps the request/response shape of
+    /// every other op intact rather than inventing multiplexing for one case.
+    Watch = 19,
+    /// The media index: films and series recognised on the drive.
+    Library = 20,
+    /// Poster or backdrop bytes for one library item.
+    LibraryArt = 21,
 }
 
 impl Op {
@@ -81,7 +93,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::Copy as u8;
+    pub const LAST: u8 = Op::LibraryArt as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -103,6 +115,9 @@ impl Op {
             16 => Op::Remove,
             17 => Op::Space,
             18 => Op::Copy,
+            19 => Op::Watch,
+            20 => Op::Library,
+            21 => Op::LibraryArt,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -219,6 +234,9 @@ mod tests {
             Op::Remove,
             Op::Space,
             Op::Copy,
+            Op::Watch,
+            Op::Library,
+            Op::LibraryArt,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

@@ -39,6 +39,11 @@ pub struct Host {
     registry: std::sync::Mutex<Registry>,
     uploads: Uploads,
     traffic: Traffic,
+    /// Watching the drive. Replaced whenever the vault is.
+    watch: tokio::sync::RwLock<Option<Arc<crate::watch::Watch>>>,
+    /// The media index, and whether a scan is running.
+    library: std::sync::Mutex<crate::media::Library>,
+    scanning: std::sync::atomic::AtomicBool,
 }
 
 impl Host {
@@ -51,6 +56,24 @@ impl Host {
             None => None,
         };
 
+        // Starting the watcher must not stop a host from serving: a drive that
+        // will not report changes is still a drive you can read.
+        let watch = vault.as_ref().and_then(|vault| {
+            crate::watch::Watch::start(vault.root())
+                .inspect_err(|e| tracing::warn!("changes will not be live: {e}"))
+                .ok()
+        });
+
+        let library = match (&config.vault_path, config.library_enabled) {
+            (Some(root), true) => {
+                crate::media::index::Library::load(&crate::media::index::index_path(
+                    config_path.parent().unwrap_or(std::path::Path::new(".")),
+                    root,
+                ))
+            }
+            _ => crate::media::index::Library::default(),
+        };
+
         Ok(Arc::new(Self {
             identity,
             config_path,
@@ -59,7 +82,168 @@ impl Host {
             registry: std::sync::Mutex::new(registry),
             uploads: Uploads::default(),
             traffic: Traffic::default(),
+            watch: tokio::sync::RwLock::new(watch),
+            library: std::sync::Mutex::new(library),
+            scanning: std::sync::atomic::AtomicBool::new(false),
         }))
+    }
+
+    pub async fn watch(&self) -> Option<Arc<crate::watch::Watch>> {
+        self.watch.read().await.clone()
+    }
+
+    /// Tells every connected client something changed.
+    pub async fn announce(&self, change: basalt_proto::msg::Change) {
+        if let Some(watch) = self.watch().await {
+            watch.announce(change);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The media library
+    // -----------------------------------------------------------------------
+
+    pub fn library_enabled(&self) -> bool {
+        self.config.lock().expect("config lock").library_enabled
+    }
+
+    pub fn library_revision(&self) -> u64 {
+        self.library.lock().expect("library lock").revision
+    }
+
+    pub fn is_scanning(&self) -> bool {
+        self.scanning.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn library_items(&self) -> Vec<basalt_proto::msg::LibraryItem> {
+        self.library.lock().expect("library lock").items.clone()
+    }
+
+    /// Answers a client, omitting the index when it already has this revision.
+    pub fn library_response(&self, known_revision: u64) -> basalt_proto::msg::LibraryResponse {
+        let library = self.library.lock().expect("library lock");
+        let enabled = self.library_enabled();
+        basalt_proto::msg::LibraryResponse {
+            revision: library.revision,
+            enabled,
+            scanning: self.is_scanning(),
+            // Revision 0 means "never scanned", which a client cannot already
+            // have — so it always gets the (empty) list rather than silence.
+            items: if enabled && (known_revision != library.revision || library.revision == 0) {
+                Some(library.items.clone())
+            } else {
+                None
+            },
+        }
+    }
+
+    fn library_path(&self) -> Option<std::path::PathBuf> {
+        let root = self.vault_path()?;
+        Some(crate::media::index::index_path(
+            self.config_path
+                .parent()
+                .unwrap_or(std::path::Path::new(".")),
+            &root,
+        ))
+    }
+
+    /// Where artwork for one item is cached.
+    fn art_path(&self, id: &str) -> Option<std::path::PathBuf> {
+        // Ids are hex from a hash, so nothing here can walk out of the folder —
+        // but checked anyway, because this path is built from a wire value.
+        if !id.chars().all(|c| c.is_ascii_alphanumeric()) || id.is_empty() || id.len() > 64 {
+            return None;
+        }
+        Some(
+            self.config_path
+                .parent()?
+                .join("art")
+                .join(format!("{id}.jpg")),
+        )
+    }
+
+    pub fn art(&self, id: &str) -> Option<Vec<u8>> {
+        std::fs::read(self.art_path(id)?).ok()
+    }
+
+    /// Turns the library on or off.
+    ///
+    /// Turning it off drops the index rather than hiding it: an index nobody
+    /// asked for should not sit on disk, and rebuilding is a scan away.
+    pub async fn set_library_enabled(self: &Arc<Self>, enabled: bool) -> Result<()> {
+        self.config.lock().expect("config lock").library_enabled = enabled;
+        self.persist()?;
+
+        if enabled {
+            self.start_scan();
+        } else {
+            self.library.lock().expect("library lock").items.clear();
+            if let Some(path) = self.library_path() {
+                let _ = std::fs::remove_file(path);
+            }
+            self.announce(basalt_proto::msg::Change::LibraryChanged)
+                .await;
+        }
+        Ok(())
+    }
+
+    /// Rebuilds the index in the background.
+    ///
+    /// Completely, every time. That is what makes deleted files disappear
+    /// without any separate bookkeeping to fall out of step — the scan is the
+    /// truth and anything absent from it is gone by construction.
+    pub fn start_scan(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+
+        if !self.library_enabled() {
+            return;
+        }
+        // One scan at a time. A second request while one runs is a no-op rather
+        // than a queue, because the one already running will see the same drive.
+        if self.scanning.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let host = Arc::clone(self);
+        tokio::spawn(async move {
+            let outcome = host.scan_once().await;
+            host.scanning.store(false, Ordering::SeqCst);
+            match outcome {
+                Ok(true) => {
+                    host.announce(basalt_proto::msg::Change::LibraryChanged)
+                        .await;
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!("the library scan failed: {e}"),
+            }
+        });
+    }
+
+    async fn scan_once(&self) -> Result<bool> {
+        let Some(vault) = self.vault().await else {
+            return Ok(false);
+        };
+        let items = tokio::task::spawn_blocking(move || crate::media::scan(&vault))
+            .await
+            .map_err(|e| HostError::BadRequest(format!("the scan panicked: {e}")))?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let (changed, snapshot) = {
+            let mut library = self.library.lock().expect("library lock");
+            let changed = library.replace(items, now);
+            (changed, library.clone())
+        };
+
+        if let Some(path) = self.library_path()
+            && let Err(e) = snapshot.save(&path)
+        {
+            tracing::warn!("could not save the library index: {e}");
+        }
+        Ok(changed)
     }
 
     pub fn host_id(&self) -> &str {
@@ -79,7 +263,7 @@ impl Host {
     }
 
     /// Locks in a drive, replacing whatever was being served.
-    pub async fn set_vault(&self, path: &std::path::Path, name: &str) -> Result<()> {
+    pub async fn set_vault(self: &Arc<Self>, path: &std::path::Path, name: &str) -> Result<()> {
         let vault = Arc::new(Vault::open(path, name)?);
         *self.vault.write().await = Some(vault);
         {
@@ -87,7 +271,31 @@ impl Host {
             config.vault_path = Some(path.to_path_buf());
             config.vault_name = name.to_string();
         }
-        self.persist()
+        self.persist()?;
+
+        // Point the watcher at the new drive. Dropping the old one stops it,
+        // which closes every watch connection — and a client that reconnects
+        // gets changes for the drive actually being served now.
+        *self.watch.write().await = crate::watch::Watch::start(path)
+            .inspect_err(|e| tracing::warn!("changes will not be live: {e}"))
+            .ok();
+
+        // A different drive is a different library. Load whatever was indexed
+        // for it before, then rescan.
+        {
+            let mut library = self.library.lock().expect("library lock");
+            *library = match self.library_enabled() {
+                true => self
+                    .library_path()
+                    .map(|p| crate::media::index::Library::load(&p))
+                    .unwrap_or_default(),
+                false => crate::media::index::Library::default(),
+            };
+        }
+        self.start_scan();
+        self.announce(basalt_proto::msg::Change::Resynchronise)
+            .await;
+        Ok(())
     }
 
     /// Where the served drive lives, if one has been chosen.
@@ -689,8 +897,68 @@ where
                 .map_err(join)??;
             write_ok(stream, &[]).await?;
         }
+
+        // The one op that does not answer once. This borrows the connection
+        // for as long as the client wants it and writes a response per change.
+        Op::Watch => {
+            let _: WatchRequest = decode(payload).unwrap_or_default();
+            stream_changes(stream, host).await?;
+        }
+
+        Op::Library => {
+            let req: LibraryRequest = decode(payload).unwrap_or_default();
+            reply(stream, &host.library_response(req.known_revision)).await?;
+        }
+
+        Op::LibraryArt => {
+            let req: ArtRequest = decode(payload)?;
+            match host.art(&req.id) {
+                Some(bytes) => write_ok(stream, &bytes).await?,
+                None => return Err(HostError::NotFound(format!("artwork for {}", req.id))),
+            }
+        }
     }
     Ok(())
+}
+
+/// Writes one response per change until the client hangs up.
+///
+/// A lagging subscriber is told to reload rather than quietly skipped. The
+/// alternative — dropping the changes it missed — leaves that client showing a
+/// listing the drive stopped agreeing with, which is the single failure this
+/// whole mechanism exists to prevent.
+async fn stream_changes<S>(stream: &mut S, host: &Arc<Host>) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut events = match host.watch().await {
+        Some(watch) => watch.subscribe(),
+        None => {
+            return Err(HostError::Denied(
+                "this host has not been given a drive to share yet".into(),
+            ));
+        }
+    };
+
+    loop {
+        let change = match events.recv().await {
+            Ok(change) => change,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                tracing::debug!("a watcher fell {missed} changes behind");
+                basalt_proto::msg::Change::Resynchronise
+            }
+            // The watcher stopped, which means the vault was replaced.
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                return Ok(());
+            }
+        };
+
+        // A write failure here is the client hanging up, which is how a watch
+        // is meant to end.
+        if reply(stream, &WatchEvent { change }).await.is_err() {
+            return Ok(());
+        }
+    }
 }
 
 fn require_write(session: &Session) -> Result<()> {

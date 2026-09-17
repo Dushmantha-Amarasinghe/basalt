@@ -23,7 +23,7 @@ fn default_true() -> bool {
 ///
 /// 2 — pairing became a *request* the host displays, rather than a window the
 /// host opens in advance, and the PIN became optional.
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 // ---------------------------------------------------------------------------
 // Handshake
@@ -297,6 +297,165 @@ pub fn parse_upload_id(s: &str) -> Result<[u8; UPLOAD_ID_BYTES]> {
     Ok(out)
 }
 
+// ---------------------------------------------------------------------------
+// Watching
+// ---------------------------------------------------------------------------
+
+/// What happened to something on the drive.
+///
+/// Reported by watching the filesystem rather than by the host announcing its
+/// own operations, and that is the important part: the drive is the truth. A
+/// file deleted in Explorer, by another program, or by a second client all
+/// arrive here identically, so no client can be looking at a listing the disk
+/// has stopped agreeing with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Change {
+    /// Something appeared. `path` is vault-relative.
+    Created { path: String },
+    /// Something is gone.
+    Removed { path: String },
+    /// Contents changed; the entry is still there.
+    Modified { path: String },
+    /// Moved or renamed within the vault.
+    Renamed { from: String, to: String },
+    /// Too many changes at once to report individually — reload everything.
+    ///
+    /// The watcher's buffer can overflow when something unpacks ten thousand
+    /// files. Saying so plainly is far better than silently dropping events and
+    /// leaving every client subtly wrong.
+    Resynchronise,
+    /// The media index finished changing.
+    LibraryChanged,
+}
+
+impl Change {
+    /// The directory a client would need to refresh, if any.
+    ///
+    /// A client only cares about a change if it is looking at the folder the
+    /// change happened in — this is what lets it ignore the rest cheaply.
+    pub fn parent_dirs(&self) -> Vec<String> {
+        fn parent(path: &str) -> String {
+            match path.rfind('/') {
+                Some(cut) => path[..cut].to_string(),
+                None => String::new(),
+            }
+        }
+        match self {
+            Change::Created { path } | Change::Removed { path } | Change::Modified { path } => {
+                vec![parent(path)]
+            }
+            Change::Renamed { from, to } => {
+                let (a, b) = (parent(from), parent(to));
+                if a == b { vec![a] } else { vec![a, b] }
+            }
+            Change::Resynchronise | Change::LibraryChanged => Vec::new(),
+        }
+    }
+}
+
+/// Sent once to open a watch. Empty today; here so the shape can grow.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WatchRequest {}
+
+/// One streamed frame on a watch connection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchEvent {
+    pub change: Change,
+}
+
+// ---------------------------------------------------------------------------
+// The media library
+// ---------------------------------------------------------------------------
+
+/// Asked for the whole index at once.
+///
+/// One request rather than paged: a personal library is thousands of items, not
+/// millions, and the whole thing is a few hundred kilobytes of JSON. Paging
+/// would cost a round trip per screen on a link where a round trip is 2.3 ms
+/// and buy nothing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LibraryRequest {
+    /// Return nothing when the host's copy still matches this. Cheap polling.
+    #[serde(default)]
+    pub known_revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryResponse {
+    /// Bumped on every reindex, so a client can tell nothing changed.
+    pub revision: u64,
+    /// False when the library is switched off on the host.
+    pub enabled: bool,
+    /// True while a scan is running.
+    pub scanning: bool,
+    /// Absent when `known_revision` already matched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<LibraryItem>>,
+}
+
+/// A film or a series. Episodes hang off the series.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LibraryItem {
+    /// Stable across rescans: derived from the title and year, not the path, so
+    /// moving a file does not orphan its artwork or its resume point.
+    pub id: String,
+    pub kind: LibraryKind,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<u16>,
+    /// Vault-relative path of the file, for a film.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub size: u64,
+    /// Unix seconds of the newest file in this item, for "recently added".
+    #[serde(default)]
+    pub added: i64,
+    /// Seasons, for a series. Empty for a film.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seasons: Vec<Season>,
+    /// How sure the parser is, 0–100. Below `CONFIDENT` the interface should
+    /// offer the user a chance to correct it rather than assert it.
+    #[serde(default)]
+    pub confidence: u8,
+}
+
+/// Below this, a match is a guess worth showing the user.
+pub const CONFIDENT: u8 = 70;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryKind {
+    Film,
+    Series,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Season {
+    pub number: u16,
+    pub episodes: Vec<Episode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Episode {
+    pub number: u16,
+    /// Vault-relative path.
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub added: i64,
+}
+
+/// Artwork for one item.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtRequest {
+    pub id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,6 +530,116 @@ mod tests {
         let req: WriteBeginRequest = serde_json::from_str(r#"{"path":"a.bin","size":10}"#).unwrap();
         assert!(!req.overwrite);
         assert_eq!(req.resume, None);
+    }
+
+    #[test]
+    fn a_change_names_the_folder_that_has_to_be_refreshed() {
+        assert_eq!(
+            Change::Created {
+                path: "films/a.mkv".into()
+            }
+            .parent_dirs(),
+            ["films"]
+        );
+        assert_eq!(
+            Change::Removed {
+                path: "a.mkv".into()
+            }
+            .parent_dirs(),
+            [""],
+            "something in the root belongs to the root"
+        );
+    }
+
+    // A move between folders changes two listings, and a client looking at
+    // either one is now wrong.
+    #[test]
+    fn a_move_between_folders_touches_both_of_them() {
+        let change = Change::Renamed {
+            from: "films/a.mkv".into(),
+            to: "archive/a.mkv".into(),
+        };
+        assert_eq!(change.parent_dirs(), ["films", "archive"]);
+    }
+
+    #[test]
+    fn a_rename_in_place_touches_one_folder_once() {
+        let change = Change::Renamed {
+            from: "films/a.mkv".into(),
+            to: "films/b.mkv".into(),
+        };
+        assert_eq!(change.parent_dirs(), ["films"]);
+    }
+
+    #[test]
+    fn a_resynchronise_belongs_to_no_particular_folder() {
+        assert!(Change::Resynchronise.parent_dirs().is_empty());
+        assert!(Change::LibraryChanged.parent_dirs().is_empty());
+    }
+
+    #[test]
+    fn changes_round_trip_with_their_kind_tagged() {
+        let change = Change::Renamed {
+            from: "a".into(),
+            to: "b".into(),
+        };
+        let json = serde_json::to_string(&change).unwrap();
+        assert!(json.contains(r#""kind":"renamed""#), "{json}");
+        assert_eq!(serde_json::from_str::<Change>(&json).unwrap(), change);
+    }
+
+    #[test]
+    fn a_library_response_can_say_nothing_changed_without_sending_the_index() {
+        let response = LibraryResponse {
+            revision: 7,
+            enabled: true,
+            scanning: false,
+            items: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(!json.contains("items"), "an unchanged index sends no items");
+    }
+
+    #[test]
+    fn a_film_and_a_series_round_trip() {
+        let items = vec![
+            LibraryItem {
+                id: "f1".into(),
+                kind: LibraryKind::Film,
+                title: "Arrival".into(),
+                year: Some(2016),
+                path: Some("films/Arrival.mkv".into()),
+                size: 10,
+                added: 1,
+                seasons: Vec::new(),
+                confidence: 95,
+            },
+            LibraryItem {
+                id: "s1".into(),
+                kind: LibraryKind::Series,
+                title: "Breaking Bad".into(),
+                year: Some(2008),
+                path: None,
+                size: 20,
+                added: 2,
+                seasons: vec![Season {
+                    number: 1,
+                    episodes: vec![Episode {
+                        number: 1,
+                        path: "shows/BB/S01/e1.mkv".into(),
+                        title: None,
+                        size: 20,
+                        added: 2,
+                    }],
+                }],
+                confidence: 88,
+            },
+        ];
+        let json = serde_json::to_string(&items).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<LibraryItem>>(&json).unwrap(),
+            items
+        );
     }
 
     #[test]
