@@ -14,6 +14,7 @@ import {
 import type { MediaItem } from '@/lib/mockMedia'
 import { formatDuration } from '@/lib/mockMedia'
 import { api } from '@/lib/api'
+import { SILENT_MESSAGE, judgeSound, readCounters, type SoundState } from '@/lib/playback'
 import { cn } from '@/lib/utils'
 
 /**
@@ -43,7 +44,9 @@ export function PlayerOverlay({
   const [position, setPosition] = useState(0)
   const [duration, setDuration] = useState(0)
   const [muted, setMuted] = useState(false)
+  const [volume, setVolume] = useState(1)
   const [failed, setFailed] = useState(false)
+  const [sound, setSound] = useState<SoundState>('unknown')
 
   const isAudio = item ? looksLikeAudio(item.id) : false
 
@@ -56,6 +59,7 @@ export function PlayerOverlay({
     let cancelled = false
     setUrl(null)
     setFailed(false)
+    setSound('unknown')
     setPosition(0)
     setDuration(0)
     void api
@@ -70,6 +74,26 @@ export function PlayerOverlay({
       cancelled = true
     }
   }, [item])
+
+  // Chromium plays a file it can only partly decode without saying so: the
+  // picture runs and there is no sound and no error. Watching the decoded-byte
+  // counters is the only way to notice, so the app can say what happened
+  // instead of leaving the user to wonder whether it is their volume.
+  useEffect(() => {
+    if (!url || failed || !item) return undefined
+    const started = Date.now()
+    const timer = setInterval(() => {
+      const media = mediaRef.current
+      if (!media || media.paused) return
+      const { audio, video } = readCounters(media)
+      const verdict = judgeSound(audio, video, (Date.now() - started) / 1000)
+      if (verdict !== 'unknown') {
+        setSound(verdict)
+        clearInterval(timer)
+      }
+    }, 500)
+    return () => clearInterval(timer)
+  }, [url, failed, item])
 
   const toggle = useCallback(() => {
     const media = mediaRef.current
@@ -180,6 +204,29 @@ export function PlayerOverlay({
               </motion.div>
             )}
 
+            {/*
+              The picture is running and nothing is coming out. Chromium gives
+              no error for this, so without saying it here the user is left
+              checking their own volume.
+            */}
+            <AnimatePresence>
+              {sound === 'silent' && (
+                <motion.div
+                  initial={{ opacity: 0, y: -8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  className="absolute inset-x-0 top-0 flex justify-center px-16 pt-4"
+                >
+                  <div className="flex max-w-[520px] items-start gap-2.5 rounded-md border border-danger/25 bg-dangerBg/95 px-3.5 py-2.5 backdrop-blur">
+                    <AlertCircle size={14} className="mt-px shrink-0 text-danger" />
+                    <p className="text-[12px] leading-relaxed text-danger">
+                      {SILENT_MESSAGE}
+                    </p>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             <button
               onClick={onClose}
               aria-label="Close player"
@@ -224,16 +271,42 @@ export function PlayerOverlay({
 
               <div className="flex-1" />
 
-              <ControlButton
-                icon={muted ? VolumeX : Volume2}
-                label={muted ? 'Unmute' : 'Mute'}
-                onClick={() => {
-                  const media = mediaRef.current
-                  if (!media) return
-                  media.muted = !media.muted
-                  setMuted(media.muted)
-                }}
-              />
+              <div className="group/vol flex items-center gap-1.5">
+                <ControlButton
+                  icon={muted || volume === 0 ? VolumeX : Volume2}
+                  label={muted ? 'Unmute' : 'Mute'}
+                  onClick={() => {
+                    const media = mediaRef.current
+                    if (!media) return
+                    media.muted = !media.muted
+                    setMuted(media.muted)
+                  }}
+                />
+                {/*
+                  A real slider rather than a mute toggle alone: when someone
+                  reports no sound, the first thing they need is to rule out
+                  the volume, and a control that only mutes cannot do that.
+                */}
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.02}
+                  value={muted ? 0 : volume}
+                  aria-label="Volume"
+                  onChange={(e) => {
+                    const next = Number(e.target.value)
+                    const media = mediaRef.current
+                    setVolume(next)
+                    setMuted(next === 0)
+                    if (media) {
+                      media.volume = next
+                      media.muted = next === 0
+                    }
+                  }}
+                  className="h-1 w-0 cursor-pointer appearance-none rounded-full bg-white/[0.14] opacity-0 transition-all duration-200 accent-basalt group-hover/vol:w-20 group-hover/vol:opacity-100"
+                />
+              </div>
               <ControlButton
                 icon={Maximize2}
                 label="Fullscreen"

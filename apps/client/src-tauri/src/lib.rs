@@ -122,6 +122,19 @@ async fn space(state: State<'_, AppState>) -> Answer<(u64, u64)> {
 }
 
 #[tauri::command]
+async fn stat_entry(
+    state: State<'_, AppState>,
+    path: String,
+) -> Answer<basalt_proto::msg::DirEntry> {
+    Ok(state.client.stat(&path).await?)
+}
+
+#[tauri::command]
+async fn copy_entry(state: State<'_, AppState>, from: String, to: String) -> Answer<()> {
+    Ok(state.client.copy(&from, &to).await?)
+}
+
+#[tauri::command]
 async fn make_dir(state: State<'_, AppState>, path: String) -> Answer<()> {
     Ok(state.client.mkdir(&path).await?)
 }
@@ -268,12 +281,48 @@ fn cancel_transfer(state: State<'_, AppState>, id: String) -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebView2 refuses to start playback with sound unless the page has a
+    // recent user gesture. Clicking a file in the list *is* one, but the
+    // `<video>` element is created afterwards, during a React render, and by
+    // then the activation has often lapsed — so a film would open showing a
+    // still frame, or play with no audio, for no reason the user could see.
+    //
+    // Set before the webview exists, which is why it is the first thing here.
+    #[cfg(windows)]
+    std::env::set_var(
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "--autoplay-policy=no-user-gesture-required",
+    );
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let store_path = basalt_client::store::default_path();
             let client = Arc::new(Basalt::open(store_path)?);
+
+            // Feed the throughput trace from the one counter that sees every
+            // byte — downloads, uploads, listings and, above all, a film being
+            // streamed through the media proxy. Emitting only when something
+            // moved means an idle app sends nothing at all.
+            {
+                let client = Arc::clone(&client);
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut last = 0u64;
+                    let mut interval =
+                        tokio::time::interval(std::time::Duration::from_millis(250));
+                    loop {
+                        interval.tick().await;
+                        let total = client.bytes_moved();
+                        let delta = total.saturating_sub(last);
+                        last = total;
+                        if delta > 0 {
+                            let _ = handle.emit("basalt://bytes", delta);
+                        }
+                    }
+                });
+            }
 
             // Reconnect in the background rather than blocking the window.
             // A host that is asleep must not mean an app that will not open.
@@ -305,6 +354,8 @@ pub fn run() {
             disconnect,
             forget_host,
             list_dir,
+            stat_entry,
+            copy_entry,
             space,
             make_dir,
             rename_entry,

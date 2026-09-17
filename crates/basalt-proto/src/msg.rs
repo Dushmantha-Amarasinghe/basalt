@@ -202,6 +202,12 @@ pub struct RenameRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyRequest {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoveRequest {
     pub path: String,
     /// Required for a non-empty directory, so a mis-click cannot erase a tree.

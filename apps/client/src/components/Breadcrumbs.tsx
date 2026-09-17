@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { Menu } from './ui/Menu'
+import { DRAG_MIME, draggedPaths } from './FileList'
 import { cn } from '@/lib/utils'
 
 /**
@@ -23,10 +25,14 @@ const VISIBLE_TAIL = 2
 export function Breadcrumbs({
   path,
   onNavigateTo,
+  onDropInto,
 }: {
   path: string[]
   onNavigateTo: (index: number) => void
+  /** Files dragged onto a crumb, so dropping moves them up a level. */
+  onDropInto?: (index: number, paths: string[]) => void
 }): React.JSX.Element {
+  const [dropIndex, setDropIndex] = useState<number | null>(null)
   const collapsed = path.length > VISIBLE_TAIL + 2
   const hidden = collapsed ? path.slice(1, path.length - VISIBLE_TAIL) : []
   const tail = collapsed ? path.slice(path.length - VISIBLE_TAIL) : path.slice(1)
@@ -43,7 +49,10 @@ export function Breadcrumbs({
         label={path[0] ?? ''}
         current={path.length === 1}
         fixed
+        dropTarget={dropIndex === 0}
         onClick={() => onNavigateTo(0)}
+        onDropInto={onDropInto ? (paths) => onDropInto(0, paths) : undefined}
+        onDropStateChange={(over) => setDropIndex(over ? 0 : null)}
       />
 
       {collapsed && (
@@ -84,7 +93,14 @@ export function Breadcrumbs({
           <Crumb
             label={segment}
             current={index === tail.length - 1}
+            dropTarget={dropIndex === tailOffset + index}
             onClick={() => onNavigateTo(tailOffset + index)}
+            onDropInto={
+              onDropInto ? (paths) => onDropInto(tailOffset + index, paths) : undefined
+            }
+            onDropStateChange={(over) =>
+              setDropIndex(over ? tailOffset + index : null)
+            }
           />
         </div>
       ))}
@@ -100,23 +116,55 @@ function Crumb({
   label,
   current,
   fixed,
+  dropTarget,
   onClick,
+  onDropInto,
+  onDropStateChange,
 }: {
   label: string
   current: boolean
   fixed?: boolean
+  dropTarget?: boolean
   onClick: () => void
+  onDropInto?: (paths: string[]) => void
+  onDropStateChange?: (over: boolean) => void
 }): React.JSX.Element {
   return (
     <button
       onClick={onClick}
       title={label}
+      // Dropping onto a crumb is the quickest way to move something up a
+      // level, which is otherwise the one direction dragging cannot go: the
+      // parent folder is never a row in the list you are looking at.
+      onDragEnter={onDropInto ? () => onDropStateChange?.(true) : undefined}
+      onDragLeave={onDropInto ? () => onDropStateChange?.(false) : undefined}
+      onDragOver={
+        onDropInto
+          ? (e) => {
+              if (!e.dataTransfer.types.includes(DRAG_MIME)) return
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'move'
+            }
+          : undefined
+      }
+      onDrop={
+        onDropInto
+          ? (e) => {
+              onDropStateChange?.(false)
+              const paths = draggedPaths(e.dataTransfer)
+              if (paths.length === 0) return
+              e.preventDefault()
+              onDropInto(paths)
+            }
+          : undefined
+      }
       className={cn(
         'no-drag truncate rounded px-1.5 py-0.5 transition-colors',
         fixed ? 'shrink-0' : 'min-w-[4ch]',
         current
           ? 'font-semibold text-text'
           : 'text-textDim hover:bg-white/[0.04] hover:text-text',
+        dropTarget && 'bg-basalt/20 text-text ring-1 ring-inset ring-basalt/45',
       )}
     >
       {label}

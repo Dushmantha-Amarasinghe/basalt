@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { getCurrent, getSamples, subscribeThroughput } from '@/lib/throughput'
+import {
+  IDLE_FLOOR_RATE,
+  getCurrent,
+  getCurrentMbps,
+  getSamples,
+  subscribeThroughput,
+} from '@/lib/throughput'
 
 /**
  * A live throughput trace, drawn on canvas.
@@ -53,9 +59,11 @@ export function Sparkline({
       ctx.clearRect(0, 0, width, height)
       if (samples.length < 2) return
 
-      // Scale to the window's own peak so quiet periods still show shape, with
-      // a floor so a flat idle line is not amplified into noise.
-      let peak = 1
+      // Scale to the window's own peak so quiet periods still show shape. The
+      // floor is a real rate rather than 1, because samples are now bytes per
+      // second: without it an idle window of zeros would be divided by 1 and
+      // any stray byte would spike to full height.
+      let peak = IDLE_FLOOR_RATE
       for (const value of samples) if (value > peak) peak = value
 
       const step = width / (samples.length - 1)
@@ -123,7 +131,7 @@ export function ThroughputReadout({
   className?: string
   idleLabel?: string
 }): React.JSX.Element {
-  const [value, setValue] = useState(() => getCurrent())
+  const [value, setValue] = useState(() => getCurrentMbps())
 
   useEffect(() => {
     // Text only needs to keep up with the eye, not the data. Updating a few
@@ -133,7 +141,7 @@ export function ThroughputReadout({
       const now = performance.now()
       if (now - last < 320) return
       last = now
-      setValue(getCurrent())
+      setValue(getCurrentMbps())
     })
   }, [])
 
@@ -144,8 +152,14 @@ export function ThroughputReadout({
   )
 }
 
-/** True when the link has been moving data recently. Coarse on purpose. */
-export function useIsActive(threshold = 0.5): boolean {
+/**
+ * True when the link has been moving data recently. Coarse on purpose.
+ *
+ * Drives the mark's breathing in the title bar, so it must be steady rather
+ * than accurate: flickering on and off between chunks would be worse than not
+ * animating at all.
+ */
+export function useIsActive(thresholdBytesPerSecond = IDLE_FLOOR_RATE): boolean {
   const [active, setActive] = useState(false)
 
   useEffect(() => {
@@ -154,9 +168,17 @@ export function useIsActive(threshold = 0.5): boolean {
       const now = performance.now()
       if (now - last < 600) return
       last = now
-      setActive(getCurrent() > threshold)
+      // Any movement in the visible window counts, not just the latest sample.
+      // A transfer between chunks reads as zero for an instant, and the mark
+      // must not stutter every time that happens.
+      const samples = getSamples()
+      let recent = getCurrent()
+      for (let i = samples.length - 8; i < samples.length; i += 1) {
+        if (i >= 0) recent = Math.max(recent, samples[i]!)
+      }
+      setActive(recent > thresholdBytesPerSecond)
     })
-  }, [threshold])
+  }, [thresholdBytesPerSecond])
 
   return active
 }

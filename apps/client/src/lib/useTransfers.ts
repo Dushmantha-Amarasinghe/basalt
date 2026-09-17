@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
-import { api, onTransfer, type TransferEvent } from './api'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { api, onBytes, onTransfer, type TransferEvent } from './api'
+import { recordBytes } from './throughput'
 
 /**
  * The transfer queue, fed by events from the backend.
@@ -40,10 +41,25 @@ export interface Transfers {
 
 export function useTransfers(): Transfers {
   const [transfers, setTransfers] = useState<Transfer[]>([])
+  const seen = useRef(new Map<string, number>())
+
+  // The throughput trace is fed from the backend's own byte counter, which
+  // sees everything on the link including streamed video. Transfer events are
+  // only used to draw the queue.
+  useEffect(() => {
+    let stop: (() => void) | undefined
+    void onBytes(recordBytes).then((fn) => {
+      stop = fn
+    })
+    return () => stop?.()
+  }, [])
 
   useEffect(() => {
     let stop: (() => void) | undefined
     void onTransfer((event: TransferEvent) => {
+      if (event.status === 'done') seen.current.delete(event.id)
+      else seen.current.set(event.id, event.transferred)
+
       setTransfers((prev) => {
         const index = prev.findIndex((t) => t.id === event.id)
         const next: Transfer = {
@@ -79,6 +95,7 @@ export function useTransfers(): Transfers {
   )
 
   const finish = useCallback((id: string, error?: string) => {
+    seen.current.delete(id)
     setTransfers((prev) => {
       const updated = prev.map((t) =>
         t.id === id
@@ -103,6 +120,7 @@ export function useTransfers(): Transfers {
 
   const cancel = useCallback((id: string) => {
     void api.cancelTransfer(id)
+    seen.current.delete(id)
     setTransfers((prev) =>
       prev.map((t) => (t.id === id ? { ...t, status: 'cancelled', rate: 0 } : t)),
     )

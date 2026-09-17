@@ -519,6 +519,16 @@ where
             write_ok(stream, &[]).await?;
         }
 
+        Op::Copy => {
+            let req: CopyRequest = decode(payload)?;
+            require_write(session)?;
+            let vault = host.require_vault().await?;
+            tokio::task::spawn_blocking(move || vault.copy(&req.from, &req.to))
+                .await
+                .map_err(join)??;
+            write_ok(stream, &[]).await?;
+        }
+
         Op::Remove => {
             let req: RemoveRequest = decode(payload)?;
             require_write(session)?;

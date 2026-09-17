@@ -124,6 +124,8 @@ export const api = {
   forgetHost: (hostId: string) => call<Status>('forget_host', { hostId }),
 
   list: (path: string) => call<DirEntry[]>('list_dir', { path }),
+  stat: (path: string) => call<DirEntry>('stat_entry', { path }),
+  copy: (from: string, to: string) => call<void>('copy_entry', { from, to }),
   space: () => call<[number, number]>('space'),
   mkdir: (path: string) => call<void>('make_dir', { path }),
   rename: (from: string, to: string) => call<void>('rename_entry', { from, to }),
@@ -147,6 +149,22 @@ export async function onTransfer(
   const stop = await listen<TransferEvent>('basalt://transfer', (e) =>
     handler(e.payload),
   )
+  return stop
+}
+
+/**
+ * Subscribes to bytes crossing the link.
+ *
+ * Separate from transfer progress because most of what moves is not a
+ * transfer: streaming a film runs through the media proxy and would otherwise
+ * leave the throughput trace flat while the link is saturated.
+ */
+export async function onBytes(
+  handler: (bytes: number) => void,
+): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  const stop = await listen<number>('basalt://bytes', (e) => handler(e.payload))
   return stop
 }
 
@@ -249,6 +267,19 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       )
       return entries as T
     }
+    case 'stat_entry': {
+      const path = (args?.path as string) ?? ''
+      const name = path.split('/').pop() ?? path
+      return {
+        name,
+        kind: name.includes('.') ? 'file' : 'dir',
+        size: 1024 * 1024,
+        mtime: Math.floor(Date.now() / 1000),
+        readonly: false,
+      } as T
+    }
+    case 'copy_entry':
+      return undefined as T
     case 'media_url':
       return '' as T
     case 'make_dir':

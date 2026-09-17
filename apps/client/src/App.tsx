@@ -1,10 +1,19 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
+  ClipboardPaste,
+  Copy,
   Download,
+  FolderOpen,
   FolderPlus,
+  Files,
+  Info,
   Loader2,
+  PlayCircle,
+  RefreshCw,
+  Scissors,
   Search,
+  SquarePen,
   Trash2,
   Upload,
   X,
@@ -12,7 +21,7 @@ import {
 import { TitleBar } from '@/components/TitleBar'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { Sidebar, type NavKey } from '@/components/Sidebar'
-import { FileList, type Entry } from '@/components/FileList'
+import { FileList, type Entry, type RowHandlers } from '@/components/FileList'
 import { EmptyState, ListView, TileView } from '@/components/FileViews'
 import { ViewMenu, type ViewMode } from '@/components/ViewMenu'
 import {
@@ -29,16 +38,20 @@ import { ImageViewer } from '@/components/ImageViewer'
 import { CommandPalette } from '@/components/CommandPalette'
 import { PairingView } from '@/components/PairingView'
 import { HexMark } from '@/components/HexMark'
-import { api, joinPath } from '@/lib/api'
+import { PropertiesPanel } from '@/components/PropertiesPanel'
+import { useContextMenu, type MenuAction } from '@/components/ui/ContextMenu'
+import { PromptDialog, type PromptRequest } from '@/components/ui/PromptDialog'
+import { api, joinPath, parentOf } from '@/lib/api'
 import { useVault } from '@/lib/useVault'
 import { filterKind, recentOf, useLibraryScan } from '@/lib/useLibrary'
 import { transferId, useTransfers } from '@/lib/useTransfers'
+import { nameOf, useFileActions } from '@/lib/useFileActions'
 import { entriesToMedia, isPlayable } from '@/lib/media'
 import type { MediaItem } from '@/lib/mockMedia'
 import {
   baseName,
-  confirmAction,
   localJoin,
+  onExternalFileDrop,
   pickFiles,
   pickFolder,
   pickSaveLocation,
@@ -47,9 +60,20 @@ import { cn, formatBytes } from '@/lib/utils'
 
 const LIBRARY_KEYS: NavKey[] = ['videos', 'music', 'photos']
 
+const TITLES: Record<NavKey, string> = {
+  files: 'Vault',
+  recent: 'Recent',
+  starred: 'Starred',
+  videos: 'Videos',
+  music: 'Music',
+  photos: 'Photos',
+  settings: 'Settings',
+}
+
 export function App(): React.JSX.Element {
   const vault = useVault()
   const transfers = useTransfers()
+  const menu = useContextMenu()
 
   const [nav, setNav] = useState<NavKey>('files')
   const [query, setQuery] = useState('')
@@ -62,15 +86,18 @@ export function App(): React.JSX.Element {
   const [sortField, setSortField] = useState<SortField>('name')
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
   const [notice, setNotice] = useState<string | null>(null)
+  const [prompt, setPrompt] = useState<PromptRequest | null>(null)
+  const [properties, setProperties] = useState<Entry | null>(null)
+  const [dropActive, setDropActive] = useState(false)
 
   const connected = vault.status?.connected ?? false
   const writable = vault.status?.writable ?? false
 
+  const actions = useFileActions({ onChanged: vault.refresh, onError: setNotice })
+
   const needsScan = nav === 'recent' || LIBRARY_KEYS.includes(nav)
   const scan = useLibraryScan(needsScan, connected)
 
-  // Which entries this section is showing. Files browses the real directory;
-  // everything else draws from the shallow scan.
   const sectionEntries = useMemo(() => {
     if (nav === 'recent') return recentOf(scan.files)
     if (nav === 'starred') return []
@@ -88,41 +115,50 @@ export function App(): React.JSX.Element {
     return sortEntries(filtered, sortField, sortDirection)
   }, [sectionEntries, query, nav, sortField, sortDirection])
 
-  const libraryItems = useMemo(() => {
-    if (!LIBRARY_KEYS.includes(nav)) return []
-    const kind = nav as 'videos' | 'music' | 'photos'
-    return entriesToMedia(filterKind(scan.files, kind))
-  }, [nav, scan.files])
-
   const isLibrary = LIBRARY_KEYS.includes(nav)
+
+  const libraryItems = useMemo(() => {
+    if (!isLibrary) return []
+    return entriesToMedia(filterKind(scan.files, nav as 'videos' | 'music' | 'photos'))
+  }, [isLibrary, nav, scan.files])
+
+  /** The entries the next action applies to: the selection, or what was clicked. */
+  const targetsFor = useCallback(
+    (entry?: Entry): Entry[] => {
+      if (entry && !selected.has(entry.id)) return [entry]
+      const chosen = entries.filter((e) => selected.has(e.id))
+      return chosen.length > 0 ? chosen : entry ? [entry] : []
+    },
+    [entries, selected],
+  )
 
   // --- selection -----------------------------------------------------------
 
-  const handleSelect = useCallback((id: string, additive: boolean) => {
-    setSelected((prev) => {
-      if (!additive) return new Set([id])
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }, [])
+  // The row a range-select measures from, kept out of state so anchoring never
+  // causes a render of its own.
+  const anchor = useRef<string | null>(null)
 
-  const handleOpen = useCallback(
-    (entry: Entry) => {
-      if (entry.kind === 'dir') {
-        setSelected(new Set())
-        setNav('files')
-        vault.open(entry.id)
-        return
+  const handleSelect = useCallback(
+    (id: string, modifiers: { additive: boolean; range: boolean }) => {
+      if (modifiers.range && anchor.current) {
+        const from = entries.findIndex((e) => e.id === anchor.current)
+        const to = entries.findIndex((e) => e.id === id)
+        if (from !== -1 && to !== -1) {
+          const [lo, hi] = from < to ? [from, to] : [to, from]
+          setSelected(new Set(entries.slice(lo, hi + 1).map((e) => e.id)))
+          return
+        }
       }
-      // A file: play it if the player can, otherwise offer to download it.
-      const media = entriesToMedia([entry])[0]
-      if (isPlayable(entry.name)) setPlaying(media ?? null)
-      else void downloadOne(entry)
+      anchor.current = id
+      setSelected((prev) => {
+        if (!modifiers.additive) return new Set([id])
+        const next = new Set(prev)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return next
+      })
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [vault.open],
+    [entries],
   )
 
   // --- transfers -----------------------------------------------------------
@@ -131,6 +167,7 @@ export function App(): React.JSX.Element {
     async (entry: Entry) => {
       const destination = await pickSaveLocation(entry.name)
       if (!destination) return
+      setTransfersOpen(true)
 
       const id = transferId()
       transfers.start({
@@ -150,111 +187,408 @@ export function App(): React.JSX.Element {
     [transfers],
   )
 
-  const downloadSelected = useCallback(async () => {
-    const chosen = entries.filter((e) => selected.has(e.id) && e.kind === 'file')
-    if (chosen.length === 0) return
-    if (chosen.length === 1) {
-      await downloadOne(chosen[0]!)
-      return
-    }
-
-    const folder = await pickFolder()
-    if (!folder) return
-    setTransfersOpen(true)
-
-    // Sequentially: the link is the bottleneck at ~22.7 MB/s, so running
-    // several at once would divide the same bandwidth and finish none of them
-    // sooner, while making the progress bars useless.
-    for (const entry of chosen) {
-      const id = transferId()
-      transfers.start({
-        id,
-        kind: 'download',
-        name: entry.name,
-        path: entry.id,
-        total: entry.size,
-      })
-      try {
-        await api.download(entry.id, localJoin(folder, entry.name), id)
-        transfers.finish(id)
-      } catch (e) {
-        transfers.finish(id, e instanceof Error ? e.message : String(e))
+  const downloadMany = useCallback(
+    async (chosen: Entry[]) => {
+      const files = chosen.filter((e) => e.kind === 'file')
+      if (files.length === 0) {
+        setNotice('Folders cannot be downloaded yet — open one and take the files.')
+        return
       }
-    }
-  }, [entries, selected, downloadOne, transfers])
+      if (files.length === 1) {
+        await downloadOne(files[0]!)
+        return
+      }
+
+      const folder = await pickFolder()
+      if (!folder) return
+      setTransfersOpen(true)
+
+      // Sequentially: the link is the bottleneck at ~22.7 MB/s, so running
+      // several at once would divide the same bandwidth and finish none of
+      // them sooner, while making every progress bar useless.
+      for (const entry of files) {
+        const id = transferId()
+        transfers.start({
+          id,
+          kind: 'download',
+          name: entry.name,
+          path: entry.id,
+          total: entry.size,
+        })
+        try {
+          await api.download(entry.id, localJoin(folder, entry.name), id)
+          transfers.finish(id)
+        } catch (e) {
+          transfers.finish(id, e instanceof Error ? e.message : String(e))
+        }
+      }
+    },
+    [downloadOne, transfers],
+  )
+
+  const uploadPaths = useCallback(
+    async (paths: string[], into: string) => {
+      if (paths.length === 0) return
+      setTransfersOpen(true)
+
+      for (const local of paths) {
+        const name = baseName(local)
+        const id = transferId()
+        transfers.start({
+          id,
+          kind: 'upload',
+          name,
+          path: joinPath(into, name),
+          total: 0,
+        })
+        try {
+          await api.upload(local, joinPath(into, name), false, id)
+          transfers.finish(id)
+        } catch (e) {
+          transfers.finish(id, e instanceof Error ? e.message : String(e))
+        }
+      }
+      vault.refresh()
+    },
+    [transfers, vault],
+  )
 
   const uploadHere = useCallback(async () => {
-    const files = await pickFiles()
-    if (files.length === 0) return
-    setTransfersOpen(true)
+    await uploadPaths(await pickFiles(), vault.dir)
+  }, [uploadPaths, vault.dir])
 
-    for (const local of files) {
-      const name = baseName(local)
-      const id = transferId()
-      transfers.start({
-        id,
-        kind: 'upload',
-        name,
-        path: joinPath(vault.dir, name),
-        total: 0,
+  // --- opening -------------------------------------------------------------
+
+  const openEntry = useCallback(
+    (entry: Entry) => {
+      if (entry.kind === 'dir') {
+        setSelected(new Set())
+        anchor.current = null
+        setNav('files')
+        vault.open(entry.id)
+        return
+      }
+      const media = entriesToMedia([entry])[0]
+      if (isPlayable(entry.name)) setPlaying(media ?? null)
+      else void downloadOne(entry)
+    },
+    [vault, downloadOne],
+  )
+
+  // --- prompts -------------------------------------------------------------
+
+  const askRename = useCallback(
+    (entry: Entry) => {
+      setPrompt({
+        title: `Rename ${entry.kind === 'dir' ? 'folder' : 'file'}`,
+        value: entry.name,
+        confirmLabel: 'Rename',
+        select: 'stem',
+        onConfirm: (name) => void actions.rename(entry.id, name),
       })
-      try {
-        await api.upload(local, joinPath(vault.dir, name), false, id)
-        transfers.finish(id)
-      } catch (e) {
-        transfers.finish(id, e instanceof Error ? e.message : String(e))
+    },
+    [actions],
+  )
+
+  const askNewFolder = useCallback(() => {
+    setPrompt({
+      title: 'New folder',
+      value: 'New folder',
+      confirmLabel: 'Create',
+      select: 'all',
+      onConfirm: (name) => void actions.newFolder(vault.dir, name),
+    })
+  }, [actions, vault.dir])
+
+  // --- the context menu ----------------------------------------------------
+
+  const backgroundActions = useCallback((): MenuAction[] => {
+    const items: MenuAction[] = []
+    if (writable) {
+      items.push({
+        id: 'new-folder',
+        label: 'New folder',
+        icon: FolderPlus,
+        run: askNewFolder,
+      })
+      items.push({
+        id: 'upload',
+        label: 'Upload files here…',
+        icon: Upload,
+        run: uploadHere,
+      })
+      items.push({
+        id: 'paste',
+        label: 'Paste',
+        icon: ClipboardPaste,
+        shortcut: 'Ctrl+V',
+        separatorBefore: true,
+        disabled: !actions.canPasteInto(vault.dir),
+        run: () => void actions.paste(vault.dir),
+      })
+    }
+    items.push({
+      id: 'refresh',
+      label: 'Refresh',
+      icon: RefreshCw,
+      shortcut: 'F5',
+      separatorBefore: items.length > 0,
+      run: vault.refresh,
+    })
+    return items
+  }, [writable, askNewFolder, uploadHere, actions, vault.dir, vault.refresh])
+
+  const entryActions = useCallback(
+    (entry: Entry): MenuAction[] => {
+      const chosen = targetsFor(entry)
+      const many = chosen.length > 1
+      const paths = chosen.map((e) => e.id)
+      const label = many ? `${chosen.length} items` : entry.name
+
+      const items: MenuAction[] = []
+
+      // Only when opening means something other than downloading. For a file
+      // the window cannot play, "Open" and "Download…" would be the same
+      // action listed twice.
+      const canOpen = entry.kind === 'dir' || isPlayable(entry.name)
+      if (canOpen && !many) {
+        items.push({
+          id: 'open',
+          label: entry.kind === 'dir' ? 'Open' : 'Play',
+          icon: entry.kind === 'dir' ? FolderOpen : PlayCircle,
+          run: () => openEntry(entry),
+        })
+      }
+
+      items.push({
+        id: 'download',
+        label: many ? `Download ${label}…` : 'Download…',
+        icon: Download,
+        separatorBefore: items.length > 0,
+        // A folder has no download path yet; saying so beats a dead entry.
+        disabled: chosen.every((e) => e.kind === 'dir'),
+        run: () => void downloadMany(chosen),
+      })
+
+      if (writable) {
+        items.push(
+          {
+            id: 'cut',
+            label: 'Cut',
+            icon: Scissors,
+            shortcut: 'Ctrl+X',
+            separatorBefore: true,
+            run: () => actions.cut(paths),
+          },
+          {
+            id: 'copy',
+            label: 'Copy',
+            icon: Copy,
+            shortcut: 'Ctrl+C',
+            run: () => actions.copy(paths),
+          },
+          {
+            id: 'paste-into',
+            label: 'Paste into folder',
+            icon: ClipboardPaste,
+            disabled: entry.kind !== 'dir' || many || !actions.canPasteInto(entry.id),
+            run: () => void actions.paste(entry.id),
+          },
+          {
+            id: 'duplicate',
+            label: 'Duplicate',
+            icon: Files,
+            disabled: many,
+            run: () => void actions.duplicate(entry.id),
+          },
+          {
+            id: 'rename',
+            label: 'Rename…',
+            icon: SquarePen,
+            shortcut: 'F2',
+            separatorBefore: true,
+            disabled: many,
+            run: () => askRename(entry),
+          },
+          {
+            id: 'delete',
+            label: many ? `Delete ${label}` : 'Delete',
+            icon: Trash2,
+            shortcut: 'Del',
+            danger: true,
+            run: () => void actions.remove(chosen),
+          },
+        )
+      }
+
+      items.push({
+        id: 'properties',
+        label: 'Properties',
+        icon: Info,
+        separatorBefore: true,
+        disabled: many,
+        run: () => setProperties(entry),
+      })
+
+      return items
+    },
+    [targetsFor, writable, openEntry, downloadMany, actions, askRename],
+  )
+
+  // --- row handlers, as one stable object ----------------------------------
+
+  const handlers = useMemo<RowHandlers>(
+    () => ({
+      onSelect: handleSelect,
+      onOpen: openEntry,
+      onContextMenu: (entry, event) => {
+        // Right-clicking outside the selection targets that row instead, which
+        // is what every file manager does and what stops an accidental delete
+        // of something the user had forgotten was selected.
+        if (!selected.has(entry.id)) {
+          setSelected(new Set([entry.id]))
+          anchor.current = entry.id
+        }
+        menu.open(event, entryActions(entry))
+      },
+      onDownload: (entry) => void downloadOne(entry),
+      onDragStart: (entry) => {
+        if (selected.has(entry.id)) return entries.filter((e) => selected.has(e.id)).map((e) => e.id)
+        setSelected(new Set([entry.id]))
+        return [entry.id]
+      },
+      onDropInto: (entry, paths) => void actions.moveInto(paths, entry.id),
+    }),
+    [handleSelect, openEntry, selected, menu, entryActions, downloadOne, entries, actions],
+  )
+
+  const cutPaths = useMemo(
+    () =>
+      actions.clipboard?.mode === 'cut'
+        ? new Set(actions.clipboard.paths)
+        : undefined,
+    [actions.clipboard],
+  )
+
+  // --- keyboard ------------------------------------------------------------
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const target = e.target as HTMLElement | null
+      // Never steal a shortcut from a field the user is typing in.
+      const typing =
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.isContentEditable
+      const ctrl = e.ctrlKey || e.metaKey
+
+      if (ctrl && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPaletteOpen((v) => !v)
+        return
+      }
+      if (typing || nav === 'settings' || prompt) return
+
+      const chosen = entries.filter((en) => selected.has(en.id))
+
+      if (ctrl && e.key.toLowerCase() === 'a') {
+        e.preventDefault()
+        setSelected(new Set(entries.map((en) => en.id)))
+        return
+      }
+      if (ctrl && e.key.toLowerCase() === 'c' && chosen.length > 0) {
+        actions.copy(chosen.map((en) => en.id))
+        return
+      }
+      if (ctrl && e.key.toLowerCase() === 'x' && chosen.length > 0 && writable) {
+        actions.cut(chosen.map((en) => en.id))
+        return
+      }
+      if (ctrl && e.key.toLowerCase() === 'v' && writable) {
+        void actions.paste(vault.dir)
+        return
+      }
+      if (e.key === 'Delete' && chosen.length > 0 && writable) {
+        void actions.remove(chosen)
+        return
+      }
+      if (e.key === 'F2' && chosen.length === 1 && writable) {
+        askRename(chosen[0]!)
+        return
+      }
+      if (e.key === 'F5') {
+        e.preventDefault()
+        vault.refresh()
+        return
+      }
+      if (e.key === 'Escape') {
+        setSelected(new Set())
+        return
+      }
+      if (e.key === 'Enter' && chosen.length === 1) {
+        openEntry(chosen[0]!)
+        return
+      }
+      // Backspace goes up a folder, as it does in Explorer.
+      if (e.key === 'Backspace' && nav === 'files' && vault.dir) {
+        vault.open(parentOf(vault.dir))
       }
     }
-    vault.refresh()
-  }, [transfers, vault])
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [
+    entries,
+    selected,
+    actions,
+    writable,
+    vault,
+    nav,
+    prompt,
+    askRename,
+    openEntry,
+  ])
 
-  // --- mutations -----------------------------------------------------------
+  // --- files dragged in from Explorer --------------------------------------
 
-  const newFolder = useCallback(async () => {
-    const name = window.prompt('New folder name')
-    if (!name?.trim()) return
-    try {
-      await api.mkdir(joinPath(vault.dir, name.trim()))
-      vault.refresh()
-    } catch (e) {
-      setNotice(e instanceof Error ? e.message : String(e))
-    }
-  }, [vault])
+  useEffect(() => {
+    if (!writable) return undefined
+    let stop: (() => void) | undefined
+    void onExternalFileDrop({
+      onEnter: () => setDropActive(true),
+      onLeave: () => setDropActive(false),
+      onDrop: (paths) => {
+        setDropActive(false)
+        void uploadPaths(paths, vault.dir)
+      },
+    }).then((fn) => {
+      stop = fn
+    })
+    return () => stop?.()
+  }, [writable, uploadPaths, vault.dir])
 
-  const deleteSelected = useCallback(async () => {
-    const chosen = entries.filter((e) => selected.has(e.id))
-    if (chosen.length === 0) return
+  // --- effects -------------------------------------------------------------
 
-    const ok = await confirmAction(
-      chosen.length === 1
-        ? `Delete ${chosen[0]!.name}?`
-        : `Delete ${chosen.length} items?`,
-      'This cannot be undone',
-    )
-    if (!ok) return
-
-    for (const entry of chosen) {
-      try {
-        await api.remove(entry.id, entry.kind === 'dir')
-      } catch (e) {
-        setNotice(e instanceof Error ? e.message : String(e))
-      }
-    }
+  useEffect(() => {
+    setQuery('')
     setSelected(new Set())
-    vault.refresh()
-  }, [entries, selected, vault])
+    anchor.current = null
+  }, [nav])
 
-  /**
-   * Unpairs from the current vault, which sends the app back to the pairing
-   * screen.
-   *
-   * Only this side forgets. The host keeps its record of the device until it
-   * is revoked there too, which is the honest split: this app cannot reach
-   * into someone else's machine and delete things from it.
-   */
+  useEffect(() => {
+    setSelected(new Set())
+    anchor.current = null
+  }, [vault.dir])
+
+  useEffect(() => {
+    if (!notice) return undefined
+    const timer = setTimeout(() => setNotice(null), 6000)
+    return () => clearTimeout(timer)
+  }, [notice])
+
   const forgetVault = useCallback(async () => {
     const hostId = vault.status?.hostId
     if (!hostId) return
+    const { confirmAction } = await import('@/lib/dialogs')
     const ok = await confirmAction(
       'This device will have to pair again with a new PIN. Nothing on the drive is affected.',
       'Forget this vault?',
@@ -268,32 +602,6 @@ export function App(): React.JSX.Element {
       setNotice(e instanceof Error ? e.message : String(e))
     }
   }, [vault])
-
-  // --- effects -------------------------------------------------------------
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault()
-        setPaletteOpen((v) => !v)
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
-
-  // Clear search and selection when changing section; carrying either over
-  // makes the new view look mysteriously empty.
-  useEffect(() => {
-    setQuery('')
-    setSelected(new Set())
-  }, [nav])
-
-  useEffect(() => {
-    if (!notice) return undefined
-    const timer = setTimeout(() => setNotice(null), 5000)
-    return () => clearTimeout(timer)
-  }, [notice])
 
   const selectedSize = useMemo(() => {
     if (selected.size === 0) return 0
@@ -320,6 +628,18 @@ export function App(): React.JSX.Element {
 
   const path = vault.dir ? vault.dir.split('/') : []
   const crumbs = [vault.status.vault ?? 'Vault', ...path]
+  const chosenEntries = entries.filter((e) => selected.has(e.id))
+
+  const viewProps = {
+    entries,
+    selected,
+    cutPaths,
+    handlers,
+    onBackgroundContextMenu: (event: { clientX: number; clientY: number }) => {
+      setSelected(new Set())
+      menu.open(event, backgroundActions())
+    },
+  }
 
   return (
     <div className="relative flex h-full flex-col">
@@ -342,16 +662,14 @@ export function App(): React.JSX.Element {
               {nav === 'files' ? (
                 <Breadcrumbs
                   path={crumbs}
-                  onNavigateTo={(index) => {
-                    setSelected(new Set())
-                    vault.open(path.slice(0, index).join('/'))
-                  }}
+                  onNavigateTo={(index) => vault.open(path.slice(0, index).join('/'))}
+                  onDropInto={(index, paths) =>
+                    void actions.moveInto(paths, path.slice(0, index).join('/'))
+                  }
                 />
               ) : (
                 <div className="flex items-baseline gap-2.5">
-                  <span className="text-sm font-semibold text-text">
-                    {TITLES[nav]}
-                  </span>
+                  <span className="text-sm font-semibold text-text">{TITLES[nav]}</span>
                   <span className="tnum font-mono text-[11px] text-textFaint">
                     {(isLibrary ? libraryItems.length : entries.length).toLocaleString()}
                   </span>
@@ -362,7 +680,7 @@ export function App(): React.JSX.Element {
 
               {nav === 'files' && writable && (
                 <>
-                  <ToolButton icon={FolderPlus} label="New folder" onClick={newFolder} />
+                  <ToolButton icon={FolderPlus} label="New folder" onClick={askNewFolder} />
                   <ToolButton icon={Upload} label="Upload files" onClick={uploadHere} />
                 </>
               )}
@@ -371,13 +689,13 @@ export function App(): React.JSX.Element {
                   <ToolButton
                     icon={Download}
                     label="Download selected"
-                    onClick={downloadSelected}
+                    onClick={() => downloadMany(chosenEntries)}
                   />
                   {writable && (
                     <ToolButton
                       icon={Trash2}
                       label="Delete selected"
-                      onClick={deleteSelected}
+                      onClick={() => actions.remove(chosenEntries)}
                       danger
                     />
                   )}
@@ -439,7 +757,7 @@ export function App(): React.JSX.Element {
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-            className="min-h-0 flex-1"
+            className="relative min-h-0 flex-1"
           >
             {nav === 'settings' ? (
               <SettingsView
@@ -451,9 +769,7 @@ export function App(): React.JSX.Element {
             ) : isLibrary ? (
               libraryItems.length === 0 ? (
                 <EmptyState
-                  label={
-                    scan.scanning ? 'Looking through the vault…' : `No ${nav} found`
-                  }
+                  label={scan.scanning ? 'Looking through the vault…' : `No ${nav} found`}
                 />
               ) : (
                 <MediaGrid
@@ -466,39 +782,34 @@ export function App(): React.JSX.Element {
                 />
               )
             ) : entries.length === 0 ? (
-              <EmptyState
-                label={
-                  vault.loading || scan.scanning
-                    ? 'Loading…'
-                    : query
-                      ? `Nothing matches “${query}”`
-                      : nav === 'starred'
-                        ? 'Nothing starred yet'
-                        : 'This folder is empty'
-                }
-              />
+              <div
+                className="h-full"
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  menu.open(e, backgroundActions())
+                }}
+              >
+                <EmptyState
+                  label={
+                    vault.loading || scan.scanning
+                      ? 'Loading…'
+                      : query
+                        ? `Nothing matches “${query}”`
+                        : nav === 'starred'
+                          ? 'Nothing starred yet'
+                          : 'This folder is empty'
+                  }
+                />
+              </div>
             ) : view === 'tiles' ? (
-              <TileView
-                entries={entries}
-                selected={selected}
-                onSelect={handleSelect}
-                onOpen={handleOpen}
-              />
+              <TileView {...viewProps} />
             ) : view === 'list' ? (
-              <ListView
-                entries={entries}
-                selected={selected}
-                onSelect={handleSelect}
-                onOpen={handleOpen}
-              />
+              <ListView {...viewProps} />
             ) : (
-              <FileList
-                entries={entries}
-                selected={selected}
-                onSelect={handleSelect}
-                onOpen={handleOpen}
-              />
+              <FileList {...viewProps} />
             )}
+
+            <DropOverlay active={dropActive && nav === 'files'} dir={vault.dir} />
           </motion.div>
 
           {nav !== 'settings' && !isLibrary && (
@@ -527,7 +838,8 @@ export function App(): React.JSX.Element {
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
-            className="pointer-events-none fixed bottom-16 left-1/2 z-[70] -translate-x-1/2 rounded-md border border-danger/30 bg-dangerBg px-3.5 py-2 text-[12px] text-danger shadow-lift"
+            onClick={() => setNotice(null)}
+            className="fixed bottom-16 left-1/2 z-[70] max-w-[440px] -translate-x-1/2 cursor-pointer rounded-md border border-danger/30 bg-dangerBg px-3.5 py-2 text-[12px] leading-relaxed text-danger shadow-lift"
           >
             {notice}
           </motion.div>
@@ -539,7 +851,7 @@ export function App(): React.JSX.Element {
         onClose={() => setPaletteOpen(false)}
         entries={entries}
         onNavigate={setNav}
-        onOpenEntry={handleOpen}
+        onOpenEntry={openEntry}
       />
 
       <PlayerOverlay item={playing} onClose={() => setPlaying(null)} />
@@ -550,18 +862,17 @@ export function App(): React.JSX.Element {
         onIndexChange={setViewingIndex}
         onClose={() => setViewingIndex(null)}
       />
+
+      <PropertiesPanel
+        entry={properties}
+        vaultName={vault.status.vault ?? 'Vault'}
+        onClose={() => setProperties(null)}
+      />
+
+      <PromptDialog request={prompt} onClose={() => setPrompt(null)} />
+      {menu.node}
     </div>
   )
-}
-
-const TITLES: Record<NavKey, string> = {
-  files: 'Vault',
-  recent: 'Recent',
-  starred: 'Starred',
-  videos: 'Videos',
-  music: 'Music',
-  photos: 'Photos',
-  settings: 'Settings',
 }
 
 /**
@@ -586,6 +897,36 @@ function Splash(): React.JSX.Element {
   )
 }
 
+/** Shown while files from Explorer are being dragged over the window. */
+function DropOverlay({
+  active,
+  dir,
+}: {
+  active: boolean
+  dir: string
+}): React.JSX.Element {
+  return (
+    <AnimatePresence>
+      {active && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.12 }}
+          className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-lg border-2 border-dashed border-basalt/40 bg-ink/70 backdrop-blur-[1px]"
+        >
+          <div className="text-center">
+            <Upload size={26} className="mx-auto text-basaltDeep" />
+            <p className="mt-3 text-sm text-text">
+              Drop to upload into {dir ? nameOf(dir) : 'the vault'}
+            </p>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+}
+
 /**
  * Shown when the host cannot be reached.
  *
@@ -598,8 +939,7 @@ function ConnectionBanner({
 }: {
   vault: ReturnType<typeof useVault>
 }): React.JSX.Element | null {
-  const offline =
-    vault.error?.kind === 'offline' || vault.error?.kind === 'unpaired'
+  const offline = vault.error?.kind === 'offline' || vault.error?.kind === 'unpaired'
   if (!offline) return null
 
   return (
