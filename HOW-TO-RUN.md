@@ -1,45 +1,44 @@
 # How to run Basalt
 
 Two programs. One on the laptop with the drive, one on the machine you browse
-from. Nothing to install on either.
+from.
+
+**There is no address to type.** The client finds the host on the network by
+itself, and keeps finding it after the router hands out a different address.
 
 ---
 
 ## On the laptop with the drive — Basalt Host
 
-Copy one file across:
+Run the installer:
 
 ```
-target\release\basalt-host.exe
+apps\host\src-tauri\target\release\bundle\nsis\Basalt Host_0.1.0_x64-setup.exe
 ```
 
-Plug in the drive, note the letter Windows gives it (open **This PC** and look),
-then run:
+It installs for your account only, so Windows does not ask for an
+administrator.
 
-```powershell
-.\basalt-host.exe serve --path E:\ --name "My Drive"
-```
+Plug in the drive and open **Basalt Host**. It lists the drives on the machine
+with their labels and how much room is left. Click the one you want, give it a
+name your other devices will see, and press **Share**.
 
-Replace `E:\` with your drive letter. It prints something like:
+That is the setup.
 
-```
-  Basalt Host
-  sharing   E:\
-  as        My Drive
-  identity  7e508aaa
-  port      7742
-  reachable at  192.168.1.11
+The window then shows the drive, the devices paired with it, what each has
+moved and how fast it is going right now. Three settings live at the bottom:
 
-  No devices paired yet.
-  Pairing PIN:  653 443
-```
+- **Ask for a PIN when pairing** — on by default. A new device appears on this
+  screen with a six-digit number to type on that device. With it off, anything
+  on your network that finds this machine can read the drive without being let
+  in, and the app says so.
+- **Start when Windows starts** — comes up in the notification area at login,
+  so the drive is there before you go looking for it.
+- **This machine's name** — what your devices see in their list.
 
-**Leave the window open** — it has to keep running to serve the drive.
-
-Two things to write down: the **address** (`192.168.1.11`) and the **PIN**.
-
-The PIN lasts three minutes. Press **Enter** in that window any time for a new
-one. Type `d` and Enter to see which devices are paired.
+**Closing the window keeps the drive shared.** It goes to the notification
+area; click the icon to bring it back, or right-click it for **Quit and stop
+sharing**.
 
 ### The one thing Windows will ask
 
@@ -61,32 +60,42 @@ apps\client\src-tauri\target\release\basalt-client-shell.exe
 
 It opens on the pairing screen.
 
-1. Type the **address** from the host window. Press Enter.
-2. It shows what it found — the host's name, the drive, and its identity.
-   Check the identity matches the one on the host window before continuing:
-   after this it is trusted permanently and never asked about again.
-3. Type the **PIN**.
+1. It lists the Basalt hosts answering on this network, by name. Click yours.
+2. If the host is asking for a PIN, the six digits appear **on the host's
+   screen**, next to the name of the device asking. Type them in.
 
 That is the last time you do any of this. From then on the app reconnects on
-its own whenever the host is up.
+its own whenever the host is up — including after the router gives the host a
+different address, which it finds again by itself.
+
+> The client's own pairing screen is still being rewritten around this. Until
+> that lands, `basalt find` from the command line lists what is out there and
+> `basalt pair <address>` joins it.
 
 ---
 
 ## If something goes wrong
 
-**Nothing answers at that address**
-Check the host window is still open, and that you used the address it printed.
-If the laptop has several adapters it prints more than one — the right one
-usually starts `192.168.`. If it still fails, the firewall prompt was probably
-dismissed; see below.
+**The client lists no hosts at all**
+Check Basalt Host is still running on the other machine — look in the
+notification area, not just the taskbar. Both machines have to be on the same
+network, and some routers have a "client isolation" or "AP isolation" setting
+that stops them talking to each other at all. If the host is running and the
+list is still empty, the firewall prompt was probably dismissed; see below.
 
 **It worked yesterday and not today**
-The router most likely gave the host a different address. Open the host window,
-read the new one, and enter it in the app.
+This is the case the whole design is built around, and it should just work: the
+client finds the host again wherever it has moved to. If it does not, the host
+is not running.
 
-**"This host is not accepting new devices"**
-The three-minute pairing window has closed. Press Enter in the host window for
-a new PIN.
+**"That pairing request has expired"**
+Requests last three minutes. Ask again from the client and a fresh number
+appears on the host.
+
+**The host says it is not sharing**
+Another copy is probably already running — check the notification area before
+starting a second one. The window says so at the top when that is what
+happened.
 
 **"This is not the host this device paired with"**
 The app is refusing a machine that is not the one you paired with. Either
@@ -140,8 +149,9 @@ There is a command-line client too, which is the quickest way to tell whether a
 problem is the network or the app:
 
 ```
+target\release\basalt.exe find
 target\release\basalt.exe probe 192.168.1.11
-target\release\basalt.exe pair 192.168.1.11 653443
+target\release\basalt.exe pair 192.168.1.11
 target\release\basalt.exe ls
 target\release\basalt.exe get films/holiday.mp4 C:\Users\you\Downloads\holiday.mp4
 target\release\basalt.exe put C:\Users\you\clip.mp4 films/clip.mp4
@@ -156,8 +166,9 @@ there — and every failure is printed in full rather than turned into a banner.
 
 | | |
 |---|---|
-| Host identity and paired devices | `%APPDATA%\Basalt\host.json` on the host |
+| Host identity, drive and paired devices | `%APPDATA%\Basalt\host.json` on the host |
 | Paired hosts and their tokens | `%APPDATA%\Basalt\client.json` on the client |
+| The startup entry | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `Basalt Host` |
 
 Deleting the host's file changes its identity, and every device has to pair
 again. Both files are worth the same care as a password manager's.

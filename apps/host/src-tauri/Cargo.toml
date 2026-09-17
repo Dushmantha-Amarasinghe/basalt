@@ -1,0 +1,37 @@
+[package]
+name = "basalt-host-shell"
+version = "0.1.0"
+edition = "2021"
+description = "Basalt host desktop shell"
+# Higher than the client shell's: this depends on an edition-2024 crate, and
+# declaring a version that cannot build it produces a confusing error rather
+# than the clear one cargo would give.
+rust-version = "1.85"
+
+[lib]
+name = "basalt_host_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Outside the Cargo workspace on purpose: Tauri pulls in a very large
+# dependency tree, and keeping it out means `cargo test` — and so the
+# pre-commit hook — stays a few seconds rather than a few minutes. The cost is
+# that nothing here is covered by a test, which is why every shape this file
+# sends to the interface is defined and tested in `basalt-host::ui` instead.
+basalt-host = { path = "../../../crates/basalt-host" }
+basalt-net = { path = "../../../crates/basalt-net" }
+
+# `tray-icon` because this is a server with a window, not a window that
+# happens to serve: closing it has to keep sharing, and something has to be
+# left for the user to click to get it back.
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -54,14 +54,22 @@ run "formatting" cargo fmt --all --check
 run "clippy" cargo clippy --all-targets --all-features -- -D warnings
 run "tests" cargo test --all
 
-# The client's checks need its dependencies installed. Skip rather than fail if
+# The apps' checks need their dependencies installed. Skip rather than fail if
 # they are not: a fresh clone should still be able to commit Rust-only work.
-client="$(git rev-parse --show-toplevel)/apps/client"
-if [ -d "$client/node_modules" ]; then
-    run "client types" npm --prefix "$client" run typecheck
-    run "client tests" npm --prefix "$client" test
-else
-    echo "pre-commit: client deps not installed, skipping its checks"
-fi
+#
+# The host's suite includes a contract test that reads the Rust sources and
+# checks every command name, argument and response field against them. That is
+# the one check covering the Tauri shell, which is outside the Cargo workspace
+# and so invisible to `cargo test`.
+root="$(git rev-parse --show-toplevel)"
+for app in client host; do
+    dir="$root/apps/$app"
+    if [ -d "$dir/node_modules" ]; then
+        run "$app types" npm --prefix "$dir" run typecheck
+        run "$app tests" npm --prefix "$dir" test
+    else
+        echo "pre-commit: $app deps not installed, skipping its checks"
+    fi
+done
 
 echo "pre-commit: all checks passed"
