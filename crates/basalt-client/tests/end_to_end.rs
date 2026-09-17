@@ -813,6 +813,118 @@ async fn the_media_proxy_serves_ranges_like_a_web_server() {
     assert_eq!(body, &sample_bytes(50_000)[100..200]);
 }
 
+/// One HTTP request against the proxy, returning the headers and body.
+async fn proxy_request(
+    proxy: &basalt_client::proxy::MediaProxy,
+    path: &str,
+    range: Option<&str>,
+) -> (String, Vec<u8>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let url = proxy.url_for(path);
+    let target = url.split_once("127.0.0.1").unwrap().1;
+    let target = target.split_once('/').unwrap().1;
+
+    let mut socket = tokio::net::TcpStream::connect(proxy.addr()).await.unwrap();
+    let mut request = format!("GET /{target} HTTP/1.1\r\nHost: localhost\r\n");
+    if let Some(range) = range {
+        request.push_str(&format!("Range: {range}\r\n"));
+    }
+    request.push_str("\r\n");
+    socket.write_all(request.as_bytes()).await.unwrap();
+
+    let mut response = Vec::new();
+    socket.read_to_end(&mut response).await.unwrap();
+    let split = response
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("headers end");
+    (
+        String::from_utf8_lossy(&response[..split]).to_string(),
+        response[split + 4..].to_vec(),
+    )
+}
+
+/// The exact sequence a video element performs: open with an unbounded range,
+/// read the tail to find the index, then jump to the middle when the user
+/// drags the scrubber. Every byte is checked against the file on disk, because
+/// a proxy that is off by one produces a video that plays and is subtly wrong.
+#[tokio::test]
+async fn the_media_proxy_is_byte_exact_through_a_players_whole_sequence() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+    let proxy = basalt_client::proxy::MediaProxy::start(Arc::clone(&client))
+        .await
+        .unwrap();
+
+    let whole = sample_bytes(50_000);
+
+    // 1. Opening request: everything from the start.
+    let (headers, body) = proxy_request(&proxy, "films/short.mkv", Some("bytes=0-")).await;
+    assert!(headers.contains("206 Partial Content"), "{headers}");
+    assert!(
+        headers.contains("/50000"),
+        "the full length must be advertised"
+    );
+    assert_eq!(body, &whole[..body.len()]);
+    assert!(!body.is_empty());
+
+    // 2. The tail, which is how a player finds the index of a file that was
+    //    not written for streaming.
+    let (headers, body) = proxy_request(&proxy, "films/short.mkv", Some("bytes=-4096")).await;
+    assert!(
+        headers.contains("Content-Range: bytes 45904-49999/50000"),
+        "{headers}"
+    );
+    assert_eq!(body, &whole[45_904..]);
+
+    // 3. A seek into the middle.
+    let (headers, body) = proxy_request(&proxy, "films/short.mkv", Some("bytes=20000-29999")).await;
+    assert!(
+        headers.contains("Content-Range: bytes 20000-29999/50000"),
+        "{headers}"
+    );
+    assert_eq!(body, &whole[20_000..30_000]);
+
+    // 4. Every boundary, since off-by-one is the whole risk here.
+    for (from, to) in [(0usize, 0usize), (49_999, 49_999), (0, 49_999), (1, 2)] {
+        let (_, body) = proxy_request(
+            &proxy,
+            "films/short.mkv",
+            Some(&format!("bytes={from}-{to}")),
+        )
+        .await;
+        assert_eq!(body, &whole[from..=to], "range {from}-{to}");
+    }
+}
+
+#[tokio::test]
+async fn the_media_proxy_answers_a_plain_request_and_a_bad_range() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+    let proxy = basalt_client::proxy::MediaProxy::start(Arc::clone(&client))
+        .await
+        .unwrap();
+
+    // No Range header at all: a 200 with the length, which is what a player
+    // uses to decide whether it can seek.
+    let (headers, _) = proxy_request(&proxy, "films/short.mkv", None).await;
+    assert!(headers.starts_with("HTTP/1.1 200 OK"), "{headers}");
+    assert!(headers.contains("Accept-Ranges: bytes"), "{headers}");
+    assert!(
+        headers.contains("Content-Type: video/x-matroska"),
+        "{headers}"
+    );
+
+    // A range past the end has its own status, and players rely on it.
+    let (headers, _) = proxy_request(&proxy, "films/short.mkv", Some("bytes=999999-")).await;
+    assert!(headers.contains("416 Range Not Satisfiable"), "{headers}");
+    assert!(
+        headers.contains("Content-Range: bytes */50000"),
+        "{headers}"
+    );
+}
+
 #[tokio::test]
 async fn the_media_proxy_refuses_a_request_without_its_token() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

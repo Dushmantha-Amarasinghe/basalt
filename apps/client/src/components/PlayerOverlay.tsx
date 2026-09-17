@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   AlertCircle,
+  ExternalLink,
   Maximize2,
   Pause,
   Play,
@@ -14,7 +15,14 @@ import {
 import type { MediaItem } from '@/lib/mockMedia'
 import { formatDuration } from '@/lib/mockMedia'
 import { api } from '@/lib/api'
-import { SILENT_MESSAGE, judgeSound, readCounters, type SoundState } from '@/lib/playback'
+import {
+  judgeSound,
+  playabilityOf,
+  readCounters,
+  silenceMessage,
+  unplayableMessage,
+  type SoundState,
+} from '@/lib/playback'
 import { cn } from '@/lib/utils'
 
 /**
@@ -34,9 +42,12 @@ import { cn } from '@/lib/utils'
 export function PlayerOverlay({
   item,
   onClose,
+  onOpenExternally,
 }: {
   item: MediaItem | null
   onClose: () => void
+  /** Hand the file to the system's own player. */
+  onOpenExternally?: (path: string) => void
 }): React.JSX.Element {
   const mediaRef = useRef<HTMLVideoElement | null>(null)
   const [url, setUrl] = useState<string | null>(null)
@@ -49,6 +60,9 @@ export function PlayerOverlay({
   const [sound, setSound] = useState<SoundState>('unknown')
 
   const isAudio = item ? looksLikeAudio(item.id) : false
+  // A container the window half-understands: it will open and may show a
+  // picture, but any audio that is not Opus or Vorbis is quietly dropped.
+  const partial = item ? playabilityOf(item.id) === 'partial' : false
 
   // Resolve the proxy URL whenever a new item opens.
   useEffect(() => {
@@ -179,12 +193,8 @@ export function PlayerOverlay({
                 {failed ? (
                   <>
                     <AlertCircle size={22} className="text-danger" />
-                    <div className="mt-4 max-w-[380px] px-6 text-sm text-text">
-                      This build cannot decode {extensionOf(item.id) || 'this file'}.
-                    </div>
-                    <div className="mt-2 max-w-[380px] px-6 text-[12px] leading-relaxed text-textDim">
-                      The window plays what Chromium plays — MP4, WebM, MP3, FLAC.
-                      Download it to watch in another player for now.
+                    <div className="mt-4 max-w-[400px] px-6 text-[13px] leading-relaxed text-text">
+                      {unplayableMessage(item.id)}
                     </div>
                   </>
                 ) : (
@@ -220,12 +230,24 @@ export function PlayerOverlay({
                   <div className="flex max-w-[520px] items-start gap-2.5 rounded-md border border-danger/25 bg-dangerBg/95 px-3.5 py-2.5 backdrop-blur">
                     <AlertCircle size={14} className="mt-px shrink-0 text-danger" />
                     <p className="text-[12px] leading-relaxed text-danger">
-                      {SILENT_MESSAGE}
+                      {silenceMessage(item.id)}
                     </p>
                   </div>
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {onOpenExternally && (sound === 'silent' || failed || partial) && (
+              <motion.button
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                onClick={() => onOpenExternally(item.id)}
+                className="absolute bottom-6 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-md border border-white/[0.16] bg-panel2/95 px-3.5 py-2 text-[12px] text-text backdrop-blur transition-colors hover:bg-white/[0.08]"
+              >
+                <ExternalLink size={13} />
+                Open in your player
+              </motion.button>
+            )}
 
             <button
               onClick={onClose}
@@ -386,13 +408,8 @@ function ControlButton({
   )
 }
 
-function extensionOf(path: string): string {
-  const dot = path.lastIndexOf('.')
-  return dot > 0 ? path.slice(dot + 1).toUpperCase() : ''
-}
-
 function looksLikeAudio(path: string): boolean {
-  return ['mp3', 'flac', 'm4a', 'wav', 'ogg', 'opus', 'aac', 'wma'].includes(
-    extensionOf(path).toLowerCase(),
-  )
+  const dot = path.lastIndexOf('.')
+  const ext = dot > 0 ? path.slice(dot + 1).toLowerCase() : ''
+  return ['mp3', 'flac', 'm4a', 'wav', 'ogg', 'opus', 'aac', 'wma'].includes(ext)
 }

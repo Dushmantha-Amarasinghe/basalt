@@ -138,6 +138,9 @@ export const api = {
   upload: (local: string, remote: string, overwrite: boolean, id: string) =>
     call<number>('upload', { local, remote, overwrite, id }),
   cancelTransfer: (id: string) => call<boolean>('cancel_transfer', { id }),
+  /** Downloads to a temporary file and opens it with the system's player. */
+  openExternally: (remote: string, id: string) =>
+    call<string>('open_externally', { remote, id }),
 }
 
 /** Subscribes to transfer progress. Returns an unsubscribe function. */
@@ -280,6 +283,8 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     }
     case 'copy_entry':
       return undefined as T
+    case 'open_externally':
+      return '' as T
     case 'media_url':
       return '' as T
     case 'make_dir':

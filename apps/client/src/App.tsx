@@ -4,6 +4,7 @@ import {
   ClipboardPaste,
   Copy,
   Download,
+  ExternalLink,
   FolderOpen,
   FolderPlus,
   Files,
@@ -14,6 +15,7 @@ import {
   Scissors,
   Search,
   SquarePen,
+  Star,
   Trash2,
   Upload,
   X,
@@ -46,6 +48,7 @@ import { useVault } from '@/lib/useVault'
 import { filterKind, recentOf, useLibraryScan } from '@/lib/useLibrary'
 import { transferId, useTransfers } from '@/lib/useTransfers'
 import { nameOf, useFileActions } from '@/lib/useFileActions'
+import { useStars } from '@/lib/useStars'
 import { entriesToMedia, isPlayable } from '@/lib/media'
 import type { MediaItem } from '@/lib/mockMedia'
 import {
@@ -95,14 +98,16 @@ export function App(): React.JSX.Element {
 
   const actions = useFileActions({ onChanged: vault.refresh, onError: setNotice })
 
+  const stars = useStars(vault.status?.hostId, nav === 'starred')
+
   const needsScan = nav === 'recent' || LIBRARY_KEYS.includes(nav)
   const scan = useLibraryScan(needsScan, connected)
 
   const sectionEntries = useMemo(() => {
     if (nav === 'recent') return recentOf(scan.files)
-    if (nav === 'starred') return []
+    if (nav === 'starred') return stars.entries
     return vault.entries
-  }, [nav, scan.files, vault.entries])
+  }, [nav, scan.files, stars.entries, vault.entries])
 
   const entries = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -259,6 +264,28 @@ export function App(): React.JSX.Element {
 
   // --- opening -------------------------------------------------------------
 
+  /** Downloads to a temporary file and hands it to the system's player. */
+  const openExternally = useCallback(
+    async (path: string) => {
+      const id = transferId()
+      transfers.start({
+        id,
+        kind: 'download',
+        name: nameOf(path),
+        path,
+        total: 0,
+      })
+      setTransfersOpen(true)
+      try {
+        await api.openExternally(path, id)
+        transfers.finish(id)
+      } catch (e) {
+        transfers.finish(id, e instanceof Error ? e.message : String(e))
+      }
+    },
+    [transfers],
+  )
+
   const openEntry = useCallback(
     (entry: Entry) => {
       if (entry.kind === 'dir') {
@@ -360,6 +387,15 @@ export function App(): React.JSX.Element {
         })
       }
 
+      if (!many && entry.kind === 'file') {
+        items.push({
+          id: 'open-external',
+          label: 'Open in your player',
+          icon: ExternalLink,
+          run: () => void openExternally(entry.id),
+        })
+      }
+
       items.push({
         id: 'download',
         label: many ? `Download ${label}…` : 'Download…',
@@ -422,6 +458,20 @@ export function App(): React.JSX.Element {
       }
 
       items.push({
+        id: 'star',
+        label: chosen.every((e) => stars.isStarred(e.id))
+          ? many
+            ? 'Remove stars'
+            : 'Remove star'
+          : many
+            ? `Star ${label}`
+            : 'Star',
+        icon: Star,
+        separatorBefore: true,
+        run: () => stars.toggle(chosen),
+      })
+
+      items.push({
         id: 'properties',
         label: 'Properties',
         icon: Info,
@@ -432,7 +482,16 @@ export function App(): React.JSX.Element {
 
       return items
     },
-    [targetsFor, writable, openEntry, downloadMany, actions, askRename],
+    [
+      targetsFor,
+      writable,
+      openEntry,
+      openExternally,
+      downloadMany,
+      actions,
+      askRename,
+      stars,
+    ],
   )
 
   // --- row handlers, as one stable object ----------------------------------
@@ -796,7 +855,9 @@ export function App(): React.JSX.Element {
                       : query
                         ? `Nothing matches “${query}”`
                         : nav === 'starred'
-                          ? 'Nothing starred yet'
+                          ? stars.loading
+                            ? 'Loading…'
+                            : 'Nothing starred yet. Right-click a file and choose Star.'
                           : 'This folder is empty'
                   }
                 />
@@ -854,7 +915,11 @@ export function App(): React.JSX.Element {
         onOpenEntry={openEntry}
       />
 
-      <PlayerOverlay item={playing} onClose={() => setPlaying(null)} />
+      <PlayerOverlay
+        item={playing}
+        onClose={() => setPlaying(null)}
+        onOpenExternally={(path) => void openExternally(path)}
+      />
 
       <ImageViewer
         items={libraryItems}
