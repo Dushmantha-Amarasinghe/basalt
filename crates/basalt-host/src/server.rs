@@ -187,6 +187,61 @@ impl Host {
         Ok(())
     }
 
+    /// Turns the library on *without* scanning, to stand in for a restart.
+    ///
+    /// Only for tests. `set_library_enabled` scans as a side effect, which
+    /// would hide the very thing the restart test is checking.
+    #[doc(hidden)]
+    pub fn enable_library_for_test(&self) {
+        self.config.lock().expect("config lock").library_enabled = true;
+    }
+
+    /// Rescans whenever the drive changes, and once at startup.
+    ///
+    /// The watcher keeps *listings* live; without this the index would not be,
+    /// and a film copied in would sit in Files but never appear under Movies
+    /// until somebody pressed a button. Heavily debounced, because copying a
+    /// season produces a change per episode and each scan walks the drive.
+    ///
+    /// Also covers the case a restart would otherwise lose: the index on disk
+    /// says nothing about what happened while the host was off.
+    pub fn keep_library_current(self: &Arc<Self>) {
+        /// Quiet time after the last change before rescanning.
+        const SETTLE: std::time::Duration = std::time::Duration::from_secs(8);
+
+        self.start_scan();
+
+        let host = Arc::clone(self);
+        tokio::spawn(async move {
+            let Some(watch) = host.watch().await else {
+                return;
+            };
+            let mut changes = watch.subscribe();
+
+            loop {
+                // Wait for something to happen at all.
+                match changes.recv().await {
+                    Ok(change) if !worth_rescanning(&change) => continue,
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+
+                // Then let the drive settle before walking it.
+                loop {
+                    match tokio::time::timeout(SETTLE, changes.recv()).await {
+                        // Something else happened; wait again.
+                        Ok(Ok(_)) => continue,
+                        Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => return,
+                        Ok(Err(_)) => continue,
+                        Err(_) => break,
+                    }
+                }
+                host.start_scan();
+            }
+        });
+    }
+
     /// Rebuilds the index in the background.
     ///
     /// Completely, every time. That is what makes deleted files disappear
@@ -516,6 +571,25 @@ impl Host {
     }
 }
 
+/// Whether a change could have altered what the library contains.
+///
+/// A file being written to does not change which films exist, and a scan walks
+/// the whole drive — so `Modified` is deliberately ignored. `Resynchronise`
+/// means the host lost track, which is exactly when a rescan is warranted.
+fn worth_rescanning(change: &basalt_proto::msg::Change) -> bool {
+    use basalt_proto::msg::Change;
+    match change {
+        Change::Created { path } | Change::Removed { path } => {
+            crate::media::parse::is_video(path) || !path.contains('.')
+        }
+        Change::Renamed { from, to } => {
+            crate::media::parse::is_video(from) || crate::media::parse::is_video(to)
+        }
+        Change::Resynchronise => true,
+        Change::Modified { .. } | Change::LibraryChanged => false,
+    }
+}
+
 /// A bound but not yet accepting server.
 ///
 /// Splitting bind from serve is what lets tests pass port 0 and read back
@@ -560,6 +634,10 @@ pub async fn serve(server: BoundServer) -> Result<()> {
         host,
         ..
     } = server;
+
+    // Keep the media index in step with the drive, from now until the host
+    // stops. Does nothing at all when the library is switched off.
+    host.keep_library_current();
 
     // Announce on the local network for as long as this host is serving, so
     // clients never have to be told an address. A failure here is not fatal —

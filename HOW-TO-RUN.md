@@ -26,7 +26,7 @@ name your other devices will see, and press **Share**.
 That is the setup.
 
 The window then shows the drive, the devices paired with it, what each has
-moved and how fast it is going right now. Three settings live at the bottom:
+moved and how fast it is going right now. Four settings live at the bottom:
 
 - **Ask for a PIN when pairing** — on by default. A new device appears on this
   screen with a six-digit number to type on that device. With it off, anything
@@ -34,6 +34,11 @@ moved and how fast it is going right now. Three settings live at the bottom:
   in, and the app says so.
 - **Start when Windows starts** — comes up in the notification area at login,
   so the drive is there before you go looking for it.
+- **Recognise films and series** — off by default. When on, the host reads
+  through the drive and works out which files are films and which are
+  episodes, so your devices get **Movies** and **TV Series** sections instead
+  of only folders. It rescans by itself whenever the drive changes, so
+  anything you add, rename or delete turns up without being asked.
 - **This machine's name** — what your devices see in their list.
 
 **Closing the window keeps the drive shared.** It goes to the notification
@@ -52,10 +57,10 @@ sharing settings, nothing on any other machine.
 
 ## On the machine you browse from — Basalt
 
-Run:
+Run the installer:
 
 ```
-apps\client\src-tauri\target\release\basalt-client-shell.exe
+apps\client\src-tauri\target\release\bundle\nsis\Basalt_0.1.0_x64-setup.exe
 ```
 
 It opens on the pairing screen.
@@ -67,6 +72,20 @@ It opens on the pairing screen.
 That is the last time you do any of this. From then on the app reconnects on
 its own whenever the host is up — including after the router gives the host a
 different address, which it finds again by itself.
+
+### What you see once you are in
+
+**Everything is live.** Delete a file on the host in Explorer and it vanishes
+here; rename one and the name changes. It works the other way too, and between
+two devices at once, because the host reports what the drive actually did
+rather than what it was asked to do.
+
+**Movies and TV Series** appear in the sidebar when the host has the library
+switched on. Series open into seasons and episodes. Posters are drawn from the
+title rather than downloaded — nothing is sent to anyone about what is on your
+drive. A film the app is unsure about is labelled *a guess* rather than filed
+silently under the wrong name, and everything stays in **Files** regardless,
+recognised or not.
 
 A host that has not been given a drive yet is still listed, greyed out and
 labelled, rather than left out with no explanation.
@@ -90,6 +109,13 @@ is not running.
 **"That pairing request has expired"**
 Requests last three minutes. Ask again from the client and a fresh number
 appears on the host.
+
+**A film is missing from Movies, or filed under the wrong name**
+The index reads the path, not the file. `Arrival (2016).mkv` and
+`Show/Season 01/S01E01.mkv` are the shapes it knows; something named
+`video1.mkv` has nothing to go on and stays in Files. Anything it was unsure
+about is marked *a guess*. Extras, trailers, samples and anything under 50 MB
+are left out on purpose.
 
 **The host says it is not sharing**
 Another copy is probably already running — check the notification area before
@@ -172,6 +198,7 @@ cannot tell you why.
 | | |
 |---|---|
 | Host identity, drive and paired devices | `%APPDATA%\Basalt\host.json` on the host |
+| The media index | `%APPDATA%\Basalt\library-*.json` on the host, one per drive |
 | Paired hosts and their tokens | `%APPDATA%\Basalt\client.json` on the client |
 | The startup entry | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `Basalt Host` |
 
