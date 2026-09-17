@@ -215,14 +215,27 @@ impl Uploads {
             )));
         }
 
-        if upload.overwrite && upload.target.exists() {
-            tokio::fs::remove_file(&upload.target)
-                .await
-                .map_err(|e| from_io(&upload.rel, e))?;
+        // Checked again here, not just when the upload opened.
+        //
+        // `begin` looks at the destination before a single byte has moved, and
+        // on a slow link minutes pass before the file lands — plenty of time
+        // for something else to take the name. Worse, `rename` on Windows
+        // *replaces* silently, so without this an upload that asked not to
+        // overwrite anything would quietly destroy whatever arrived while it
+        // was in flight. Eight simultaneous uploads of one film demonstrated
+        // it: all eight declared `overwrite: false` and all eight landed, each
+        // one overwriting the last.
+        if !upload.overwrite && upload.target.exists() {
+            tokio::fs::remove_file(&upload.temp).await.ok();
+            return Err(HostError::Exists(upload.rel.clone()));
         }
-        tokio::fs::rename(&upload.temp, &upload.target)
-            .await
-            .map_err(|e| from_io(&upload.rel, e))?;
+
+        // Anything that goes wrong from here takes the partial file with it,
+        // rather than leaving a `.part` on the drive that the listing hides.
+        if let Err(e) = tokio::fs::rename(&upload.temp, &upload.target).await {
+            tokio::fs::remove_file(&upload.temp).await.ok();
+            return Err(from_io(&upload.rel, e));
+        }
 
         if let Some(seconds) = mtime {
             set_mtime(&upload.target, seconds);
@@ -503,6 +516,54 @@ mod tests {
         assert!(!temp.exists());
         assert_eq!(uploads.count().await, 0);
         assert!(uploads.write_chunk(&id, 10, &[0u8; 1]).await.is_err());
+    }
+
+    // What eight duplicate uploads of one file actually did: `rename` on
+    // Windows replaces silently, so all eight landed and each overwrote the
+    // last — despite every one of them declaring `overwrite: false`. The
+    // destination is now re-checked at commit, so only the first lands.
+    #[tokio::test]
+    async fn losing_the_race_for_a_destination_leaves_nothing_behind() {
+        let t = temp_vault();
+        let uploads = Uploads::default();
+        let data = b"the same file, eight times".to_vec();
+
+        // Eight uploads opened before any of them commits, exactly as
+        // simultaneous drops would.
+        let mut ids = Vec::new();
+        for _ in 0..8 {
+            let (id, _) = uploads
+                .begin(&t.vault, "contested.bin", data.len() as u64, false, None)
+                .await
+                .unwrap();
+            uploads.write_chunk(&id, 0, &data).await.unwrap();
+            ids.push(id);
+        }
+
+        let digest = blake3_of(&data);
+        let mut winners = 0;
+        for id in &ids {
+            if uploads.commit(id, &digest, None).await.is_ok() {
+                winners += 1;
+            }
+        }
+
+        assert_eq!(
+            winners, 1,
+            "only the first may land; the rest asked not to overwrite"
+        );
+        assert_eq!(std::fs::read(t.dir.join("contested.bin")).unwrap(), data);
+
+        let leftovers: Vec<_> = std::fs::read_dir(&t.dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| is_temp_name(n))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "the seven that lost left {leftovers:?} on the drive"
+        );
     }
 
     #[tokio::test]

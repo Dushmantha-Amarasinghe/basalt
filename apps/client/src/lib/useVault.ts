@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Entry } from '@/components/FileList'
 import { ApiError, api, onStatus, toEntries, type Status } from './api'
+import { useAsyncSubscription } from './useAsyncSubscription'
 
 /**
  * Connection and navigation, in one hook.
@@ -161,19 +162,20 @@ export function useVault(): Vault {
 
   // The backend reconnects in the background at startup and pushes the result,
   // so the window can open immediately instead of waiting on the network.
-  useEffect(() => {
-    let stop: (() => void) | undefined
-    void onStatus((next) => {
-      setStatus(next)
-      if (next.connected) {
-        void load(wanted.current)
-        api.space().then(setSpace).catch(() => {})
-      }
-    }).then((fn) => {
-      stop = fn
-    })
-    return () => stop?.()
-  }, [load])
+  useAsyncSubscription(
+    true,
+    useCallback(
+      () =>
+        onStatus((next) => {
+          setStatus(next)
+          if (next.connected) {
+            void load(wanted.current)
+            api.space().then(setSpace).catch(() => {})
+          }
+        }),
+      [load],
+    ),
+  )
 
   // Retry while offline, backing off. Anything that is not a transport
   // problem — a missing folder, a denied path — is the user's to resolve and
