@@ -679,13 +679,17 @@ export function App(): React.JSX.Element {
   const forgetVault = useCallback(async () => {
     const hostId = vault.status?.hostId
     if (!hostId) return
-    const { confirmAction } = await import('@/lib/dialogs')
-    const ok = await confirmAction(
-      'This device will have to pair again with a new PIN. Nothing on the drive is affected.',
-      'Forget this vault?',
-    )
-    if (!ok) return
+    // Inside the try, all of it. With the confirmation outside, anything that
+    // went wrong in it escaped this callback entirely and the button did
+    // nothing at all, silently.
     try {
+      const { confirmAction } = await import('@/lib/dialogs')
+      const ok = await confirmAction(
+        'This device will have to pair again with a new PIN. Nothing on the drive is affected.',
+        'Forget this vault?',
+      )
+      if (!ok) return
+
       const next = await api.forgetHost(hostId)
       vault.setStatus({ ...next, hasPaired: false, connected: false })
       setNav('files')

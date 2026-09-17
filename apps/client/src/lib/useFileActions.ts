@@ -209,12 +209,20 @@ export function useFileActions({
       if (entries.length === 0 || busy) return
 
       const folders = entries.filter((e) => e.kind === 'dir').length
-      const ok = await confirmAction(
-        entries.length === 1
-          ? `Delete ${entries[0]!.name}?${folders ? ' Everything inside it goes too.' : ''}`
-          : `Delete ${entries.length} items?${folders ? ` ${folders} are folders, and everything inside them goes too.` : ''}`,
-        'This cannot be undone',
-      )
+      let ok = false
+      try {
+        ok = await confirmAction(
+          entries.length === 1
+            ? `Delete ${entries[0]!.name}?${folders ? ' Everything inside it goes too.' : ''}`
+            : `Delete ${entries.length} items?${folders ? ` ${folders} are folders, and everything inside them goes too.` : ''}`,
+          'This cannot be undone',
+        )
+      } catch (e) {
+        // A confirmation that could not be asked for is not a yes, and it is
+        // not silence either — say so rather than leaving a dead menu item.
+        fail(e, 'Could not delete')
+        return
+      }
       if (!ok) return
 
       setBusy(true)
