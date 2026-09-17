@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { api, onBytes, onTransfer, type TransferEvent } from './api'
 import { recordWindow } from './throughput'
+import { useAsyncSubscription } from './useAsyncSubscription'
 
 /**
  * The transfer queue, fed by events from the backend.
@@ -46,43 +47,42 @@ export function useTransfers(): Transfers {
   // The throughput trace is fed from the backend's own byte counter, which
   // sees everything on the link including streamed video. Transfer events are
   // only used to draw the queue.
-  useEffect(() => {
-    let stop: (() => void) | undefined
-    void onBytes((w) => recordWindow(w.bytes, w.millis)).then((fn) => {
-      stop = fn
-    })
-    return () => stop?.()
-  }, [])
+  useAsyncSubscription(
+    true,
+    useCallback(() => onBytes((w) => recordWindow(w.bytes, w.millis)), []),
+  )
 
-  useEffect(() => {
-    let stop: (() => void) | undefined
-    void onTransfer((event: TransferEvent) => {
-      if (event.status === 'done') seen.current.delete(event.id)
-      else seen.current.set(event.id, event.transferred)
+  useAsyncSubscription(
+    true,
+    useCallback(
+      () =>
+        onTransfer((event: TransferEvent) => {
+          if (event.status === 'done') seen.current.delete(event.id)
+          else seen.current.set(event.id, event.transferred)
 
-      setTransfers((prev) => {
-        const index = prev.findIndex((t) => t.id === event.id)
-        const next: Transfer = {
-          id: event.id,
-          kind: event.kind,
-          name: event.name,
-          path: event.path,
-          transferred: event.transferred,
-          total: event.total,
-          status: event.status === 'done' ? 'done' : 'active',
-          rate: event.rate,
-        }
-        if (index === -1) return [next, ...prev]
-        // Replace in place so the row does not jump to the top on every tick.
-        const copy = [...prev]
-        copy[index] = { ...copy[index], ...next }
-        return copy
-      })
-    }).then((fn) => {
-      stop = fn
-    })
-    return () => stop?.()
-  }, [])
+          setTransfers((prev) => {
+            const index = prev.findIndex((t) => t.id === event.id)
+            const next: Transfer = {
+              id: event.id,
+              kind: event.kind,
+              name: event.name,
+              path: event.path,
+              transferred: event.transferred,
+              total: event.total,
+              status: event.status === 'done' ? 'done' : 'active',
+              rate: event.rate,
+            }
+            if (index === -1) return [next, ...prev]
+            // Replace in place so the row does not jump to the top on every
+            // tick.
+            const copy = [...prev]
+            copy[index] = { ...copy[index], ...next }
+            return copy
+          })
+        }),
+      [],
+    ),
+  )
 
   const start = useCallback(
     (transfer: Omit<Transfer, 'transferred' | 'rate' | 'status'>) => {
@@ -130,10 +130,21 @@ export function useTransfers(): Transfers {
     setTransfers((prev) => prev.filter((t) => t.status === 'active'))
   }, [])
 
-  const active = transfers.filter((t) => t.status === 'active')
-  const totalRate = active.reduce((sum, t) => sum + t.rate, 0) / 1e6
-
-  return { transfers, active, totalRate, start, finish, cancel, clearDone }
+  // Memoised so this object keeps its identity between renders. A fresh
+  // object each time made every `useCallback` that depended on it fresh too,
+  // which is how an effect meant to run once ended up running on every render.
+  return useMemo(() => {
+    const active = transfers.filter((t) => t.status === 'active')
+    return {
+      transfers,
+      active,
+      totalRate: active.reduce((sum, t) => sum + t.rate, 0) / 1e6,
+      start,
+      finish,
+      cancel,
+      clearDone,
+    }
+  }, [transfers, start, finish, cancel, clearDone])
 }
 
 /** A short, unique id for one transfer. */

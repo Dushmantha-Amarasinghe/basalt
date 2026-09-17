@@ -48,6 +48,7 @@ import { useVault } from '@/lib/useVault'
 import { filterKind, recentOf, useLibraryScan } from '@/lib/useLibrary'
 import { transferId, useTransfers } from '@/lib/useTransfers'
 import { nameOf, useFileActions } from '@/lib/useFileActions'
+import { useAsyncSubscription, useLatest } from '@/lib/useAsyncSubscription'
 import { useStars } from '@/lib/useStars'
 import { entriesToMedia, isPlayable } from '@/lib/media'
 import type { MediaItem } from '@/lib/mockMedia'
@@ -231,12 +232,30 @@ export function App(): React.JSX.Element {
     [downloadOne, transfers],
   )
 
+  /**
+   * Uploads already in flight, keyed by source and destination.
+   *
+   * Belt and braces against starting the same upload twice. The listener leak
+   * that made a single drop start eight identical uploads is fixed at its
+   * source, but a user can also double-drop, and two copies of the same file
+   * racing for one destination is not something to find out about at the
+   * commit.
+   */
+  const inFlight = useRef(new Set<string>())
+
   const uploadPaths = useCallback(
     async (paths: string[], into: string) => {
       if (paths.length === 0) return
+
+      const fresh = paths.filter((local) => !inFlight.current.has(`${local}->${into}`))
+      if (fresh.length === 0) {
+        setNotice('That is already uploading.')
+        return
+      }
+      for (const local of fresh) inFlight.current.add(`${local}->${into}`)
       setTransfersOpen(true)
 
-      for (const local of paths) {
+      for (const local of fresh) {
         const name = baseName(local)
         const id = transferId()
         transfers.start({
@@ -251,6 +270,8 @@ export function App(): React.JSX.Element {
           transfers.finish(id)
         } catch (e) {
           transfers.finish(id, e instanceof Error ? e.message : String(e))
+        } finally {
+          inFlight.current.delete(`${local}->${into}`)
         }
       }
       vault.refresh()
@@ -613,21 +634,28 @@ export function App(): React.JSX.Element {
 
   // --- files dragged in from Explorer --------------------------------------
 
-  useEffect(() => {
-    if (!writable) return undefined
-    let stop: (() => void) | undefined
-    void onExternalFileDrop({
-      onEnter: () => setDropActive(true),
-      onLeave: () => setDropActive(false),
-      onDrop: (paths) => {
-        setDropActive(false)
-        void uploadPaths(paths, vault.dir)
-      },
-    }).then((fn) => {
-      stop = fn
-    })
-    return () => stop?.()
-  }, [writable, uploadPaths, vault.dir])
+  // Read through refs so the subscription below can be established once.
+  // Depending on these directly re-ran the effect on every render, and because
+  // the unsubscribe arrives asynchronously the old listener was never removed —
+  // so a single drop started one upload per render that had happened since the
+  // app opened.
+  const latestUpload = useLatest(uploadPaths)
+  const latestDir = useLatest(vault.dir)
+
+  const subscribeToDrops = useCallback(
+    () =>
+      onExternalFileDrop({
+        onEnter: () => setDropActive(true),
+        onLeave: () => setDropActive(false),
+        onDrop: (paths) => {
+          setDropActive(false)
+          void latestUpload.current(paths, latestDir.current)
+        },
+      }),
+    [latestUpload, latestDir],
+  )
+
+  useAsyncSubscription(writable, subscribeToDrops)
 
   // --- effects -------------------------------------------------------------
 
