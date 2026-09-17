@@ -130,54 +130,56 @@ async fn serve(
 
     banner(&host, &vault_path, bound.addr());
 
-    // A host with nothing paired is useless, so open the window immediately
-    // rather than making the user find the command for it.
-    if host.devices().is_empty() {
-        let pin = host.open_pairing()?;
-        println!("  No devices paired yet.");
-        println!("  Pairing PIN:  {}\n", format_pin(&pin));
+    println!(
+        "  {} device(s) paired. Ctrl-C to stop.\n",
+        host.devices().len()
+    );
+    if host.require_pin() {
+        println!("  A PIN is required. When a device asks to connect, its PIN");
+        println!("  appears here — read it across to that device.\n");
     } else {
-        println!("  {} device(s) paired.", host.devices().len());
-        println!("  Press Enter to open pairing for another. Ctrl-C to stop.\n");
+        println!("  No PIN required: anyone on this network who finds this host");
+        println!("  can read the drive.\n");
     }
 
-    // Console input runs alongside the server so a PIN can be reissued without
-    // restarting, which matters because a window only lasts three minutes.
-    let console = tokio::spawn(console_loop(Arc::clone(&host)));
+    // Pairing requests are printed as they arrive, so this window shows the
+    // same thing the host app would.
+    let watcher = tokio::spawn(watch_requests(Arc::clone(&host)));
     let result = server::serve(bound).await;
-    console.abort();
+    watcher.abort();
     result.map_err(Into::into)
 }
 
-/// Reissues a PIN whenever the user presses Enter.
-async fn console_loop(host: Arc<Host>) {
-    use tokio::io::AsyncBufReadExt;
+/// Prints pairing requests as they arrive.
+///
+/// The host no longer opens a window in advance; a device asks, and this is
+/// where the answer to "what number do I type" appears — beside the name of
+/// the machine asking, so it is obvious whether it is yours.
+async fn watch_requests(host: Arc<Host>) {
+    let mut announced: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        match line.trim() {
-            "d" | "devices" => {
-                for device in host.devices() {
-                    println!(
-                        "  {}  {}  {}",
-                        short_id(&device.token_hash),
-                        device.name,
-                        if device.writable {
-                            "read-write"
-                        } else {
-                            "read-only"
-                        }
-                    );
-                }
-                if host.devices().is_empty() {
-                    println!("  nothing paired yet");
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let pending = host.pending_pairings();
+
+        for request in &pending {
+            if announced.insert(request.id.clone()) {
+                match &request.pin {
+                    Some(pin) => println!(
+                        "\n  {} wants to connect.\n  PIN:  {}   (3 minutes)\n",
+                        request.device_name,
+                        format_pin(pin)
+                    ),
+                    None => println!("\n  {} is connecting.\n", request.device_name),
                 }
             }
-            _ => match host.open_pairing() {
-                Ok(pin) => println!("\n  Pairing PIN:  {}   (3 minutes)\n", format_pin(&pin)),
-                Err(e) => println!("  could not open pairing: {e}"),
-            },
         }
+
+        // Forget the ones that have gone, so a device that comes back is
+        // announced again rather than silently ignored.
+        let live: std::collections::HashSet<String> =
+            pending.iter().map(|r| r.id.clone()).collect();
+        announced.retain(|id| live.contains(id));
     }
 }
 

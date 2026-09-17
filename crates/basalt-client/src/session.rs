@@ -35,6 +35,20 @@ pub struct Session {
     info: SessionInfo,
 }
 
+/// A pairing the host is currently displaying.
+///
+/// Holds everything the proof is bound to, so the second step cannot be
+/// computed against different nonces or a different key than the first.
+#[derive(Debug, Clone)]
+pub struct PairChallenge {
+    pub request: String,
+    pub requires_pin: bool,
+    pub client_nonce: String,
+    pub server_nonce: String,
+    /// The key the host actually presented, not anything it claimed.
+    pub host_id: String,
+}
+
 /// Opens a TLS connection and reads the host's greeting.
 ///
 /// Returns the stream and the greeting separately because pairing and
@@ -131,17 +145,20 @@ impl Session {
         })
     }
 
-    /// Pairs with a host using the PIN shown on its screen.
+    /// Asks a host to pair, which is what makes it display the request.
+    ///
+    /// Split from [`Session::finish_pair`] because the PIN is generated *by the
+    /// asking*. Doing both in one call meant the second attempt — the one
+    /// carrying the PIN — opened a new request with a new number, so the one on
+    /// the host's screen was stale before it could be typed. The session stays
+    /// open between the two steps, and the challenge identifies the request the
+    /// host is showing.
     ///
     /// Trust is [`Trust::FirstContact`] here because there is nothing to
     /// compare against yet — which is exactly why the PIN proof is bound to the
     /// key that turned up. See [`basalt_net::pairing`].
-    pub async fn pair(addr: SocketAddr, pin: &str, device_name: &str) -> Result<(Self, String)> {
+    pub async fn begin_pair(addr: SocketAddr, device_name: &str) -> Result<(Self, PairChallenge)> {
         let (mut stream, hello, presented) = open(addr, Trust::FirstContact, device_name).await?;
-
-        if !hello.pairing_open {
-            return Err(ClientError::PairingClosed);
-        }
 
         let client_nonce = basalt_net::pairing::random_nonce()
             .map_err(|e| ClientError::Protocol(format!("no randomness available: {e}")))?;
@@ -151,20 +168,63 @@ impl Session {
             Op::PairBegin,
             &PairBeginRequest {
                 client_nonce: client_nonce.clone(),
+                device_name: device_name.to_string(),
             },
         )
         .await?;
 
-        let proof =
-            basalt_net::pairing::compute_proof(pin, &presented, &client_nonce, &begin.server_nonce)
-                .map_err(|e| ClientError::Protocol(format!("could not build the proof: {e}")))?;
+        let challenge = PairChallenge {
+            request: begin.request,
+            requires_pin: begin.requires_pin,
+            client_nonce,
+            server_nonce: begin.server_nonce,
+            host_id: presented.clone(),
+        };
+
+        Ok((
+            Self {
+                stream,
+                info: SessionInfo {
+                    host_id: presented,
+                    host_name: hello.host_name,
+                    vault: hello.vault,
+                    // Replaced by what the host says once pairing completes.
+                    writable: true,
+                    address: addr,
+                },
+            },
+            challenge,
+        ))
+    }
+
+    /// Completes a pairing the host is displaying, returning the device token.
+    pub async fn finish_pair(
+        &mut self,
+        challenge: &PairChallenge,
+        pin: Option<&str>,
+    ) -> Result<String> {
+        let proof = if challenge.requires_pin {
+            let pin = pin.ok_or(ClientError::PinRequired)?;
+            Some(
+                basalt_net::pairing::compute_proof(
+                    pin,
+                    &challenge.host_id,
+                    &challenge.client_nonce,
+                    &challenge.server_nonce,
+                )
+                .map_err(|e| ClientError::Protocol(format!("could not build the proof: {e}")))?,
+            )
+        } else {
+            None
+        };
 
         let finish: PairFinishResponse = call_json(
-            &mut stream,
+            &mut self.stream,
             Op::PairFinish,
             &PairFinishRequest {
+                request: challenge.request.clone(),
                 proof,
-                device_name: device_name.to_string(),
+                device_name: self.info.host_name.clone(),
             },
         )
         .await
@@ -175,22 +235,8 @@ impl Session {
             _ => ClientError::Net(e),
         })?;
 
-        let token = finish.token.clone();
-        Ok((
-            Self {
-                stream,
-                info: SessionInfo {
-                    host_id: presented,
-                    host_name: hello.host_name,
-                    vault: finish.vault,
-                    // Pairing always grants write access; the host can demote a
-                    // device afterwards.
-                    writable: true,
-                    address: addr,
-                },
-            },
-            token,
-        ))
+        self.info.vault = finish.vault;
+        Ok(finish.token)
     }
 
     pub fn info(&self) -> &SessionInfo {

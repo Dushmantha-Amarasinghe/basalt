@@ -57,15 +57,31 @@ impl Fixture {
         Arc::new(Basalt::open(self.client_store.clone()).expect("a fresh client store"))
     }
 
-    /// Opens pairing and pairs a client, the way a user would.
+    /// Pairs a client the way a person does.
+    ///
+    /// Asking is what makes the host generate and display a PIN, so the first
+    /// attempt is expected to come back asking for one — exactly as the app
+    /// does, which then shows a PIN field.
     async fn paired_client(&self) -> Arc<Basalt> {
-        let pin = self.host.open_pairing().expect("pairing opens");
         let client = self.client();
+        self.pair(&client).await.expect("pairing succeeds");
         client
-            .pair(&self.address(), &pin)
-            .await
-            .expect("pairing succeeds");
-        client
+    }
+
+    /// Runs the whole two-step pairing against this host.
+    async fn pair(&self, client: &Arc<Basalt>) -> Result<(), ClientError> {
+        let requires_pin = client.begin_pairing(self.addr).await?;
+        let pin = if requires_pin {
+            Some(self.displayed_pin().expect("the host displays a PIN"))
+        } else {
+            None
+        };
+        client.finish_pairing(pin.as_deref()).await.map(|_| ())
+    }
+
+    /// The PIN the host is currently showing, whoever it is for.
+    fn displayed_pin(&self) -> Option<String> {
+        self.host.pending_pairings().into_iter().find_map(|r| r.pin)
     }
 }
 
@@ -143,42 +159,82 @@ async fn pairing_then_browsing_works_end_to_end() {
 #[tokio::test]
 async fn a_wrong_pin_is_refused_and_pairs_nothing() {
     let fixture = start_host().await;
-    let pin = fixture.host.open_pairing().unwrap();
-    let wrong = if pin == "000000" { "111111" } else { "000000" };
-
     let client = fixture.client();
-    let err = client.pair(&fixture.address(), wrong).await.unwrap_err();
+
+    // Asking makes the host display a PIN.
+    assert!(client.begin_pairing(fixture.addr).await.unwrap());
+    let real = fixture.displayed_pin().unwrap();
+    let wrong = if real == "000000" { "111111" } else { "000000" };
+
+    let err = client.finish_pairing(Some(wrong)).await.unwrap_err();
     assert_eq!(err.kind(), "pairing", "got: {err}");
     assert!(client.known_hosts().is_empty());
     assert!(!client.is_connected());
 }
 
+// The whole point of a request: the host can say *who* is asking, beside the
+// number to read across.
 #[tokio::test]
-async fn pairing_is_refused_when_the_window_is_closed() {
+async fn asking_to_pair_shows_the_request_on_the_host() {
     let fixture = start_host().await;
-    // Never opened.
+    assert!(fixture.host.pending_pairings().is_empty());
+
     let client = fixture.client();
-    assert!(matches!(
-        client.pair(&fixture.address(), "123456").await,
-        Err(ClientError::PairingClosed)
-    ));
+    assert!(client.begin_pairing(fixture.addr).await.unwrap());
+
+    let pending = fixture.host.pending_pairings();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].device_name, client.device_name());
+    assert!(pending[0].pin.is_some(), "a PIN to read across");
 }
 
 #[tokio::test]
 async fn a_pin_pairs_exactly_one_device() {
     let fixture = start_host().await;
-    let pin = fixture.host.open_pairing().unwrap();
+    let client = fixture.client();
+    client.begin_pairing(fixture.addr).await.unwrap();
+    let pin = fixture.displayed_pin().unwrap();
+    client.finish_pairing(Some(&pin)).await.unwrap();
 
-    fixture
-        .client()
-        .pair(&fixture.address(), &pin)
-        .await
-        .unwrap();
-
+    // The same number, tried by somebody else, is spent.
     let second = Arc::new(Basalt::open(unique("second").with_extension("json")).unwrap());
+    second.begin_pairing(fixture.addr).await.unwrap();
     assert!(
-        second.pair(&fixture.address(), &pin).await.is_err(),
-        "the window must close once a device has used it"
+        second.finish_pairing(Some(&pin)).await.is_err(),
+        "a PIN belongs to one request and is consumed by it"
+    );
+}
+
+// The setting the user asked for: no PIN, and connecting is one click.
+#[tokio::test]
+async fn with_the_pin_switched_off_pairing_needs_nothing_typed() {
+    let fixture = start_host().await;
+    fixture.host.set_require_pin(false).unwrap();
+
+    let client = fixture.client();
+    assert!(
+        !client.begin_pairing(fixture.addr).await.unwrap(),
+        "the host should not be asking for one"
+    );
+    let info = client.finish_pairing(None).await.expect("nothing to type");
+
+    assert_eq!(info.vault, "Test Vault");
+    assert!(!client.list("").await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_host_can_refuse_a_request_before_it_completes() {
+    let fixture = start_host().await;
+    let client = fixture.client();
+    client.begin_pairing(fixture.addr).await.unwrap();
+
+    let request = fixture.host.pending_pairings().remove(0);
+    let pin = request.pin.clone().unwrap();
+    assert!(fixture.host.deny_pairing(&request.id));
+
+    assert!(
+        client.finish_pairing(Some(&pin)).await.is_err(),
+        "a refused request must not be completable"
     );
 }
 
