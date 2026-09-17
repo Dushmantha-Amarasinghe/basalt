@@ -83,6 +83,14 @@ describe('the messages', () => {
     expect(message).not.toContain('WebM')
   })
 
+  // What the real library actually contains: HEVC video with Dolby Digital
+  // Plus 5.1 audio in an MKV. Naming DD+ is the difference between a message
+  // someone recognises and one they have to decode.
+  it('names Dolby Digital Plus, which is what 5.1 rips actually carry', () => {
+    expect(silenceMessage('a.mkv')).toContain('Dolby Digital Plus')
+    expect(silenceMessage('a.mkv')).toContain('E-AC3')
+  })
+
   it('always says what to do next', () => {
     for (const name of ['a.mkv', 'a.mp4', 'a.avi']) {
       expect(silenceMessage(name), name).toContain('your usual player')

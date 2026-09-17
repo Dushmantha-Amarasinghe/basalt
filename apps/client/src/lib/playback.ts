@@ -104,16 +104,16 @@ export function silenceMessage(name: string): string {
   const ext = extensionOf(name).toUpperCase()
   if (playabilityOf(name) === 'partial') {
     return (
-      `No sound. This window can read the ${ext} container but only plays the ` +
-      'audio formats WebM uses — Opus and Vorbis. AAC, AC3 and DTS tracks are ' +
-      'dropped, which is almost always what an MKV carries. Open it in your ' +
-      'usual player instead.'
+      `No sound. This window reads the ${ext} container only well enough for ` +
+      'WebM, so it plays Opus and Vorbis and drops everything else — AAC, ' +
+      'AC3, Dolby Digital Plus (DD+ / E-AC3) and DTS. A 5.1 film almost ' +
+      'always carries one of those. Open it in your usual player instead.'
     )
   }
   return (
     'No sound. Either this file has no audio track, or its audio format — ' +
-    'often AC3, DTS or TrueHD — is one this window cannot decode. Open it in ' +
-    'your usual player instead.'
+    'often AC3, Dolby Digital Plus or DTS — is one this window cannot ' +
+    'decode. Open it in your usual player instead.'
   )
 }
 
