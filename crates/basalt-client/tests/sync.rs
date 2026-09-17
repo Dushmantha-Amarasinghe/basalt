@@ -436,3 +436,73 @@ async fn a_watching_client_is_told_when_the_library_changes() {
         seen.all()
     );
 }
+
+/// The bug this exists for: a host restarted with the library already on used
+/// the index it had saved and never looked again, so anything added while it
+/// was off stayed invisible until somebody pressed a button.
+#[tokio::test]
+async fn a_host_that_starts_with_the_library_on_scans_without_being_asked() {
+    let fixture = start_host().await;
+    put_feature(&fixture.vault_path("films/Arrival.2016.mkv"));
+
+    // Enabled directly on the config, as a restart would find it — not via
+    // `set_library_enabled`, which scans as a side effect and would hide this.
+    fixture.host.enable_library_for_test();
+    fixture.host.keep_library_current();
+
+    let client = fixture.paired_client().await;
+    let items = library_of(&client, 1).await;
+    assert_eq!(items.len(), 1, "a restart has to rescan; got {items:?}");
+    assert_eq!(items[0].title, "Arrival");
+}
+
+/// The other half: the watcher keeps listings live, and has to keep the index
+/// live too, or a film copied in sits in Files and never reaches Movies.
+#[tokio::test]
+async fn a_film_copied_in_reaches_the_library_on_its_own() {
+    let fixture = start_host().await;
+    put_feature(&fixture.vault_path("films/Arrival.2016.mkv"));
+    fixture.host.set_library_enabled(true).await.unwrap();
+
+    let client = fixture.paired_client().await;
+    assert_eq!(library_of(&client, 1).await.len(), 1);
+
+    settle().await;
+    put_feature(&fixture.vault_path("films/Dune.2021.mkv"));
+
+    // Nothing asks for a rescan here. The host notices on its own.
+    let deadline = std::time::Instant::now() + Duration::from_secs(40);
+    while std::time::Instant::now() < deadline {
+        let items = client.library(0).await.unwrap().items.unwrap_or_default();
+        if items.len() == 2 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("the new film never reached the library");
+}
+
+#[tokio::test]
+async fn a_deleted_film_leaves_the_library_on_its_own() {
+    let fixture = start_host().await;
+    put_feature(&fixture.vault_path("films/Arrival.2016.mkv"));
+    put_feature(&fixture.vault_path("films/Dune.2021.mkv"));
+    fixture.host.set_library_enabled(true).await.unwrap();
+
+    let client = fixture.paired_client().await;
+    assert_eq!(library_of(&client, 2).await.len(), 2);
+
+    settle().await;
+    std::fs::remove_file(fixture.vault_path("films/Dune.2021.mkv")).unwrap();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(40);
+    while std::time::Instant::now() < deadline {
+        let items = client.library(0).await.unwrap().items.unwrap_or_default();
+        if items.len() == 1 {
+            assert_eq!(items[0].title, "Arrival");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("the deleted film never left the library");
+}
