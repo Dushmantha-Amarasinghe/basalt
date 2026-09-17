@@ -283,6 +283,53 @@ impl Session {
         Ok((response.free, response.total))
     }
 
+    /// The media index, or nothing new if `known_revision` still matches.
+    pub async fn library(&mut self, known_revision: u64) -> Result<LibraryResponse> {
+        call_json(
+            &mut self.stream,
+            Op::Library,
+            &LibraryRequest { known_revision },
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Poster bytes for one item.
+    pub async fn art(&mut self, id: &str) -> Result<Vec<u8>> {
+        write_request(
+            &mut self.stream,
+            Op::LibraryArt,
+            &serde_json::to_vec(&ArtRequest { id: id.to_string() })
+                .map_err(|e| ClientError::Protocol(e.to_string()))?,
+        )
+        .await?;
+        Ok(read_response(&mut self.stream).await?)
+    }
+
+    /// Opens a watch. **This session is dedicated to it from now on.**
+    ///
+    /// Nothing else may be sent on it: the host answers with a response per
+    /// change and will keep doing so until the connection closes, so a second
+    /// request would be read as if it were part of that stream.
+    pub async fn watch_begin(&mut self) -> Result<()> {
+        write_request(
+            &mut self.stream,
+            Op::Watch,
+            &serde_json::to_vec(&WatchRequest {})
+                .map_err(|e| ClientError::Protocol(e.to_string()))?,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Waits for the next change. Returns an error when the host goes away.
+    pub async fn watch_next(&mut self) -> Result<Change> {
+        let body = read_response(&mut self.stream).await?;
+        let event: WatchEvent = serde_json::from_slice(&body)
+            .map_err(|e| ClientError::Protocol(format!("a change did not parse: {e}")))?;
+        Ok(event.change)
+    }
+
     /// Reads a byte range. Shorter than requested at the end of the file.
     pub async fn read_range(&mut self, path: &str, offset: u64, length: u64) -> Result<Vec<u8>> {
         let body = serde_json::to_vec(&ReadRequest {

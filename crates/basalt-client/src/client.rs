@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use basalt_proto::msg::{DirEntry, HelloResponse};
+use std::time::Duration;
+
+use basalt_proto::msg::{Change, DirEntry, HelloResponse, LibraryResponse};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::pool::Pool;
@@ -181,12 +183,7 @@ impl Basalt {
         Ok(hosts)
     }
 
-    /// Asks a host to pair, and says whether it wants a PIN.
-    ///
-    /// The host is displaying the request from this moment — with this device's
-    /// name against the number to read across — so the interface can show a PIN
-    /// field knowing one is on screen at the other end.
-    /// The same, from the `ip:port` a discovered host reported.
+    /// Asks a host to pair, from the `ip:port` a discovered host reported.
     ///
     /// Resolution lives here rather than in the Tauri shell so the shell needs
     /// no knowledge of the network layer at all — and so that turning a bad
@@ -196,6 +193,11 @@ impl Basalt {
         self.begin_pairing(addr).await
     }
 
+    /// Asks a host to pair, and says whether it wants a PIN.
+    ///
+    /// The host is displaying the request from this moment — with this device's
+    /// name against the number to read across — so the interface can show a PIN
+    /// field knowing one is on screen at the other end.
     pub async fn begin_pairing(&self, address: SocketAddr) -> Result<bool> {
         let (session, challenge) = Session::begin_pair(address, &self.device_name).await?;
         let requires_pin = challenge.requires_pin;
@@ -408,6 +410,118 @@ impl Basalt {
         let mut lease = pool.acquire().await?;
         let result = lease.space().await;
         lease.check(result)
+    }
+
+    // -----------------------------------------------------------------------
+    // The media library
+    // -----------------------------------------------------------------------
+
+    /// The index, or a revision marker if this client already has it.
+    pub async fn library(&self, known_revision: u64) -> Result<LibraryResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.library(known_revision).await;
+        lease.check(result)
+    }
+
+    pub async fn art(&self, id: &str) -> Result<Vec<u8>> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.art(id).await;
+        lease.check(result)
+    }
+
+    // -----------------------------------------------------------------------
+    // Watching
+    // -----------------------------------------------------------------------
+
+    /// Calls `on_change` for everything that happens on the drive.
+    ///
+    /// Runs on its own connection, because a watch holds one open indefinitely
+    /// and borrowing from the pool would starve everything else.
+    ///
+    /// Reconnects on its own. A watch that stops when the Wi-Fi hiccups is
+    /// worse than no watch at all — it leaves the interface confidently showing
+    /// a listing that has since changed, with nothing to suggest otherwise. So
+    /// a reconnection also reports [`Change::Resynchronise`], because changes
+    /// certainly happened while it was away and there is no way to know which.
+    pub fn watch<F>(self: &Arc<Self>, on_change: F) -> WatchHandle
+    where
+        F: Fn(Change) + Send + Sync + 'static,
+    {
+        let stop = Arc::new(tokio::sync::Notify::new());
+        let client = Arc::clone(self);
+        let signal = Arc::clone(&stop);
+
+        const FIRST_RETRY: Duration = Duration::from_millis(250);
+        const SLOWEST_RETRY: Duration = Duration::from_secs(10);
+        /// A connection that lasted this long is evidence the host is well.
+        const HEALTHY: Duration = Duration::from_secs(30);
+
+        let task = tokio::spawn(async move {
+            let mut backoff = FIRST_RETRY;
+            // The first connection is not a reconnection, so it does not claim
+            // anything was missed.
+            let mut reconnecting = false;
+
+            loop {
+                if reconnecting {
+                    on_change(Change::Resynchronise);
+                }
+
+                let started = std::time::Instant::now();
+                if client.watch_once(&on_change, &signal).await.is_ok() {
+                    // The caller asked it to stop.
+                    return;
+                }
+                reconnecting = true;
+
+                // Only a connection that *lasted* resets the backoff. Resetting
+                // after every attempt would leave it permanently at the first
+                // step, which is a retry storm against a host that is off.
+                if started.elapsed() >= HEALTHY {
+                    backoff = FIRST_RETRY;
+                }
+                tokio::select! {
+                    _ = signal.notified() => return,
+                    _ = tokio::time::sleep(backoff) => {}
+                }
+                backoff = (backoff * 2).min(SLOWEST_RETRY);
+            }
+        });
+
+        WatchHandle {
+            stop,
+            task: Some(task),
+        }
+    }
+
+    /// One watch connection, for as long as it lasts.
+    async fn watch_once<F>(&self, on_change: &F, stop: &tokio::sync::Notify) -> Result<()>
+    where
+        F: Fn(Change) + Send + Sync,
+    {
+        let (addr, host_id, token) = {
+            let pool = self.pool().await?;
+            let known = self
+                .store
+                .lock()
+                .expect("store lock")
+                .find(pool.host_id())
+                .cloned()
+                .ok_or(ClientError::NotConnected)?;
+            (pool.address(), known.host_id, known.token)
+        };
+
+        let mut session = Session::connect(addr, &host_id, &token, &self.device_name).await?;
+        session.watch_begin().await?;
+
+        loop {
+            tokio::select! {
+                _ = stop.notified() => return Ok(()),
+                change = session.watch_next() => on_change(change?),
+            }
+        }
     }
 
     pub async fn read_range(&self, path: &str, offset: u64, length: u64) -> Result<Vec<u8>> {
@@ -635,6 +749,37 @@ fn unix_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Keeps a watch running. Dropping it stops the watch.
+///
+/// A handle rather than a detached task on purpose: a subscription that
+/// outlives whatever asked for it is how the client came to start eight
+/// uploads from one drop, and the fix there was the same — make the lifetime
+/// something the caller holds.
+pub struct WatchHandle {
+    stop: Arc<tokio::sync::Notify>,
+    /// Taken by `stop`, so `Drop` knows it has already been dealt with.
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl WatchHandle {
+    /// Stops watching and waits for the task to finish.
+    pub async fn stop(mut self) {
+        self.stop.notify_waiters();
+        if let Some(task) = self.task.take() {
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for WatchHandle {
+    fn drop(&mut self) {
+        self.stop.notify_waiters();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
 }
 
 #[cfg(test)]

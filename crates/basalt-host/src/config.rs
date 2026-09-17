@@ -47,6 +47,14 @@ pub struct HostConfig {
     #[serde(default)]
     pub start_with_windows: bool,
 
+    /// Whether to recognise films and series on the drive.
+    ///
+    /// Off unless asked for. Scanning somebody's drive and filing what is on it
+    /// is work they did not request, and a library they may not want — so an
+    /// upgrade must not quietly start doing it.
+    #[serde(default)]
+    pub library_enabled: bool,
+
     #[serde(default)]
     pub devices: Vec<Device>,
 }
@@ -65,6 +73,7 @@ impl HostConfig {
             port: basalt_net::DEFAULT_PORT,
             require_pin: true,
             start_with_windows: false,
+            library_enabled: false,
             devices: Vec::new(),
         })
     }
