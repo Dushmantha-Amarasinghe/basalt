@@ -167,6 +167,26 @@ async fn set_start_with_windows(state: State<'_, AppState>, enabled: bool) -> An
     status(state).await
 }
 
+/// Turns the media index on or off.
+///
+/// Switching it on starts a scan; switching it off drops the index rather than
+/// hiding it, because an index nobody asked for should not sit on disk.
+#[tauri::command]
+async fn set_library_enabled(state: State<'_, AppState>, enabled: bool) -> Answer<HostStatus> {
+    state.host.set_library_enabled(enabled).await?;
+    status(state).await
+}
+
+/// Rebuilds the index now.
+///
+/// A scan is complete every time, so this is also how anything deleted behind
+/// the app's back leaves the library.
+#[tauri::command]
+async fn rescan_library(state: State<'_, AppState>) -> Answer<HostStatus> {
+    state.host.start_scan();
+    status(state).await
+}
+
 #[tauri::command]
 fn open_vault_folder(state: State<'_, AppState>, app: tauri::AppHandle) -> Answer<()> {
     use tauri_plugin_opener::OpenerExt;
@@ -343,6 +363,8 @@ pub fn run() {
             deny_pairing,
             set_require_pin,
             set_start_with_windows,
+            set_library_enabled,
+            rescan_library,
             open_vault_folder,
         ])
         .run(tauri::generate_context!())

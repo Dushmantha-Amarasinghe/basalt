@@ -23,6 +23,9 @@ import {
 import { TitleBar } from '@/components/TitleBar'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { Sidebar, type NavKey } from '@/components/Sidebar'
+import { LibraryView } from '@/components/LibraryView'
+import { useMediaLibrary } from '@/lib/useMediaLibrary'
+import { useLiveChanges } from '@/lib/useLiveChanges'
 import { FileList, type Entry, type RowHandlers } from '@/components/FileList'
 import { EmptyState, ListView, TileView } from '@/components/FileViews'
 import { ViewMenu, type ViewMode } from '@/components/ViewMenu'
@@ -64,10 +67,15 @@ import { cn, formatBytes } from '@/lib/utils'
 
 const LIBRARY_KEYS: NavKey[] = ['videos', 'music', 'photos']
 
+/** The sections served by the host's media index rather than a folder scan. */
+const MEDIA_KEYS: NavKey[] = ['movies', 'series']
+
 const TITLES: Record<NavKey, string> = {
   files: 'Vault',
   recent: 'Recent',
   starred: 'Starred',
+  movies: 'Movies',
+  series: 'TV Series',
   videos: 'Videos',
   music: 'Music',
   photos: 'Photos',
@@ -104,6 +112,13 @@ export function App(): React.JSX.Element {
   const needsScan = nav === 'recent' || LIBRARY_KEYS.includes(nav)
   const scan = useLibraryScan(needsScan, connected)
 
+  const media = useMediaLibrary(connected)
+  const isMedia = MEDIA_KEYS.includes(nav)
+
+  // The drive is the truth: whatever changes it, the folder on screen reloads
+  // and the index is asked again. Nothing here polls.
+  useLiveChanges(vault.dir, vault.refresh, media.refresh)
+
   const sectionEntries = useMemo(() => {
     if (nav === 'recent') return recentOf(scan.files)
     if (nav === 'starred') return stars.entries
@@ -127,6 +142,13 @@ export function App(): React.JSX.Element {
     if (!isLibrary) return []
     return entriesToMedia(filterKind(scan.files, nav as 'videos' | 'music' | 'photos'))
   }, [isLibrary, nav, scan.files])
+
+  /** The films or series on screen, filtered by the search box. */
+  const mediaItems = useMemo(() => {
+    const items = nav === 'movies' ? media.films : media.series
+    const needle = query.trim().toLowerCase()
+    return needle ? items.filter((i) => i.title.toLowerCase().includes(needle)) : items
+  }, [nav, media.films, media.series, query])
 
   /** The entries the next action applies to: the selection, or what was clicked. */
   const targetsFor = useCallback(
@@ -325,6 +347,35 @@ export function App(): React.JSX.Element {
       else void downloadOne(entry)
     },
     [vault, downloadOne],
+  )
+
+  /**
+   * Plays a path the media index gave us.
+   *
+   * The index knows a path, not a listing entry, so this stats the file to
+   * build one — which also means a film deleted since the last scan fails with
+   * something the user can read rather than an empty player.
+   */
+  const playPath = useCallback(
+    async (path: string) => {
+      try {
+        const entry = await api.stat(path)
+        const item = entriesToMedia([
+          {
+            id: path,
+            name: entry.name,
+            kind: 'file',
+            size: entry.size,
+            modified: entry.mtime * 1000,
+          },
+        ])[0]
+        if (item) setPlaying(item)
+      } catch {
+        setNotice(`${nameOf(path)} is not on the drive any more.`)
+        media.refresh()
+      }
+    },
+    [media],
   )
 
   // --- prompts -------------------------------------------------------------
@@ -766,7 +817,15 @@ export function App(): React.JSX.Element {
                 <div className="flex items-baseline gap-2.5">
                   <span className="text-sm font-semibold text-text">{TITLES[nav]}</span>
                   <span className="tnum font-mono text-[11px] text-textFaint">
-                    {(isLibrary ? libraryItems.length : entries.length).toLocaleString()}
+                    {/* Whatever this screen is actually showing. Reading the
+                        file count on a Movies screen reported 100,000 items
+                        next to three films. */}
+                    {(isMedia
+                      ? mediaItems.length
+                      : isLibrary
+                        ? libraryItems.length
+                        : entries.length
+                    ).toLocaleString()}
                   </span>
                 </div>
               )}
@@ -797,7 +856,10 @@ export function App(): React.JSX.Element {
                 </>
               )}
 
-              {!isLibrary && (
+              {/* Neither applies to a wall of posters, which is always newest
+                  first and always the same shape. A control that does nothing
+                  is worse than no control. */}
+              {!isLibrary && !isMedia && (
                 <SortMenu
                   field={sortField}
                   direction={sortDirection}
@@ -805,7 +867,7 @@ export function App(): React.JSX.Element {
                   onDirectionChange={setSortDirection}
                 />
               )}
-              {!isLibrary && <ViewMenu mode={view} onChange={setView} />}
+              {!isLibrary && !isMedia && <ViewMenu mode={view} onChange={setView} />}
 
               <div className="no-drag relative shrink-0">
                 <Search
@@ -861,6 +923,14 @@ export function App(): React.JSX.Element {
                 onForget={forgetVault}
                 onRepair={forgetVault}
               />
+            ) : isMedia ? (
+              <LibraryView
+                kind={nav === 'movies' ? 'film' : 'series'}
+                items={mediaItems}
+                enabled={media.enabled}
+                scanning={media.scanning}
+                onPlay={(path) => void playPath(path)}
+              />
             ) : isLibrary ? (
               libraryItems.length === 0 ? (
                 <EmptyState
@@ -909,7 +979,7 @@ export function App(): React.JSX.Element {
             <DropOverlay active={dropActive && nav === 'files'} dir={vault.dir} />
           </motion.div>
 
-          {nav !== 'settings' && !isLibrary && (
+          {nav !== 'settings' && !isLibrary && !isMedia && (
             <StatusBar
               total={entries.length}
               filtered={query.trim().length > 0}

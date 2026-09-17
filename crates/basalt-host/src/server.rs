@@ -362,8 +362,34 @@ impl Host {
                 .map(|ip| ip.to_string())
                 .collect(),
             device_count: self.registry.lock().expect("registry lock").device_count(),
+            library: self.library_status(),
             serving,
             problem: None,
+        }
+    }
+
+    /// What the host's own window shows about the index.
+    pub fn library_status(&self) -> crate::ui::LibraryStatus {
+        let library = self.library.lock().expect("library lock");
+        crate::ui::LibraryStatus {
+            enabled: self.config.lock().expect("config lock").library_enabled,
+            scanning: self.is_scanning(),
+            films: library
+                .items
+                .iter()
+                .filter(|i| i.kind == basalt_proto::msg::LibraryKind::Film)
+                .count(),
+            series: library
+                .items
+                .iter()
+                .filter(|i| i.kind == basalt_proto::msg::LibraryKind::Series)
+                .count(),
+            uncertain: library
+                .items
+                .iter()
+                .filter(|i| i.confidence < basalt_proto::msg::CONFIDENT)
+                .count(),
+            scanned_at: library.scanned_at,
         }
     }
 

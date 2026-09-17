@@ -67,6 +67,63 @@ export interface TransferEvent {
   rate: number
 }
 
+/**
+ * Something that happened on the drive.
+ *
+ * Reported by the host watching the filesystem, so a file deleted in Explorer
+ * arrives exactly like one deleted here. `resynchronise` means the host stopped
+ * counting — too many changes at once, or the watch reconnected — and the only
+ * correct response is to reload whatever is on screen.
+ */
+export type Change =
+  | { kind: 'created'; path: string }
+  | { kind: 'removed'; path: string }
+  | { kind: 'modified'; path: string }
+  | { kind: 'renamed'; from: string; to: string }
+  | { kind: 'resynchronise' }
+  | { kind: 'library_changed' }
+
+export interface LibraryEpisode {
+  number: number
+  path: string
+  title?: string | null
+  size: number
+  added: number
+}
+
+export interface LibrarySeason {
+  number: number
+  episodes: LibraryEpisode[]
+}
+
+/** A film, or a series with its seasons. */
+export interface LibraryItem {
+  id: string
+  kind: 'film' | 'series'
+  title: string
+  year?: number | null
+  /** The file to play, for a film. */
+  path?: string | null
+  size: number
+  /** Unix seconds of the newest file in this item. */
+  added: number
+  seasons: LibrarySeason[]
+  /** 0-100. Below CONFIDENT the interface offers a correction rather than
+   *  asserting the match. */
+  confidence: number
+}
+
+export interface LibraryResponse {
+  revision: number
+  enabled: boolean
+  scanning: boolean
+  /** Absent when the revision asked for is still current. */
+  items?: LibraryItem[] | null
+}
+
+/** Below this, a match is a guess worth showing the user. Mirrors the Rust. */
+export const CONFIDENT = 70
+
 export type ErrorKind =
   | 'offline'
   | 'notfound'
@@ -141,6 +198,9 @@ export const api = {
   disconnect: () => call<Status>('disconnect'),
   forgetHost: (hostId: string) => call<Status>('forget_host', { hostId }),
 
+  library: (knownRevision: number) =>
+    call<LibraryResponse>('library', { knownRevision }),
+
   list: (path: string) => call<DirEntry[]>('list_dir', { path }),
   stat: (path: string) => call<DirEntry>('stat_entry', { path }),
   copy: (from: string, to: string) => call<void>('copy_entry', { from, to }),
@@ -210,6 +270,22 @@ export async function onBytes(
     handler(e.payload),
   )
   return stop
+}
+
+/**
+ * Subscribes to changes on the drive.
+ *
+ * Returns an unsubscribe function. Registered asynchronously, so the caller
+ * has to handle a cleanup that runs before registration finishes — see
+ * `useAsyncSubscription`, which exists because ignoring that once turned one
+ * dropped file into eight uploads.
+ */
+export async function onChange(
+  handler: (change: Change) => void,
+): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<Change>('basalt://change', (e) => handler(e.payload))
 }
 
 /** Subscribes to connection changes pushed by the backend. */
@@ -326,6 +402,97 @@ const MOCK_HOSTS: DiscoveredHost[] = [
   },
 ]
 
+/** A small library, covering both kinds and an uncertain match. */
+const MOCK_LIBRARY: LibraryItem[] = [
+  {
+    id: 'f1',
+    kind: 'film',
+    title: 'Arrival',
+    year: 2016,
+    path: 'Films/Arrival (2016)/Arrival.2016.2160p.mkv',
+    size: 24 * 1024 ** 3,
+    added: Math.floor(Date.now() / 1000) - 86_400 * 3,
+    seasons: [],
+    confidence: 95,
+  },
+  {
+    id: 'f2',
+    kind: 'film',
+    title: 'Blade Runner 2049',
+    year: 2017,
+    path: 'Films/Blade Runner 2049 (2017).mkv',
+    size: 31 * 1024 ** 3,
+    added: Math.floor(Date.now() / 1000) - 86_400 * 30,
+    seasons: [],
+    confidence: 92,
+  },
+  {
+    id: 'f3',
+    kind: 'film',
+    title: 'Holiday Footage',
+    year: null,
+    path: 'Films/Holiday Footage.mkv',
+    size: 2 * 1024 ** 3,
+    added: Math.floor(Date.now() / 1000) - 86_400 * 200,
+    seasons: [],
+    confidence: 55,
+  },
+  {
+    id: 's1',
+    kind: 'series',
+    title: 'Breaking Bad',
+    year: 2008,
+    path: null,
+    size: 180 * 1024 ** 3,
+    added: Math.floor(Date.now() / 1000) - 86_400 * 12,
+    seasons: [
+      {
+        number: 1,
+        episodes: Array.from({ length: 7 }, (_, i) => ({
+          number: i + 1,
+          path: `Shows/Breaking Bad/Season 01/S01E0${i + 1}.mkv`,
+          title: null,
+          size: 3 * 1024 ** 3,
+          added: Math.floor(Date.now() / 1000) - 86_400 * 12,
+        })),
+      },
+      {
+        number: 2,
+        episodes: Array.from({ length: 13 }, (_, i) => ({
+          number: i + 1,
+          path: `Shows/Breaking Bad/Season 02/S02E${String(i + 1).padStart(2, '0')}.mkv`,
+          title: null,
+          size: 3 * 1024 ** 3,
+          added: Math.floor(Date.now() / 1000) - 86_400 * 11,
+        })),
+      },
+    ],
+    confidence: 95,
+  },
+  {
+    id: 's2',
+    kind: 'series',
+    title: 'The Wire',
+    year: 2002,
+    path: null,
+    size: 90 * 1024 ** 3,
+    added: Math.floor(Date.now() / 1000) - 86_400 * 60,
+    seasons: [
+      {
+        number: 1,
+        episodes: Array.from({ length: 13 }, (_, i) => ({
+          number: i + 1,
+          path: `Shows/The Wire/Season 01/S01E${String(i + 1).padStart(2, '0')}.mkv`,
+          title: null,
+          size: 2 * 1024 ** 3,
+          added: Math.floor(Date.now() / 1000) - 86_400 * 60,
+        })),
+      },
+    ],
+    confidence: 95,
+  },
+]
+
 let mockEntries: Entry[] | null = null
 
 async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -356,6 +523,15 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return MOCK_STATUS as T
     case 'cancel_pairing':
       return undefined as T
+    case 'library':
+      return {
+        revision: 1,
+        enabled: true,
+        scanning: false,
+        // Only when the caller does not already have revision 1, exactly as
+        // the host behaves — so the preview exercises the same path.
+        items: args?.knownRevision === 1 ? null : MOCK_LIBRARY,
+      } as T
     case 'space':
       return [1_842_000_000_000, 4_000_000_000_000] as T
     case 'list_dir': {

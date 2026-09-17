@@ -53,6 +53,8 @@ pub struct HostStatus {
     /// only — nothing has to type one in any more.
     pub addresses: Vec<String>,
     pub device_count: usize,
+    /// The media index, always present so the switch can be drawn.
+    pub library: LibraryStatus,
     /// Whether the serving loop is actually accepting connections.
     pub serving: bool,
     /// Why it is not, when it is not.
@@ -61,6 +63,22 @@ pub struct HostStatus {
     /// running, most likely — would otherwise sit there looking healthy while
     /// no client could ever reach it.
     pub problem: Option<String>,
+}
+
+/// How the media index is getting on.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStatus {
+    pub enabled: bool,
+    /// True while a scan is running, so the interface can say so rather than
+    /// looking like it found nothing.
+    pub scanning: bool,
+    pub films: usize,
+    pub series: usize,
+    /// Items the parser was not sure about, worth a person's eye.
+    pub uncertain: usize,
+    /// Unix seconds of the last completed scan, zero if never.
+    pub scanned_at: i64,
 }
 
 /// A drive offered on the setup screen.
@@ -242,6 +260,14 @@ mod tests {
             vault: None,
             addresses: vec!["192.168.1.90".into()],
             device_count: 1,
+            library: LibraryStatus {
+                enabled: false,
+                scanning: false,
+                films: 0,
+                series: 0,
+                uncertain: 0,
+                scanned_at: 0,
+            },
             serving: true,
             problem: None,
         };
@@ -252,12 +278,36 @@ mod tests {
                 "deviceCount",
                 "hostId",
                 "hostName",
+                "library",
                 "port",
                 "problem",
                 "requirePin",
                 "serving",
                 "startWithWindows",
                 "vault",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_library_status_is_camel_case() {
+        let status = LibraryStatus {
+            enabled: true,
+            scanning: true,
+            films: 1,
+            series: 2,
+            uncertain: 3,
+            scanned_at: 4,
+        };
+        assert_eq!(
+            keys(&status),
+            [
+                "enabled",
+                "films",
+                "scannedAt",
+                "scanning",
+                "series",
+                "uncertain"
             ]
         );
     }

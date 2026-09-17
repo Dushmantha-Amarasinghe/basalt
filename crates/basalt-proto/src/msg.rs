@@ -642,6 +642,70 @@ mod tests {
         );
     }
 
+    /// These cross into JavaScript, where a snake_case key silently reads as
+    /// `undefined`. They happen to be single words today; this makes that a
+    /// rule rather than an accident, because adding `episode_title` later
+    /// would break the interface with no error anywhere.
+    #[test]
+    fn nothing_the_interface_reads_is_snake_case() {
+        fn keys(value: serde_json::Value) -> Vec<String> {
+            value
+                .as_object()
+                .expect("an object")
+                .keys()
+                .cloned()
+                .collect()
+        }
+
+        let item = LibraryItem {
+            id: "f1".into(),
+            kind: LibraryKind::Film,
+            title: "Arrival".into(),
+            year: Some(2016),
+            path: Some("a.mkv".into()),
+            size: 1,
+            added: 2,
+            seasons: vec![Season {
+                number: 1,
+                episodes: vec![Episode {
+                    number: 1,
+                    path: "b.mkv".into(),
+                    title: Some("Pilot".into()),
+                    size: 3,
+                    added: 4,
+                }],
+            }],
+            confidence: 90,
+        };
+        let response = LibraryResponse {
+            revision: 1,
+            enabled: true,
+            scanning: false,
+            items: Some(vec![item.clone()]),
+        };
+
+        let mut all = keys(serde_json::to_value(&item).unwrap());
+        all.extend(keys(serde_json::to_value(&response).unwrap()));
+        all.extend(keys(
+            serde_json::to_value(&item.seasons[0].episodes[0]).unwrap(),
+        ));
+        all.extend(keys(serde_json::to_value(&item.seasons[0]).unwrap()));
+        all.extend(keys(
+            serde_json::to_value(Change::Renamed {
+                from: "a".into(),
+                to: "b".into(),
+            })
+            .unwrap(),
+        ));
+
+        for key in all {
+            assert!(
+                !key.contains('_'),
+                "{key} would arrive undefined in JavaScript"
+            );
+        }
+    }
+
     #[test]
     fn a_listing_entry_survives_a_missing_readonly_flag() {
         let e: DirEntry =

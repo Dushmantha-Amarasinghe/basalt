@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion'
 import {
+  Clapperboard,
   Clock,
   FolderOpen,
   HardDrive,
@@ -7,6 +8,7 @@ import {
   Music,
   Settings2,
   Star,
+  Tv,
   Video,
 } from 'lucide-react'
 import { cn, formatBytes } from '@/lib/utils'
@@ -16,6 +18,8 @@ export type NavKey =
   | 'files'
   | 'recent'
   | 'starred'
+  | 'movies'
+  | 'series'
   | 'videos'
   | 'music'
   | 'photos'
@@ -27,7 +31,14 @@ const NAV: { key: NavKey; label: string; icon: typeof FolderOpen }[] = [
   { key: 'starred', label: 'Starred', icon: Star },
 ]
 
+/**
+ * Films and series come first because they are the reason most people open
+ * this — and they sit above the raw media sections rather than replacing them,
+ * since anything the index did not recognise is still findable there.
+ */
 const LIBRARY: { key: NavKey; label: string; icon: typeof FolderOpen }[] = [
+  { key: 'movies', label: 'Movies', icon: Clapperboard },
+  { key: 'series', label: 'TV Series', icon: Tv },
   { key: 'videos', label: 'Videos', icon: Video },
   { key: 'music', label: 'Music', icon: Music },
   { key: 'photos', label: 'Photos', icon: Image },

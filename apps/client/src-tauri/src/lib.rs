@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use basalt_client::client::{Cancel, ProgressFn};
+use basalt_client::client::{Cancel, ProgressFn, WatchHandle};
 use basalt_client::proxy::MediaProxy;
 use basalt_client::{Basalt, DiscoveredHost, Status, TransferEvent, UiError};
 use tauri::{Emitter, Manager, State};
@@ -41,6 +41,9 @@ struct AppState {
     client: Arc<Basalt>,
     proxy: tokio::sync::Mutex<Option<Arc<MediaProxy>>>,
     transfers: Mutex<HashMap<String, Cancel>>,
+    /// The live-change subscription. Replaced whenever the app reconnects, and
+    /// the old one stops the moment it is dropped.
+    watch: Mutex<Option<WatchHandle>>,
 }
 
 impl AppState {
@@ -95,12 +98,17 @@ async fn begin_pairing(state: State<'_, AppState>, address: String) -> Answer<bo
 /// because they answer different questions, and because a single call would
 /// mean typing a PIN at a host that might not be there.
 #[tauri::command]
-async fn finish_pairing(state: State<'_, AppState>, pin: String) -> Answer<Status> {
+async fn finish_pairing(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    pin: String,
+) -> Answer<Status> {
     let pin = pin.trim();
     state
         .client
         .finish_pairing(if pin.is_empty() { None } else { Some(pin) })
         .await?;
+    start_watching(&state.client, &app);
     Ok(status_of(&state.client))
 }
 
@@ -116,29 +124,35 @@ async fn cancel_pairing(state: State<'_, AppState>) -> Answer<()> {
 }
 
 #[tauri::command]
-async fn connect_saved(state: State<'_, AppState>) -> Answer<Status> {
+async fn connect_saved(state: State<'_, AppState>, app: tauri::AppHandle) -> Answer<Status> {
     state.client.connect_saved().await?;
+    start_watching(&state.client, &app);
     Ok(status_of(&state.client))
 }
 
 #[tauri::command]
 async fn connect_to(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
     host_id: String,
     address: Option<String>,
 ) -> Answer<Status> {
     state.client.connect(&host_id, address.as_deref()).await?;
+    start_watching(&state.client, &app);
     Ok(status_of(&state.client))
 }
 
 #[tauri::command]
 async fn disconnect(state: State<'_, AppState>) -> Answer<Status> {
+    // Dropped, not left running: a watch with nothing to watch is a retry loop.
+    state.watch.lock().expect("watch lock").take();
     state.client.disconnect().await;
     Ok(status_of(&state.client))
 }
 
 #[tauri::command]
 async fn forget_host(state: State<'_, AppState>, host_id: String) -> Answer<Status> {
+    state.watch.lock().expect("watch lock").take();
     state.client.forget(&host_id).await?;
     Ok(status_of(&state.client))
 }
@@ -149,6 +163,41 @@ fn status_of(client: &Arc<Basalt>) -> Status {
         !client.known_hosts().is_empty(),
         client.device_name(),
     )
+}
+
+// ---------------------------------------------------------------------------
+// Live changes
+// ---------------------------------------------------------------------------
+
+/// Subscribes to the host's changes and forwards them to the window.
+///
+/// Replaces any watch already running, so reconnecting does not leave two
+/// subscriptions delivering everything twice.
+fn start_watching(client: &Arc<Basalt>, app: &tauri::AppHandle) {
+    let emitter = app.clone();
+    let handle = client.watch(move |change| {
+        let _ = emitter.emit("basalt://change", change);
+    });
+    if let Some(state) = app.try_state::<AppState>() {
+        // Assigning drops the previous handle, which stops the old watch.
+        *state.watch.lock().expect("watch lock") = Some(handle);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The media library
+// ---------------------------------------------------------------------------
+
+/// The host's index of films and series.
+///
+/// `knownRevision` lets the answer be "nothing has changed", which is what
+/// makes it cheap to ask after every change event.
+#[tauri::command]
+async fn library(
+    state: State<'_, AppState>,
+    known_revision: u64,
+) -> Answer<basalt_proto::msg::LibraryResponse> {
+    Ok(state.client.library(known_revision).await?)
 }
 
 // ---------------------------------------------------------------------------
@@ -437,6 +486,7 @@ pub fn run() {
                 client: Arc::clone(&client),
                 proxy: tokio::sync::Mutex::new(None),
                 transfers: Mutex::new(HashMap::new()),
+                watch: Mutex::new(None),
             });
 
             // Feed the throughput trace from the one counter that sees every
@@ -477,13 +527,20 @@ pub fn run() {
 
             // Reconnect in the background rather than blocking the window.
             // A host that is asleep must not mean an app that will not open.
+            //
+            // The watch starts only once a connection exists, and its handle is
+            // kept in the app state: dropping it stops the watch, and a watch
+            // that outlived what asked for it is exactly the shape of bug that
+            // once turned one dropped file into eight uploads.
             {
                 let client = Arc::clone(&client);
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let connected = client.connect_saved().await.is_ok();
                     let _ = handle.emit("basalt://status", status_of(&client));
-                    if !connected {
+                    if connected {
+                        start_watching(&client, &handle);
+                    } else {
                         eprintln!("basalt: no saved host reachable at startup");
                     }
                 });
@@ -498,6 +555,7 @@ pub fn run() {
             finish_pairing,
             cancel_pairing,
             connect_saved,
+            library,
             connect_to,
             disconnect,
             forget_host,
