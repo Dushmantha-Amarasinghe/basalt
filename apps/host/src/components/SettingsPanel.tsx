@@ -1,25 +1,35 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Check, Pencil } from 'lucide-react'
+import { Check, Pencil, RefreshCw } from 'lucide-react'
 import type { HostStatus } from '@/lib/api'
 import { Switch } from './ui/Switch'
+import { formatAgo } from '@/lib/utils'
 
 /**
- * The three settings this app has.
+ * The four settings this app has.
  *
- * Deliberately three. Everything else a network share usually asks for —
- * addresses, share names, user accounts, firewall rules, permissions — is
- * either decided by the protocol or not a decision at all.
+ * Everything else a network share usually asks for — addresses, share names,
+ * user accounts, firewall rules, permissions — is either decided by the
+ * protocol or not a decision at all.
+ *
+ * Two of the four are off by default and say what turning them on means,
+ * because both do something on the user's behalf that they did not ask for at
+ * install time: one lets strangers on the network read the drive, the other
+ * reads every folder on it.
  */
 export function SettingsPanel({
   status,
   onRequirePin,
   onStartWithWindows,
+  onLibrary,
+  onRescan,
   onRename,
 }: {
   status: HostStatus
   onRequirePin: (require: boolean) => void
   onStartWithWindows: (enabled: boolean) => void
+  onLibrary: (enabled: boolean) => void
+  onRescan: () => void
   onRename: (name: string) => void
 }): React.JSX.Element {
   const [editingName, setEditingName] = useState(false)
@@ -48,6 +58,34 @@ export function SettingsPanel({
             onChange={onRequirePin}
             label="Ask for a PIN when pairing"
           />
+        }
+      />
+
+      <Row
+        title="Recognise films and series"
+        detail={
+          status.library.enabled
+            ? libraryDetail(status)
+            : 'Off. Your devices see folders and files exactly as they are on the drive.'
+        }
+        control={
+          <Switch
+            checked={status.library.enabled}
+            onChange={onLibrary}
+            label="Recognise films and series"
+          />
+        }
+        extra={
+          status.library.enabled ? (
+            <button
+              onClick={onRescan}
+              disabled={status.library.scanning}
+              className="mt-2.5 flex items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] text-textFaint transition-colors hover:bg-panel2 hover:text-textDim disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={status.library.scanning ? 'animate-spin' : ''} />
+              {status.library.scanning ? 'Scanning…' : 'Scan again'}
+            </button>
+          ) : null
         }
       />
 
@@ -135,16 +173,43 @@ export function SettingsPanel({
   )
 }
 
+/**
+ * What the index found, or what it is doing.
+ *
+ * A scan in progress says so rather than reporting zero, which would read as
+ * "nothing on your drive" at exactly the moment that is least likely to be
+ * true.
+ */
+function libraryDetail(status: HostStatus): string {
+  const { scanning, films, series, uncertain, scannedAt } = status.library
+  if (scanning) return 'Scanning the drive…'
+  if (films === 0 && series === 0) {
+    return 'Nothing recognised yet. Films and series show up in their own sections on your devices.'
+  }
+
+  const parts = [
+    `${films} ${films === 1 ? 'film' : 'films'}`,
+    `${series} ${series === 1 ? 'series' : 'series'}`,
+  ]
+  const found = `${parts.join(' and ')}, last checked ${formatAgo(scannedAt)}.`
+  return uncertain > 0
+    ? `${found} ${uncertain} ${uncertain === 1 ? 'is a guess' : 'are guesses'}.`
+    : found
+}
+
 function Row({
   title,
   detail,
   control,
   warn,
+  extra,
 }: {
   title: string
   detail: string
   control: React.ReactNode
   warn?: boolean
+  /** Rendered under the detail, for a control the row itself cannot hold. */
+  extra?: React.ReactNode
 }): React.JSX.Element {
   return (
     <div className="flex items-start gap-4 px-5 py-4">
@@ -166,6 +231,7 @@ function Row({
             {detail}
           </motion.p>
         </AnimatePresence>
+        {extra}
       </div>
       <div className="mt-0.5 shrink-0">{control}</div>
     </div>

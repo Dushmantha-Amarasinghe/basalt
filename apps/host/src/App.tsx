@@ -186,6 +186,12 @@ export function App(): React.JSX.Element {
                     onStartWithWindows={(enabled) => {
                       void api.setStartWithWindows(enabled).then(apply)
                     }}
+                    onLibrary={(enabled) => {
+                      void api.setLibraryEnabled(enabled).then(apply)
+                    }}
+                    onRescan={() => {
+                      void api.rescanLibrary().then(apply)
+                    }}
                     onRename={(name) => {
                       void api.setHostName(name).then(apply)
                     }}

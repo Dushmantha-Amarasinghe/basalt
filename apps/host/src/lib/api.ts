@@ -22,6 +22,19 @@ export interface VaultView {
   available: boolean
 }
 
+/** How the media index is getting on. */
+export interface LibraryStatus {
+  enabled: boolean
+  /** True while a scan runs, so the screen can say so rather than look empty. */
+  scanning: boolean
+  films: number
+  series: number
+  /** Items the parser was unsure about, worth a person's eye. */
+  uncertain: number
+  /** Unix seconds of the last completed scan, zero if never. */
+  scannedAt: number
+}
+
 export interface HostStatus {
   hostId: string
   hostName: string
@@ -31,6 +44,7 @@ export interface HostStatus {
   vault: VaultView | null
   addresses: string[]
   deviceCount: number
+  library: LibraryStatus
   serving: boolean
   /** Why sharing stopped, when it has. */
   problem: string | null
@@ -133,6 +147,9 @@ export const api = {
 
   setStartWithWindows: (enabled: boolean): Promise<HostStatus> =>
     call('set_start_with_windows', { enabled }),
+  setLibraryEnabled: (enabled: boolean): Promise<HostStatus> =>
+    call('set_library_enabled', { enabled }),
+  rescanLibrary: (): Promise<HostStatus> => call('rescan_library'),
   openVaultFolder: (): Promise<void> => call('open_vault_folder'),
 }
 
@@ -166,6 +183,14 @@ const sample: {
     vault: null,
     addresses: ['192.168.1.90'],
     deviceCount: 2,
+    library: {
+      enabled: false,
+      scanning: false,
+      films: 0,
+      series: 0,
+      uncertain: 0,
+      scannedAt: 0,
+    },
     serving: true,
     problem: null,
   },
@@ -261,6 +286,20 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return sample.status
       case 'set_start_with_windows':
         sample.status.startWithWindows = Boolean(args?.enabled)
+        return sample.status
+      case 'set_library_enabled':
+        sample.status.library = Boolean(args?.enabled)
+          ? { enabled: true, scanning: false, films: 42, series: 7, uncertain: 3, scannedAt: Math.floor(Date.now() / 1000) }
+          : { enabled: false, scanning: false, films: 0, series: 0, uncertain: 0, scannedAt: 0 }
+        return sample.status
+      case 'rescan_library':
+        sample.status.library.scanning = true
+        // Finishes on its own, so the preview shows the scanning state and
+        // then the result, as the real thing does.
+        setTimeout(() => {
+          sample.status.library.scanning = false
+          sample.status.library.scannedAt = Math.floor(Date.now() / 1000)
+        }, 2500)
         return sample.status
       case 'open_vault_folder':
         return undefined
