@@ -26,6 +26,7 @@ import { Sidebar, type NavKey } from '@/components/Sidebar'
 import { LibraryView } from '@/components/LibraryView'
 import { useMediaLibrary } from '@/lib/useMediaLibrary'
 import { useLiveChanges } from '@/lib/useLiveChanges'
+import { useWatched } from '@/lib/useWatched'
 import { FileList, type Entry, type RowHandlers } from '@/components/FileList'
 import { EmptyState, ListView, TileView } from '@/components/FileViews'
 import { ViewMenu, type ViewMode } from '@/components/ViewMenu'
@@ -114,6 +115,44 @@ export function App(): React.JSX.Element {
 
   const media = useMediaLibrary(connected)
   const isMedia = MEDIA_KEYS.includes(nav)
+
+  const watched = useWatched(connected)
+  const watchedByPath = useMemo(
+    () => new Map(watched.all.map((entry) => [entry.path, entry])),
+    [watched.all],
+  )
+
+  /**
+   * Every episode in order, so the player knows what comes next.
+   *
+   * Flattened across seasons: the episode after the last one of season one is
+   * the first of season two, and stopping at a season boundary is exactly the
+   * point at which autoplay is most wanted.
+   */
+  const episodeOrder = useMemo(() => {
+    const order: { path: string; label: string }[] = []
+    for (const series of media.series) {
+      for (const season of series.seasons) {
+        for (const episode of season.episodes) {
+          order.push({
+            path: episode.path,
+            label: `${series.title} · S${String(season.number).padStart(2, '0')}E${String(
+              episode.number,
+            ).padStart(2, '0')}`,
+          })
+        }
+      }
+    }
+    return order
+  }, [media.series])
+
+  const nextAfter = useCallback(
+    (path: string): { path: string; label: string } | null => {
+      const at = episodeOrder.findIndex((e) => e.path === path)
+      return at >= 0 ? (episodeOrder[at + 1] ?? null) : null
+    },
+    [episodeOrder],
+  )
 
   // The drive is the truth: whatever changes it, the folder on screen reloads
   // and the index is asked again. Nothing here polls.
@@ -929,7 +968,10 @@ export function App(): React.JSX.Element {
                 items={mediaItems}
                 enabled={media.enabled}
                 scanning={media.scanning}
+                watched={watchedByPath}
+                continueWatching={watched.continueWatching}
                 onPlay={(path) => void playPath(path)}
+                onForget={watched.forget}
               />
             ) : isLibrary ? (
               libraryItems.length === 0 ? (
@@ -1023,8 +1065,18 @@ export function App(): React.JSX.Element {
 
       <PlayerOverlay
         item={playing}
-        onClose={() => setPlaying(null)}
+        onClose={() => {
+          setPlaying(null)
+          // The player reports one last position as it unmounts; picking the
+          // list up straight after means Continue watching is right by the
+          // time anyone looks at it.
+          setTimeout(watched.refresh, 300)
+        }}
         onOpenExternally={(path) => void openExternally(path)}
+        resumeAt={playing ? (watchedByPath.get(playing.id)?.position ?? 0) : 0}
+        onProgress={watched.report}
+        nextUp={playing ? nextAfter(playing.id) : null}
+        onPlayNext={(path) => void playPath(path)}
       />
 
       <ImageViewer

@@ -11,7 +11,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use std::time::Duration;
 
-use basalt_proto::msg::{Change, DirEntry, HelloResponse, LibraryResponse};
+use basalt_proto::msg::{
+    Change, DirEntry, HelloResponse, LibraryResponse, ProgressRequest, Watched,
+};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::pool::Pool;
@@ -429,6 +431,17 @@ impl Basalt {
         let mut lease = pool.acquire().await?;
         let result = lease.art(id).await;
         lease.check(result)
+    }
+
+    /// Reports where something got to, and reads back everything watched.
+    ///
+    /// One call for both because a client that has just reported its position
+    /// also wants the fresh list, and two calls would race each other.
+    pub async fn progress(&self, request: ProgressRequest) -> Result<Vec<Watched>> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.progress(request).await;
+        Ok(lease.check(result)?.entries)
     }
 
     // -----------------------------------------------------------------------

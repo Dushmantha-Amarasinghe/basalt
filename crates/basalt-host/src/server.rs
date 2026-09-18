@@ -44,6 +44,8 @@ pub struct Host {
     /// The media index, and whether a scan is running.
     library: std::sync::Mutex<crate::media::Library>,
     scanning: std::sync::atomic::AtomicBool,
+    /// Where each file has been watched to, shared by every device.
+    progress: std::sync::Mutex<crate::media::Progress>,
 }
 
 impl Host {
@@ -74,6 +76,14 @@ impl Host {
             _ => crate::media::index::Library::default(),
         };
 
+        let progress = match &config.vault_path {
+            Some(root) => crate::media::Progress::load(&crate::media::Progress::path_for(
+                config_path.parent().unwrap_or(std::path::Path::new(".")),
+                root,
+            )),
+            None => crate::media::Progress::default(),
+        };
+
         Ok(Arc::new(Self {
             identity,
             config_path,
@@ -85,6 +95,7 @@ impl Host {
             watch: tokio::sync::RwLock::new(watch),
             library: std::sync::Mutex::new(library),
             scanning: std::sync::atomic::AtomicBool::new(false),
+            progress: std::sync::Mutex::new(progress),
         }))
     }
 
@@ -160,6 +171,62 @@ impl Host {
 
     pub fn art(&self, id: &str) -> Option<Vec<u8>> {
         std::fs::read(self.art_path(id)?).ok()
+    }
+
+    // -----------------------------------------------------------------------
+    // Watch progress
+    // -----------------------------------------------------------------------
+
+    fn progress_path(&self) -> Option<std::path::PathBuf> {
+        let root = self.vault_path()?;
+        Some(crate::media::Progress::path_for(
+            self.config_path
+                .parent()
+                .unwrap_or(std::path::Path::new(".")),
+            &root,
+        ))
+    }
+
+    /// Records, forgets, then answers with everything.
+    ///
+    /// One call rather than three, because a client reporting its position also
+    /// wants the current list — and doing both in one round trip means it sees
+    /// its own update rather than a stale answer that races it.
+    pub fn progress(
+        &self,
+        request: basalt_proto::msg::ProgressRequest,
+    ) -> basalt_proto::msg::ProgressResponse {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let (entries, changed) = {
+            let mut progress = self.progress.lock().expect("progress lock");
+            let mut changed = false;
+            if let Some(update) = request.update {
+                progress.record(update, now);
+                changed = true;
+            }
+            if let Some(path) = request.forget {
+                changed |= progress.forget(&path);
+            }
+            (progress.all(), changed)
+        };
+
+        if changed {
+            self.save_progress();
+        }
+        basalt_proto::msg::ProgressResponse { entries }
+    }
+
+    fn save_progress(&self) {
+        let snapshot = self.progress.lock().expect("progress lock").clone();
+        if let Some(path) = self.progress_path()
+            && let Err(e) = snapshot.save(&path)
+        {
+            tracing::warn!("could not save watch progress: {e}");
+        }
     }
 
     /// Turns the library on or off.
@@ -1046,6 +1113,11 @@ where
         Op::Library => {
             let req: LibraryRequest = decode(payload).unwrap_or_default();
             reply(stream, &host.library_response(req.known_revision)).await?;
+        }
+
+        Op::Progress => {
+            let request: ProgressRequest = decode(payload).unwrap_or_default();
+            reply(stream, &host.progress(request)).await?;
         }
 
         Op::LibraryArt => {

@@ -22,8 +22,9 @@
 //!   other program on this computer — including a web page in a browser —
 //!   could read the drive through it.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -41,6 +42,31 @@ const WINDOW_BYTES: u64 = 4 * 1024 * 1024;
 pub struct MediaProxy {
     addr: SocketAddr,
     token: String,
+    /// How far through each file a player has read.
+    ///
+    /// The only signal an external player gives away. It is not a playback
+    /// position — a player reads ahead of what it is showing, so this runs
+    /// ahead by however much it has buffered — but "roughly where they got to"
+    /// is all Continue watching needs, and it is the difference between having
+    /// a resume point for PotPlayer and having none.
+    reach: Arc<Mutex<HashMap<String, Reach>>>,
+}
+
+/// The furthest a player has read into one file, and how big the file is.
+#[derive(Debug, Clone, Copy)]
+pub struct Reach {
+    pub offset: u64,
+    pub total: u64,
+}
+
+impl Reach {
+    /// How far through, 0..1.
+    pub fn fraction(&self) -> f64 {
+        if self.total == 0 {
+            return 0.0;
+        }
+        (self.offset as f64 / self.total as f64).clamp(0.0, 1.0)
+    }
 }
 
 impl MediaProxy {
@@ -52,6 +78,8 @@ impl MediaProxy {
             .map_err(|e| ClientError::Protocol(format!("no randomness available: {e}")))?;
 
         let accept_token = token.clone();
+        let reach: Arc<Mutex<HashMap<String, Reach>>> = Arc::new(Mutex::new(HashMap::new()));
+        let accept_reach = Arc::clone(&reach);
         tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
@@ -59,15 +87,25 @@ impl MediaProxy {
                 };
                 let client = Arc::clone(&client);
                 let token = accept_token.clone();
+                let reach = Arc::clone(&accept_reach);
                 tokio::spawn(async move {
-                    if let Err(e) = handle(stream, client, token).await {
+                    if let Err(e) = handle(stream, client, token, reach).await {
                         tracing::debug!("media proxy: {e}");
                     }
                 });
             }
         });
 
-        Ok(Self { addr, token })
+        Ok(Self { addr, token, reach })
+    }
+
+    /// How far a player has read into each file it has been handed.
+    ///
+    /// Cleared as it is read: this exists to be turned into a resume point once
+    /// per poll, and keeping it would mean re-reporting a stale position for a
+    /// film nobody is watching any more.
+    pub fn take_reach(&self) -> HashMap<String, Reach> {
+        std::mem::take(&mut *self.reach.lock().expect("reach lock"))
     }
 
     /// The URL a player should open for a vault path.
@@ -85,7 +123,12 @@ impl MediaProxy {
     }
 }
 
-async fn handle(stream: TcpStream, client: Arc<Basalt>, token: String) -> Result<()> {
+async fn handle(
+    stream: TcpStream,
+    client: Arc<Basalt>,
+    token: String,
+    reach: Arc<Mutex<HashMap<String, Reach>>>,
+) -> Result<()> {
     let mut reader = BufReader::new(stream);
 
     let mut request_line = String::new();
@@ -196,6 +239,21 @@ async fn handle(stream: TcpStream, client: Arc<Basalt>, token: String) -> Result
                 return Ok(());
             }
         };
+        // Recorded as it goes rather than at the end: a player that is closed
+        // mid-film never reaches the end of the loop, and that is precisely the
+        // case a resume point exists for.
+        {
+            let position = start + sent + data.len() as u64;
+            let mut reach = reach.lock().expect("reach lock");
+            let entry = reach
+                .entry(path.clone())
+                .or_insert(Reach { offset: 0, total });
+            entry.total = total;
+            // Furthest, not latest: a player seeking backwards to re-watch a
+            // scene has not un-watched what came before it.
+            entry.offset = entry.offset.max(position);
+        }
+
         if data.is_empty() {
             break;
         }
@@ -400,6 +458,54 @@ mod tests {
     #[test]
     fn only_the_first_of_several_ranges_is_used() {
         assert_eq!(parse_range("bytes=0-99,200-299", 1000), Some((0, 99)));
+    }
+
+    #[test]
+    fn how_far_through_a_file_a_player_read() {
+        assert_eq!(
+            Reach {
+                offset: 50,
+                total: 100
+            }
+            .fraction(),
+            0.5
+        );
+        assert_eq!(
+            Reach {
+                offset: 100,
+                total: 100
+            }
+            .fraction(),
+            1.0
+        );
+    }
+
+    /// A file whose size the host would not report must not produce a
+    /// division by zero, and must not claim any progress either.
+    #[test]
+    fn a_file_of_unknown_size_reports_no_progress() {
+        assert_eq!(
+            Reach {
+                offset: 9,
+                total: 0
+            }
+            .fraction(),
+            0.0
+        );
+    }
+
+    /// A player that read past the end — because the file shrank under it —
+    /// has still only watched the whole thing once.
+    #[test]
+    fn reading_past_the_end_is_still_the_whole_file() {
+        assert_eq!(
+            Reach {
+                offset: 500,
+                total: 100
+            }
+            .fraction(),
+            1.0
+        );
     }
 
     #[test]

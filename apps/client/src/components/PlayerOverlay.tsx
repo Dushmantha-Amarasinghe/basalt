@@ -43,11 +43,22 @@ export function PlayerOverlay({
   item,
   onClose,
   onOpenExternally,
+  resumeAt = 0,
+  onProgress,
+  nextUp,
+  onPlayNext,
 }: {
   item: MediaItem | null
   onClose: () => void
   /** Hand the file to the system's own player. */
   onOpenExternally?: (path: string) => void
+  /** Seconds to start from. Zero starts at the beginning. */
+  resumeAt?: number
+  /** Called as playback advances, and once when it stops. */
+  onProgress?: (path: string, position: number, duration: number) => void
+  /** The episode after this one, when there is one. */
+  nextUp?: { path: string; label: string } | null
+  onPlayNext?: (path: string) => void
 }): React.JSX.Element {
   const mediaRef = useRef<HTMLVideoElement | null>(null)
   const [url, setUrl] = useState<string | null>(null)
@@ -58,6 +69,35 @@ export function PlayerOverlay({
   const [volume, setVolume] = useState(1)
   const [failed, setFailed] = useState(false)
   const [sound, setSound] = useState<SoundState>('unknown')
+
+  /** True once this file has been seeked to its resume point. */
+  const resumed = useRef(false)
+  const latest = useRef({ path: '', position: 0, duration: 0 })
+  const report = useRef(onProgress)
+  report.current = onProgress
+
+  // Reported on a timer rather than on every `timeupdate`, which fires about
+  // four times a second and would be four network calls a second.
+  useEffect(() => {
+    if (!item) return
+    const timer = setInterval(() => {
+      const { path, position, duration } = latest.current
+      if (path && duration > 0) report.current?.(path, position, duration)
+    }, 10_000)
+
+    return () => {
+      clearInterval(timer)
+      // One last report on the way out. This is the important one: it is the
+      // position somebody actually stopped at.
+      const { path, position, duration } = latest.current
+      if (path && duration > 0) report.current?.(path, position, duration)
+    }
+  }, [item])
+
+  useEffect(() => {
+    resumed.current = false
+    latest.current = { path: item?.id ?? '', position: 0, duration: 0 }
+  }, [item])
 
   const isAudio = item ? looksLikeAudio(item.id) : false
   // A container the window half-understands: it will open and may show a
@@ -174,10 +214,40 @@ export function PlayerOverlay({
                 )}
                 onPlay={() => setPlaying(true)}
                 onPause={() => setPlaying(false)}
-                onTimeUpdate={(e) => setPosition(e.currentTarget.currentTime)}
+                onTimeUpdate={(e) => {
+                  const at = e.currentTarget.currentTime
+                  setPosition(at)
+                  latest.current = {
+                    path: item?.id ?? '',
+                    position: at,
+                    duration: e.currentTarget.duration || 0,
+                  }
+                }}
                 onDurationChange={(e) => {
                   const value = e.currentTarget.duration
-                  setDuration(Number.isFinite(value) ? value : 0)
+                  const total = Number.isFinite(value) ? value : 0
+                  setDuration(total)
+
+                  // Seek once, and only once the duration is known — before
+                  // that the element refuses to move. Never right at the end,
+                  // which would drop someone into the credits of something
+                  // they had just finished.
+                  if (!resumed.current && total > 0 && resumeAt > 0 && resumeAt < total - 10) {
+                    resumed.current = true
+                    e.currentTarget.currentTime = resumeAt
+                  }
+                }}
+                onEnded={() => {
+                  // Mark it finished before moving on, so it leaves Continue
+                  // watching rather than sitting there at 99%.
+                  if (item && latest.current.duration > 0) {
+                    report.current?.(
+                      item.id,
+                      latest.current.duration,
+                      latest.current.duration,
+                    )
+                  }
+                  if (nextUp && onPlayNext) onPlayNext(nextUp.path)
                 }}
                 onError={() => setFailed(true)}
               />

@@ -85,6 +85,12 @@ pub enum Op {
     Library = 20,
     /// Poster or backdrop bytes for one library item.
     LibraryArt = 21,
+    /// Where each file has been watched to. Reads, and optionally writes first.
+    ///
+    /// Kept on the host rather than per device on purpose: a resume point that
+    /// does not follow you from the laptop to the living room is a bookmark,
+    /// not a Continue watching.
+    Progress = 22,
 }
 
 impl Op {
@@ -93,7 +99,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::LibraryArt as u8;
+    pub const LAST: u8 = Op::Progress as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -118,6 +124,7 @@ impl Op {
             19 => Op::Watch,
             20 => Op::Library,
             21 => Op::LibraryArt,
+            22 => Op::Progress,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -237,6 +244,7 @@ mod tests {
             Op::Watch,
             Op::Library,
             Op::LibraryArt,
+            Op::Progress,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),
