@@ -1,9 +1,17 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronLeft, Clapperboard, Loader2, Play, Tv } from 'lucide-react'
-import { CONFIDENT, type LibraryItem, type LibrarySeason } from '@/lib/api'
+import { Check, ChevronLeft, Clapperboard, Loader2, Play, Tv } from 'lucide-react'
+import {
+  CONFIDENT,
+  isFinished,
+  type LibraryEpisode,
+  type LibraryItem,
+  type LibrarySeason,
+  type Watched,
+} from '@/lib/api'
 import { cn, formatBytes } from '@/lib/utils'
 import { Poster } from './Poster'
+import { ContinueWatching, resumable } from './ContinueWatching'
 
 /**
  * Films and series, as a wall of posters.
@@ -17,15 +25,49 @@ export function LibraryView({
   items,
   enabled,
   scanning,
+  watched,
+  continueWatching,
   onPlay,
+  onForget,
 }: {
   kind: 'film' | 'series'
   items: LibraryItem[]
   enabled: boolean
   scanning: boolean
+  /** How far through each file, by vault path. */
+  watched: Map<string, Watched>
+  /** Everything part-watched, newest first, for the row at the top. */
+  continueWatching: Watched[]
   onPlay: (path: string) => void
+  onForget: (path: string) => void
 }): React.JSX.Element {
   const [open, setOpen] = useState<LibraryItem | null>(null)
+
+  /**
+   * How far through an item is, for the bar across its poster.
+   *
+   * For a series that is whichever episode is part-watched — which is what
+   * makes a show in Continue watching resume rather than start again.
+   */
+  const progressOf = useCallback(
+    (item: LibraryItem): number => {
+      if (item.kind === 'film') {
+        return item.path ? (watched.get(item.path)?.fraction ?? 0) : 0
+      }
+      const partial = item.seasons
+        .flatMap((season) => season.episodes)
+        .map((episode) => watched.get(episode.path))
+        .find((entry) => entry && !isFinished(entry) && entry.fraction > 0)
+      return partial?.fraction ?? 0
+    },
+    [watched],
+  )
+
+  // Only what belongs to this section: films on Movies, series on TV Series.
+  const carryOn = useMemo(
+    () => resumable(items, continueWatching),
+    [items, continueWatching],
+  )
 
   // Newest first: what you just added is what you came to watch.
   const ordered = useMemo(
@@ -78,12 +120,15 @@ export function LibraryView({
         )}
       </AnimatePresence>
 
+      <ContinueWatching entries={carryOn} onPlay={onPlay} onForget={onForget} />
+
       <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-x-4 gap-y-6">
         {ordered.map((item, index) => (
           <Card
             key={item.id}
             item={item}
             index={index}
+            progress={progressOf(item)}
             onOpen={() => {
               if (item.kind === 'series') setOpen(item)
               else if (item.path) onPlay(item.path)
@@ -94,7 +139,12 @@ export function LibraryView({
 
       <AnimatePresence>
         {open && (
-          <SeriesSheet item={open} onClose={() => setOpen(null)} onPlay={onPlay} />
+          <SeriesSheet
+            item={open}
+            watched={watched}
+            onClose={() => setOpen(null)}
+            onPlay={onPlay}
+          />
         )}
       </AnimatePresence>
     </div>
@@ -127,10 +177,13 @@ function Unavailable({ kind }: { kind: 'film' | 'series' }): React.JSX.Element {
 function Card({
   item,
   index,
+  progress,
   onOpen,
 }: {
   item: LibraryItem
   index: number
+  /** 0-1, drawn as a bar across the bottom of the poster. */
+  progress: number
   onOpen: () => void
 }): React.JSX.Element {
   const episodes = item.seasons.reduce((total, s) => total + s.episodes.length, 0)
@@ -161,6 +214,18 @@ function Card({
           </span>
         </div>
 
+        {/* A hairline across the bottom of the poster, the way every
+            streaming service does it. Only when there is something to say: an
+            empty bar on every card would be noise. */}
+        {progress > 0.01 && progress < 0.94 && (
+          <div className="absolute inset-x-0 bottom-0 h-[3px] bg-black/60">
+            <div
+              className="h-full bg-basalt"
+              style={{ width: `${Math.round(progress * 100)}%` }}
+            />
+          </div>
+        )}
+
         {item.confidence < CONFIDENT && (
           <span
             title="Recognised from the filename, but not confidently"
@@ -186,10 +251,12 @@ function Card({
 /** A series opened up: its seasons and episodes. */
 function SeriesSheet({
   item,
+  watched,
   onClose,
   onPlay,
 }: {
   item: LibraryItem
+  watched: Map<string, Watched>
   onClose: () => void
   onPlay: (path: string) => void
 }): React.JSX.Element {
@@ -262,29 +329,72 @@ function SeriesSheet({
         <div className="mt-6 min-h-0 flex-1 overflow-y-auto fade-bottom">
           <div className="flex flex-col gap-1 pb-6">
             {season?.episodes.map((episode) => (
-              <button
+              <EpisodeRow
                 key={episode.path}
-                onClick={() => onPlay(episode.path)}
-                className="group flex items-center gap-3 rounded-md border border-line bg-panel px-3.5 py-2.5 text-left transition-colors hover:bg-panel2"
-              >
-                <span className="tnum w-7 shrink-0 font-mono text-[12px] text-textFaint">
-                  {episode.number === 0 ? '—' : String(episode.number).padStart(2, '0')}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-[12.5px] text-text">
-                  {episode.title ?? nameOf(episode.path)}
-                </span>
-                <span className="tnum shrink-0 font-mono text-[10.5px] text-textFaint">
-                  {formatBytes(episode.size)}
-                </span>
-                <span className="shrink-0 text-textFaint opacity-0 transition-opacity group-hover:opacity-100">
-                  <Play size={12} fill="currentColor" />
-                </span>
-              </button>
+                episode={episode}
+                watched={watched.get(episode.path)}
+                onPlay={() => onPlay(episode.path)}
+              />
             ))}
           </div>
         </div>
       </motion.div>
     </motion.div>
+  )
+}
+
+function EpisodeRow({
+  episode,
+  watched,
+  onPlay,
+}: {
+  episode: LibraryEpisode
+  watched: Watched | undefined
+  onPlay: () => void
+}): React.JSX.Element {
+  const done = watched ? isFinished(watched) : false
+  const part = watched && !done ? watched.fraction : 0
+
+  return (
+    <button
+      onClick={onPlay}
+      className="group relative flex items-center gap-3 overflow-hidden rounded-md border border-line bg-panel px-3.5 py-2.5 text-left transition-colors hover:bg-panel2"
+    >
+      <span className="tnum w-7 shrink-0 font-mono text-[12px] text-textFaint">
+        {episode.number === 0 ? '—' : String(episode.number).padStart(2, '0')}
+      </span>
+      <span
+        className={cn(
+          'min-w-0 flex-1 truncate text-[12.5px]',
+          // Watched episodes recede rather than vanish: the list is still the
+          // whole season, and which ones are done is the useful part.
+          done ? 'text-textFaint' : 'text-text',
+        )}
+      >
+        {episode.title ?? nameOf(episode.path)}
+      </span>
+
+      {done && <Check size={12} className="shrink-0 text-textFaint" />}
+      {part > 0 && (
+        <span className="tnum shrink-0 font-mono text-[10px] text-textDim">
+          {Math.round(part * 100)}%
+        </span>
+      )}
+
+      <span className="tnum shrink-0 font-mono text-[10.5px] text-textFaint">
+        {formatBytes(episode.size)}
+      </span>
+      <span className="shrink-0 text-textFaint opacity-0 transition-opacity group-hover:opacity-100">
+        <Play size={12} fill="currentColor" />
+      </span>
+
+      {part > 0 && (
+        <span
+          className="absolute inset-x-0 bottom-0 h-[2px] bg-basalt/70"
+          style={{ width: `${Math.round(part * 100)}%` }}
+        />
+      )}
+    </button>
   )
 }
 

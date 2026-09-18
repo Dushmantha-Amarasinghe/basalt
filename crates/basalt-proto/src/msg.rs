@@ -467,6 +467,77 @@ pub struct ArtRequest {
     pub id: String,
 }
 
+// ---------------------------------------------------------------------------
+// Where things have been watched to
+// ---------------------------------------------------------------------------
+
+/// How far through a file somebody got.
+///
+/// **A fraction, not a timestamp.** The in-app player knows its position in
+/// seconds; an external player does not report anything at all, and the only
+/// signal available there is how far through the file it has read. Storing a
+/// fraction makes both sources the same kind of answer, and seconds — when
+/// they are known — come along beside it for the interface to display.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Watched {
+    /// Vault-relative path of the file itself, not the library item: an
+    /// episode is watched, a series is not.
+    pub path: String,
+    /// 0.0–1.0 through the file. Always present.
+    pub fraction: f64,
+    /// Seconds in. Zero when an external player was used and only the byte
+    /// offset was observable.
+    #[serde(default)]
+    pub position: f64,
+    /// Total seconds. Zero when unknown.
+    #[serde(default)]
+    pub duration: f64,
+    /// Unix seconds of the last update, for ordering Continue watching.
+    pub updated_at: i64,
+}
+
+/// Past this, the file counts as watched rather than in progress.
+///
+/// Credits run long. Stopping at 94% is finishing something, and offering to
+/// resume it two minutes from the end is worse than offering nothing.
+pub const FINISHED_AT: f64 = 0.94;
+
+/// Before this, there is nothing worth resuming.
+///
+/// Opening something, watching the first minute of a two-hour film and
+/// stopping is not a thing to be reminded of later.
+pub const STARTED_AFTER: f64 = 0.01;
+
+impl Watched {
+    pub fn finished(&self) -> bool {
+        self.fraction >= FINISHED_AT
+    }
+
+    /// Whether this belongs in Continue watching.
+    pub fn in_progress(&self) -> bool {
+        self.fraction > STARTED_AFTER && !self.finished()
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressRequest {
+    /// Recorded before the answer is built, so a client that reports and reads
+    /// in one call sees its own update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<Watched>,
+    /// Forget this path entirely — "watched" or "start again".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forget: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressResponse {
+    pub entries: Vec<Watched>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -718,6 +789,48 @@ mod tests {
                 "{key} would arrive undefined in JavaScript"
             );
         }
+    }
+
+    fn watched(fraction: f64) -> Watched {
+        Watched {
+            path: "films/a.mkv".into(),
+            fraction,
+            position: 0.0,
+            duration: 0.0,
+            updated_at: 0,
+        }
+    }
+
+    /// Credits run long, and offering to resume something two minutes from the
+    /// end is worse than offering nothing at all.
+    #[test]
+    fn something_watched_to_the_credits_counts_as_finished() {
+        assert!(watched(0.95).finished());
+        assert!(watched(1.0).finished());
+        assert!(!watched(0.5).finished());
+        assert!(!watched(0.95).in_progress());
+    }
+
+    /// Opening a film, watching a minute and stopping is not something to be
+    /// reminded about later.
+    #[test]
+    fn barely_started_is_not_in_progress() {
+        assert!(!watched(0.0).in_progress());
+        assert!(!watched(0.005).in_progress());
+        assert!(watched(0.05).in_progress());
+    }
+
+    #[test]
+    fn progress_is_camel_case_on_the_wire() {
+        let json = serde_json::to_string(&watched(0.5)).unwrap();
+        assert!(json.contains("updatedAt"), "{json}");
+        assert!(!json.contains("updated_at"), "{json}");
+    }
+
+    #[test]
+    fn a_progress_request_that_only_reads_sends_nothing_extra() {
+        let json = serde_json::to_string(&ProgressRequest::default()).unwrap();
+        assert_eq!(json, "{}", "reading is the common case and should be empty");
     }
 
     #[test]

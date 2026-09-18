@@ -128,6 +128,38 @@ export interface LibraryResponse {
 /** Below this, a match is a guess worth showing the user. Mirrors the Rust. */
 export const CONFIDENT = 70
 
+/**
+ * How far through a file somebody got.
+ *
+ * A fraction rather than a timestamp, because the in-app player knows seconds
+ * and an external one gives away only how far through the file it has read.
+ * Storing a fraction makes both the same kind of answer.
+ */
+export interface Watched {
+  /** The file itself: an episode is watched, a series is not. */
+  path: string
+  /** 0-1 through the file. Always present. */
+  fraction: number
+  /** Seconds in. Zero when only a byte offset was observable. */
+  position: number
+  /** Total seconds. Zero when unknown. */
+  duration: number
+  updatedAt: number
+}
+
+/** Past this, it counts as watched. Credits run long. Mirrors the Rust. */
+export const FINISHED_AT = 0.94
+/** Before this, there is nothing worth resuming. Mirrors the Rust. */
+export const STARTED_AFTER = 0.01
+
+export function isFinished(watched: Watched): boolean {
+  return watched.fraction >= FINISHED_AT
+}
+
+export function inProgress(watched: Watched): boolean {
+  return watched.fraction > STARTED_AFTER && !isFinished(watched)
+}
+
 export type ErrorKind =
   | 'offline'
   | 'notfound'
@@ -207,6 +239,12 @@ export const api = {
   /** Poster bytes for one item, as a data URL the interface can hand to an
    *  `<img>`. Null when the host has none. */
   art: (id: string) => call<string | null>('library_art', { id }),
+  /** Reports a position and reads back everything watched, in one trip. */
+  watchProgress: (update?: Watched, forget?: string) =>
+    call<Watched[]>('watch_progress', {
+      update: update ?? null,
+      forget: forget ?? null,
+    }),
 
   list: (path: string) => call<DirEntry[]>('list_dir', { path }),
   stat: (path: string) => call<DirEntry>('stat_entry', { path }),
@@ -505,6 +543,30 @@ const MOCK_LIBRARY: LibraryItem[] = [
   },
 ]
 
+/** Two things part-watched, so Continue watching has something to draw. */
+const mockWatched = new Map<string, Watched>([
+  [
+    'Films/Blade Runner 2049 (2017).mkv',
+    {
+      path: 'Films/Blade Runner 2049 (2017).mkv',
+      fraction: 0.42,
+      position: 4_200,
+      duration: 9_780,
+      updatedAt: Math.floor(Date.now() / 1000) - 3_600,
+    },
+  ],
+  [
+    'Shows/Breaking Bad/Season 01/S01E03.mkv',
+    {
+      path: 'Shows/Breaking Bad/Season 01/S01E03.mkv',
+      fraction: 0.71,
+      position: 2_130,
+      duration: 3_000,
+      updatedAt: Math.floor(Date.now() / 1000) - 600,
+    },
+  ],
+])
+
 let mockEntries: Entry[] | null = null
 
 async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -535,6 +597,18 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return MOCK_STATUS as T
     case 'cancel_pairing':
       return undefined as T
+    case 'watch_progress': {
+      const update = args?.update as Watched | null | undefined
+      if (update?.path) {
+        mockWatched.set(update.path, {
+          ...update,
+          updatedAt: Math.floor(Date.now() / 1000),
+        })
+      }
+      const forget = args?.forget as string | null | undefined
+      if (forget) mockWatched.delete(forget)
+      return [...mockWatched.values()].sort((a, b) => b.updatedAt - a.updatedAt) as T
+    }
     case 'library_art':
       // No sample artwork: the preview shows the generated posters, which is
       // also what anyone without a TMDb key sees.

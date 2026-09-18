@@ -306,6 +306,13 @@ impl Session {
         Ok(read_response(&mut self.stream).await?)
     }
 
+    /// Records and reads watch progress in one round trip.
+    pub async fn progress(&mut self, request: ProgressRequest) -> Result<ProgressResponse> {
+        call_json(&mut self.stream, Op::Progress, &request)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Opens a watch. **This session is dedicated to it from now on.**
     ///
     /// Nothing else may be sent on it: the host answers with a response per

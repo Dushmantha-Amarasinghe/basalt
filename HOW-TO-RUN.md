@@ -86,6 +86,19 @@ here; rename one and the name changes. It works the other way too, and between
 two devices at once, because the host reports what the drive actually did
 rather than what it was asked to do.
 
+**Continue watching** sits at the top of Movies and TV Series: what you were
+in the middle of, how long is left, and one click to carry on. It follows you
+between devices, because the position is kept on the host rather than on the
+machine that was watching. A series shows one card — the episode you are
+actually on — and clicking it resumes that episode rather than starting the
+show again.
+
+It works for what plays in the window *and* for what you hand to VLC or
+PotPlayer. The second is an estimate: an external player never reports its
+position, so the app uses how far through the file it has read, which runs
+ahead of the picture by however much the player buffered. Expect to resume
+half a minute or so late.
+
 **Movies and TV Series** appear in the sidebar when the host has the library
 switched on. Series open into seasons and episodes. Posters are real artwork if
 you gave the host a TMDb key, and otherwise ones the app draws from the title —
@@ -115,6 +128,11 @@ is not running.
 **"That pairing request has expired"**
 Requests last three minutes. Ask again from the client and a fresh number
 appears on the host.
+
+**Something will not leave Continue watching**
+Hover the card and click the **×** on its corner. Anything watched past 94%
+drops out by itself — the last few minutes are credits, and offering to resume
+them is worse than offering nothing.
 
 **Posters are missing for some titles**
 Only what TMDb recognises gets one; everything else keeps the cover the app
@@ -211,6 +229,7 @@ cannot tell you why.
 | Host identity, drive and paired devices | `%APPDATA%\Basalt\host.json` on the host |
 | The media index | `%APPDATA%\Basalt\library-*.json` on the host, one per drive |
 | Downloaded posters | `%APPDATA%\Basaltrt\` on the host |
+| Where things were watched to | `%APPDATA%\Basalt\progress-*.json` on the host |
 | Paired hosts and their tokens | `%APPDATA%\Basalt\client.json` on the client |
 | The startup entry | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `Basalt Host` |
 

@@ -220,6 +220,52 @@ async fn library_art(state: State<'_, AppState>, id: String) -> Answer<Option<St
     }
 }
 
+/// Records where something got to, and reads back everything watched.
+///
+/// Also folds in whatever the media proxy has seen an external player read,
+/// which is the only resume signal a player like PotPlayer gives away. It runs
+/// ahead of what is actually on screen by however much the player buffered, so
+/// it is an estimate — good enough for Continue watching, and much better than
+/// having nothing for anything that will not play in the window.
+#[tauri::command]
+async fn watch_progress(
+    state: State<'_, AppState>,
+    update: Option<basalt_proto::msg::Watched>,
+    forget: Option<String>,
+) -> Answer<Vec<basalt_proto::msg::Watched>> {
+    // Whatever an external player read since the last poll, reported first so
+    // the answer already includes it.
+    if let Some(proxy) = state.proxy.lock().await.as_ref() {
+        for (path, reach) in proxy.take_reach() {
+            let fraction = reach.fraction();
+            if fraction <= 0.0 {
+                continue;
+            }
+            let _ = state
+                .client
+                .progress(basalt_proto::msg::ProgressRequest {
+                    update: Some(basalt_proto::msg::Watched {
+                        path,
+                        fraction,
+                        // Seconds are unknowable from a byte offset, and the
+                        // host is careful not to let this overwrite a real
+                        // position with a weaker guess.
+                        position: 0.0,
+                        duration: 0.0,
+                        updated_at: 0,
+                    }),
+                    forget: None,
+                })
+                .await;
+        }
+    }
+
+    Ok(state
+        .client
+        .progress(basalt_proto::msg::ProgressRequest { update, forget })
+        .await?)
+}
+
 // ---------------------------------------------------------------------------
 // Browsing
 // ---------------------------------------------------------------------------
@@ -577,6 +623,7 @@ pub fn run() {
             connect_saved,
             library,
             library_art,
+            watch_progress,
             connect_to,
             disconnect,
             forget_host,
