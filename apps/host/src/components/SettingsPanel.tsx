@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Check, Pencil, RefreshCw } from 'lucide-react'
+import { Check, Image as ImageIcon, Pencil, RefreshCw } from 'lucide-react'
 import type { HostStatus } from '@/lib/api'
 import { Switch } from './ui/Switch'
 import { formatAgo } from '@/lib/utils'
@@ -23,6 +23,7 @@ export function SettingsPanel({
   onStartWithWindows,
   onLibrary,
   onRescan,
+  onTmdbKey,
   onRename,
 }: {
   status: HostStatus
@@ -30,6 +31,7 @@ export function SettingsPanel({
   onStartWithWindows: (enabled: boolean) => void
   onLibrary: (enabled: boolean) => void
   onRescan: () => void
+  onTmdbKey: (key: string) => void
   onRename: (name: string) => void
 }): React.JSX.Element {
   const [editingName, setEditingName] = useState(false)
@@ -77,14 +79,17 @@ export function SettingsPanel({
         }
         extra={
           status.library.enabled ? (
-            <button
-              onClick={onRescan}
-              disabled={status.library.scanning}
-              className="mt-2.5 flex items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] text-textFaint transition-colors hover:bg-panel2 hover:text-textDim disabled:opacity-50"
-            >
-              <RefreshCw size={11} className={status.library.scanning ? 'animate-spin' : ''} />
-              {status.library.scanning ? 'Scanning…' : 'Scan again'}
-            </button>
+            <>
+              <button
+                onClick={onRescan}
+                disabled={status.library.scanning}
+                className="mt-2.5 flex items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] text-textFaint transition-colors hover:bg-panel2 hover:text-textDim disabled:opacity-50"
+              >
+                <RefreshCw size={11} className={status.library.scanning ? 'animate-spin' : ''} />
+                {status.library.scanning ? 'Scanning…' : 'Scan again'}
+              </button>
+              <Artwork status={status} onSave={onTmdbKey} />
+            </>
           ) : null
         }
       />
@@ -195,6 +200,107 @@ function libraryDetail(status: HostStatus): string {
   return uncertain > 0
     ? `${found} ${uncertain} ${uncertain === 1 ? 'is a guess' : 'are guesses'}.`
     : found
+}
+
+/**
+ * The poster downloads, and the key that unlocks them.
+ *
+ * Folded under the library switch rather than given a row of its own, because
+ * it is a refinement of that setting and meaningless without it.
+ *
+ * The key is never displayed once saved. The host reports whether one is set,
+ * not what it is, so there is nothing here that could read it back out.
+ */
+function Artwork({
+  status,
+  onSave,
+}: {
+  status: HostStatus
+  onSave: (key: string) => void
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState('')
+  const { hasKey, withArt, films, series } = status.library
+  const total = films + series
+
+  return (
+    <div className="mt-2">
+      {!open ? (
+        <button
+          onClick={() => {
+            setDraft('')
+            setOpen(true)
+          }}
+          className="flex items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] text-textFaint transition-colors hover:bg-panel2 hover:text-textDim"
+        >
+          <ImageIcon size={11} />
+          {hasKey
+            ? `Posters: ${withArt} of ${total}`
+            : 'Download posters…'}
+        </button>
+      ) : (
+        <motion.div
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+          className="overflow-hidden"
+        >
+          <div className="mt-1 rounded-md border border-line bg-ink2 p-3">
+            <p className="text-[11px] leading-relaxed text-textFaint">
+              {/* Said plainly. A list of titles is a list of what somebody
+                  watches, and that is the actual cost of switching this on. */}
+              Posters come from TMDb, which means sending them each title on
+              this drive. Paste a free API key to turn it on; leave it empty and
+              the app draws its own covers instead.
+            </p>
+            <div className="mt-2.5 flex items-center gap-1.5">
+              <input
+                autoFocus
+                type="password"
+                value={draft}
+                placeholder={hasKey ? 'a key is saved — paste a new one to replace it' : 'TMDb API key'}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    onSave(draft)
+                    setOpen(false)
+                  }
+                  if (e.key === 'Escape') setOpen(false)
+                }}
+                className="min-w-0 flex-1 rounded-sm border border-line bg-panel px-2 py-1.5 font-mono text-[11.5px] text-text outline-none transition-colors placeholder:text-textFaint/60 focus:border-lineBright"
+              />
+              <button
+                onClick={() => {
+                  onSave(draft)
+                  setOpen(false)
+                }}
+                className="rounded-sm px-2.5 py-1.5 text-[11px] text-textDim transition-colors hover:bg-panel2 hover:text-text"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => setOpen(false)}
+                className="rounded-sm px-2 py-1.5 text-[11px] text-textFaint transition-colors hover:text-textDim"
+              >
+                Cancel
+              </button>
+            </div>
+            {hasKey && (
+              <button
+                onClick={() => {
+                  onSave('')
+                  setOpen(false)
+                }}
+                className="mt-2 text-[10.5px] text-textFaint transition-colors hover:text-danger"
+              >
+                Stop looking titles up
+              </button>
+            )}
+          </div>
+        </motion.div>
+      )}
+    </div>
+  )
 }
 
 function Row({

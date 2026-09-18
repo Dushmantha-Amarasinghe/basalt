@@ -382,6 +382,7 @@ pub struct LibraryRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LibraryResponse {
     /// Bumped on every reindex, so a client can tell nothing changed.
     pub revision: u64,
@@ -396,6 +397,7 @@ pub struct LibraryResponse {
 
 /// A film or a series. Episodes hang off the series.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LibraryItem {
     /// Stable across rescans: derived from the title and year, not the path, so
     /// moving a file does not orphan its artwork or its resume point.
@@ -419,6 +421,13 @@ pub struct LibraryItem {
     /// offer the user a chance to correct it rather than assert it.
     #[serde(default)]
     pub confidence: u8,
+    /// Whether the host has a poster cached for this item.
+    ///
+    /// Here so a client knows whether to ask at all: without it, a library of
+    /// five hundred with no artwork would be five hundred requests that all
+    /// come back empty.
+    #[serde(default)]
+    pub has_art: bool,
 }
 
 /// Below this, a match is a guess worth showing the user.
@@ -432,12 +441,14 @@ pub enum LibraryKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Season {
     pub number: u16,
     pub episodes: Vec<Episode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Episode {
     pub number: u16,
     /// Vault-relative path.
@@ -613,6 +624,7 @@ mod tests {
                 added: 1,
                 seasons: Vec::new(),
                 confidence: 95,
+                has_art: false,
             },
             LibraryItem {
                 id: "s1".into(),
@@ -633,6 +645,7 @@ mod tests {
                     }],
                 }],
                 confidence: 88,
+                has_art: false,
             },
         ];
         let json = serde_json::to_string(&items).unwrap();
@@ -676,6 +689,7 @@ mod tests {
                 }],
             }],
             confidence: 90,
+            has_art: true,
         };
         let response = LibraryResponse {
             revision: 1,

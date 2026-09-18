@@ -31,6 +31,10 @@ export interface LibraryStatus {
   series: number
   /** Items the parser was unsure about, worth a person's eye. */
   uncertain: number
+  /** Items with a poster downloaded. */
+  withArt: number
+  /** Whether a TMDb key is set. The key itself never leaves the host. */
+  hasKey: boolean
   /** Unix seconds of the last completed scan, zero if never. */
   scannedAt: number
 }
@@ -150,6 +154,7 @@ export const api = {
   setLibraryEnabled: (enabled: boolean): Promise<HostStatus> =>
     call('set_library_enabled', { enabled }),
   rescanLibrary: (): Promise<HostStatus> => call('rescan_library'),
+  setTmdbKey: (key: string): Promise<HostStatus> => call('set_tmdb_key', { key }),
   openVaultFolder: (): Promise<void> => call('open_vault_folder'),
 }
 
@@ -189,6 +194,8 @@ const sample: {
       films: 0,
       series: 0,
       uncertain: 0,
+      withArt: 0,
+      hasKey: false,
       scannedAt: 0,
     },
     serving: true,
@@ -289,8 +296,26 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return sample.status
       case 'set_library_enabled':
         sample.status.library = Boolean(args?.enabled)
-          ? { enabled: true, scanning: false, films: 42, series: 7, uncertain: 3, scannedAt: Math.floor(Date.now() / 1000) }
-          : { enabled: false, scanning: false, films: 0, series: 0, uncertain: 0, scannedAt: 0 }
+          ? {
+              enabled: true,
+              scanning: false,
+              films: 42,
+              series: 7,
+              uncertain: 3,
+              withArt: sample.status.library.hasKey ? 46 : 0,
+              hasKey: sample.status.library.hasKey,
+              scannedAt: Math.floor(Date.now() / 1000),
+            }
+          : {
+              enabled: false,
+              scanning: false,
+              films: 0,
+              series: 0,
+              uncertain: 0,
+              withArt: 0,
+              hasKey: sample.status.library.hasKey,
+              scannedAt: 0,
+            }
         return sample.status
       case 'rescan_library':
         sample.status.library.scanning = true
@@ -300,6 +325,12 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
           sample.status.library.scanning = false
           sample.status.library.scannedAt = Math.floor(Date.now() / 1000)
         }, 2500)
+        return sample.status
+      case 'set_tmdb_key':
+        sample.status.library.hasKey = String(args?.key ?? '').trim().length > 0
+        sample.status.library.withArt = sample.status.library.hasKey
+          ? sample.status.library.films + sample.status.library.series
+          : sample.status.library.withArt
         return sample.status
       case 'open_vault_folder':
         return undefined

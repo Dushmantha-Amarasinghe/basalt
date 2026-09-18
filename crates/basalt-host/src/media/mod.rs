@@ -8,6 +8,7 @@
 //! every scan rebuilds the index completely — which is what makes deletions
 //! disappear without any separate bookkeeping to go wrong.
 
+pub mod art;
 pub mod index;
 pub mod parse;
 

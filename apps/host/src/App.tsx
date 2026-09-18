@@ -192,6 +192,9 @@ export function App(): React.JSX.Element {
                     onRescan={() => {
                       void api.rescanLibrary().then(apply)
                     }}
+                    onTmdbKey={(key) => {
+                      void api.setTmdbKey(key).then(apply)
+                    }}
                     onRename={(name) => {
                       void api.setHostName(name).then(apply)
                     }}

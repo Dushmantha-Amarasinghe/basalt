@@ -8,11 +8,9 @@ import { Poster } from './Poster'
 /**
  * Films and series, as a wall of posters.
  *
- * There is no artwork to download yet, so a poster is generated from the title
- * — see [`Poster`]. That is a deliberate choice rather than a placeholder: a
- * grid of identical grey rectangles with captions is harder to scan than a
- * grid of distinct ones, and this works with no network, no API key and no
- * telling a third party what is on the drive.
+ * Real artwork when the host has downloaded it, and one drawn from the title
+ * when it has not — see [`Poster`]. The second is the default, because
+ * downloading means telling TMDb every title on the drive and that is opt-in.
  */
 export function LibraryView({
   kind,
@@ -149,7 +147,12 @@ function Card({
       className="group block text-left"
     >
       <div className="relative overflow-hidden rounded-md">
-        <Poster title={item.title} year={item.year ?? undefined} />
+        <Poster
+          title={item.title}
+          year={item.year ?? undefined}
+          id={item.id}
+          hasArt={item.hasArt}
+        />
 
         {/* The play affordance appears on hover; the poster is the subject. */}
         <div className="absolute inset-0 flex items-center justify-center bg-black/55 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
@@ -218,7 +221,12 @@ function SeriesSheet({
 
         <div className="flex gap-5">
           <div className="w-[128px] shrink-0 overflow-hidden rounded-md">
-            <Poster title={item.title} year={item.year ?? undefined} />
+            <Poster
+              title={item.title}
+              year={item.year ?? undefined}
+              id={item.id}
+              hasArt={item.hasArt}
+            />
           </div>
           <div className="min-w-0 flex-1">
             <h2 className="text-[22px] font-semibold tracking-tighter text-text">

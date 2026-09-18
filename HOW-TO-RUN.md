@@ -39,6 +39,12 @@ moved and how fast it is going right now. Four settings live at the bottom:
   episodes, so your devices get **Movies** and **TV Series** sections instead
   of only folders. It rescans by itself whenever the drive changes, so
   anything you add, rename or delete turns up without being asked.
+
+  Underneath it, **Download posters** takes a free
+  [TMDb](https://www.themoviedb.org/settings/api) API key. Leave it empty and
+  the app draws its own covers instead — which is the default, because looking
+  titles up means sending every one of them to a third party, and a list of
+  titles is a list of what you watch.
 - **This machine's name** — what your devices see in their list.
 
 **Closing the window keeps the drive shared.** It goes to the notification
@@ -109,6 +115,11 @@ is not running.
 **"That pairing request has expired"**
 Requests last three minutes. Ask again from the client and a fresh number
 appears on the host.
+
+**Posters are missing for some titles**
+Only what TMDb recognises gets one; everything else keeps the cover the app
+draws. A title it got wrong is usually a parsing problem rather than a TMDb
+one — check the name against the shapes below.
 
 **A film is missing from Movies, or filed under the wrong name**
 The index reads the path, not the file. `Arrival (2016).mkv` and
@@ -199,6 +210,7 @@ cannot tell you why.
 |---|---|
 | Host identity, drive and paired devices | `%APPDATA%\Basalt\host.json` on the host |
 | The media index | `%APPDATA%\Basalt\library-*.json` on the host, one per drive |
+| Downloaded posters | `%APPDATA%\Basaltrt\` on the host |
 | Paired hosts and their tokens | `%APPDATA%\Basalt\client.json` on the client |
 | The startup entry | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `Basalt Host` |
 
