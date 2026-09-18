@@ -87,11 +87,11 @@ two devices at once, because the host reports what the drive actually did
 rather than what it was asked to do.
 
 **Movies and TV Series** appear in the sidebar when the host has the library
-switched on. Series open into seasons and episodes. Posters are drawn from the
-title rather than downloaded — nothing is sent to anyone about what is on your
-drive. A film the app is unsure about is labelled *a guess* rather than filed
-silently under the wrong name, and everything stays in **Files** regardless,
-recognised or not.
+switched on. Series open into seasons and episodes. Posters are real artwork if
+you gave the host a TMDb key, and otherwise ones the app draws from the title —
+in which case nothing about your drive is sent anywhere. A film the app is
+unsure about is labelled *a guess* rather than filed silently under the wrong
+name, and everything stays in **Files** regardless, recognised or not.
 
 A host that has not been given a drive yet is still listed, greyed out and
 labelled, rather than left out with no explanation.
