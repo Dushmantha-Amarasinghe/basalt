@@ -33,6 +33,16 @@ use crate::vault::Vault;
 /// ends on a drive full of something unexpected.
 pub const MAX_DIRS: usize = 40_000;
 
+/// And a clock, because the count is not the thing that hurts.
+///
+/// Forty thousand directories took twenty seconds on a fast SSD and would take
+/// minutes on the external drive this is actually for — on the kind of old
+/// laptop it runs on, that is the machine being unusable rather than a scan
+/// being slow. Whichever limit is reached first stops the walk, and what has
+/// been found by then is kept: a partial library is worth having, and the next
+/// scan starts again from the top anyway.
+pub const MAX_DURATION: std::time::Duration = std::time::Duration::from_secs(90);
+
 /// Files smaller than this are not features.
 ///
 /// Trailers and junk hide under a hundred megabytes; so does a home video, but
@@ -120,6 +130,7 @@ struct Found {
 /// Synchronous and blocking: it is disk-bound and belongs on a blocking thread,
 /// not in the async runtime.
 pub fn scan(vault: &Vault) -> Vec<LibraryItem> {
+    let started = std::time::Instant::now();
     let mut found = Vec::new();
     let mut queue = vec![String::new()];
     let mut visited = 0usize;
@@ -127,7 +138,20 @@ pub fn scan(vault: &Vault) -> Vec<LibraryItem> {
     while let Some(dir) = queue.pop() {
         visited += 1;
         if visited > MAX_DIRS {
-            tracing::warn!("stopped scanning after {MAX_DIRS} directories");
+            tracing::warn!(
+                "stopped after {MAX_DIRS} directories with {} still to look at",
+                queue.len()
+            );
+            break;
+        }
+        // Checked every so often rather than every directory: the clock itself
+        // is cheap, but not as cheap as not reading it.
+        if visited.is_multiple_of(64) && started.elapsed() > MAX_DURATION {
+            tracing::warn!(
+                "stopped after {:?} with {} directories still to look at",
+                started.elapsed(),
+                queue.len()
+            );
             break;
         }
 
@@ -146,7 +170,7 @@ pub fn scan(vault: &Vault) -> Vec<LibraryItem> {
 
             match entry.kind {
                 basalt_proto::msg::EntryKind::Dir => {
-                    if !parse::is_extra(&path) {
+                    if !parse::is_extra(&path) && !parse::is_system(&path) {
                         queue.push(path);
                     }
                 }
@@ -167,7 +191,16 @@ pub fn scan(vault: &Vault) -> Vec<LibraryItem> {
         }
     }
 
-    group(found)
+    let items = group(found);
+    // Logged because this is the one expensive thing the host does, and when
+    // somebody says it has stopped responding this line is what says whether a
+    // scan was the reason.
+    tracing::info!(
+        "scanned {visited} directories in {:?}, found {} items",
+        started.elapsed(),
+        items.len()
+    );
+    items
 }
 
 /// A stable id from the title and year.

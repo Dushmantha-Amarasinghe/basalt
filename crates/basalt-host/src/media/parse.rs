@@ -116,6 +116,35 @@ const NOISE: &[&str] = &[
     "jpn",
 ];
 
+/// Folders Windows keeps to itself, never worth walking.
+///
+/// `System Volume Information` refuses to be read at all without elevation and
+/// `$RECYCLE.BIN` is full of deleted files somebody deliberately threw away.
+/// Descending into either costs time on a drive root and can never find
+/// anything, which matters because sharing a whole drive is the normal case.
+const SYSTEM: &[&str] = &[
+    "$recycle.bin",
+    "system volume information",
+    "$windows.~bt",
+    "$windows.~ws",
+    "windows",
+    "program files",
+    "program files (x86)",
+    "programdata",
+    "$sysreset",
+    "recovery",
+    "msocache",
+    "config.msi",
+    "node_modules",
+    ".git",
+];
+
+/// Whether this is a folder to leave alone entirely.
+pub fn is_system(path: &str) -> bool {
+    path.split('/')
+        .any(|segment| SYSTEM.contains(&segment.trim().to_ascii_lowercase().as_str()))
+}
+
 /// Folders and files that are not the feature.
 const EXTRAS: &[&str] = &[
     "sample",
@@ -565,6 +594,22 @@ mod tests {
     // -----------------------------------------------------------------------
     // What counts as a video at all
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn windows_own_folders_are_left_alone() {
+        assert!(is_system("$RECYCLE.BIN"));
+        assert!(is_system("System Volume Information/whatever.mkv"));
+        assert!(is_system("Windows/System32"));
+        assert!(is_system("films/node_modules/a.mkv"));
+    }
+
+    #[test]
+    fn an_ordinary_folder_is_not_a_system_one() {
+        assert!(!is_system("Films"));
+        assert!(!is_system("Shows/Breaking Bad/Season 01"));
+        // A film whose title merely contains the word.
+        assert!(!is_system("films/Windows on the World (2019).mkv"));
+    }
 
     #[test]
     fn only_video_extensions_are_indexed() {
