@@ -111,6 +111,10 @@ export interface LibraryItem {
   /** 0-100. Below CONFIDENT the interface offers a correction rather than
    *  asserting the match. */
   confidence: number
+  /** Whether the host has a poster for this item. Saves asking for one that
+   *  is not there — a library of five hundred would otherwise be five hundred
+   *  requests that all come back empty. */
+  hasArt: boolean
 }
 
 export interface LibraryResponse {
@@ -200,6 +204,9 @@ export const api = {
 
   library: (knownRevision: number) =>
     call<LibraryResponse>('library', { knownRevision }),
+  /** Poster bytes for one item, as a data URL the interface can hand to an
+   *  `<img>`. Null when the host has none. */
+  art: (id: string) => call<string | null>('library_art', { id }),
 
   list: (path: string) => call<DirEntry[]>('list_dir', { path }),
   stat: (path: string) => call<DirEntry>('stat_entry', { path }),
@@ -414,6 +421,7 @@ const MOCK_LIBRARY: LibraryItem[] = [
     added: Math.floor(Date.now() / 1000) - 86_400 * 3,
     seasons: [],
     confidence: 95,
+    hasArt: false,
   },
   {
     id: 'f2',
@@ -425,6 +433,7 @@ const MOCK_LIBRARY: LibraryItem[] = [
     added: Math.floor(Date.now() / 1000) - 86_400 * 30,
     seasons: [],
     confidence: 92,
+    hasArt: false,
   },
   {
     id: 'f3',
@@ -436,6 +445,7 @@ const MOCK_LIBRARY: LibraryItem[] = [
     added: Math.floor(Date.now() / 1000) - 86_400 * 200,
     seasons: [],
     confidence: 55,
+    hasArt: false,
   },
   {
     id: 's1',
@@ -468,6 +478,7 @@ const MOCK_LIBRARY: LibraryItem[] = [
       },
     ],
     confidence: 95,
+    hasArt: false,
   },
   {
     id: 's2',
@@ -490,6 +501,7 @@ const MOCK_LIBRARY: LibraryItem[] = [
       },
     ],
     confidence: 95,
+    hasArt: false,
   },
 ]
 
@@ -523,6 +535,10 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return MOCK_STATUS as T
     case 'cancel_pairing':
       return undefined as T
+    case 'library_art':
+      // No sample artwork: the preview shows the generated posters, which is
+      // also what anyone without a TMDb key sees.
+      return null as T
     case 'library':
       return {
         revision: 1,

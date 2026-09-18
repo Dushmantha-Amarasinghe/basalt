@@ -187,6 +187,16 @@ async fn rescan_library(state: State<'_, AppState>) -> Answer<HostStatus> {
     status(state).await
 }
 
+/// Stores the TMDb key and fetches whatever artwork it unlocks.
+///
+/// The key only ever travels inwards. `status` reports whether one is set, not
+/// what it is, so it cannot be read back out of the interface.
+#[tauri::command]
+async fn set_tmdb_key(state: State<'_, AppState>, key: String) -> Answer<HostStatus> {
+    state.host.set_tmdb_key(&key).await?;
+    status(state).await
+}
+
 #[tauri::command]
 fn open_vault_folder(state: State<'_, AppState>, app: tauri::AppHandle) -> Answer<()> {
     use tauri_plugin_opener::OpenerExt;
@@ -365,6 +375,7 @@ pub fn run() {
             set_start_with_windows,
             set_library_enabled,
             rescan_library,
+            set_tmdb_key,
             open_vault_folder,
         ])
         .run(tauri::generate_context!())

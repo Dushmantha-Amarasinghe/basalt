@@ -212,6 +212,7 @@ fn group(found: Vec<Found>) -> Vec<LibraryItem> {
                 added: 0,
                 seasons: Vec::new(),
                 confidence: parsed.confidence,
+                has_art: false,
             });
 
             // A series is only as trustworthy as its least certain episode.
@@ -260,6 +261,7 @@ fn group(found: Vec<Found>) -> Vec<LibraryItem> {
                     added: entry.mtime,
                     seasons: Vec::new(),
                     confidence: parsed.confidence,
+                    has_art: false,
                 }),
             }
         }

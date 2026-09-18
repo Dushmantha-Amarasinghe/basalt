@@ -94,30 +94,6 @@ function rustStructs(source: string): Map<string, string[]> {
   return structs
 }
 
-/**
- * Structs with no rename attribute, whose field names therefore reach
- * JavaScript exactly as Rust spells them.
- *
- * These are only safe while every field is a single word. A later
- * `episode_title` would arrive as `episode_title` and read as `undefined`;
- * comparing against the TypeScript is what catches that.
- */
-function plainStructs(source: string): Map<string, string[]> {
-  const structs = new Map<string, string[]>()
-  const pattern = /pub struct (LibraryItem|LibraryResponse|Season|Episode) \{([\s\S]*?)\n\}/g
-
-  for (const match of source.matchAll(pattern)) {
-    const [, name, body] = match
-    const fields = uncomment(body!)
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith('pub '))
-      .map((line) => line.slice(4).split(':')[0]!.trim())
-    structs.set(name!, fields.sort())
-  }
-  return structs
-}
-
 // ---------------------------------------------------------------------------
 // Reading the TypeScript
 // ---------------------------------------------------------------------------
@@ -160,7 +136,7 @@ function tsInterfaces(source: string): Map<string, string[]> {
 
 const commands = rustCommands(shell)
 const invocations = tsInvocations(apiTs)
-const structs = new Map([...rustStructs(uiRust), ...plainStructs(protoRust)])
+const structs = new Map([...rustStructs(uiRust), ...rustStructs(protoRust)])
 const interfaces = tsInterfaces(apiTs)
 
 describe('the shell and the interface agree', () => {

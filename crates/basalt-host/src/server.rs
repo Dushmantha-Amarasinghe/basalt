@@ -150,16 +150,12 @@ impl Host {
     /// Where artwork for one item is cached.
     fn art_path(&self, id: &str) -> Option<std::path::PathBuf> {
         // Ids are hex from a hash, so nothing here can walk out of the folder —
-        // but checked anyway, because this path is built from a wire value.
+        // but checked anyway, because this value arrived over the wire and a
+        // path built from one is exactly where traversal bugs live.
         if !id.chars().all(|c| c.is_ascii_alphanumeric()) || id.is_empty() || id.len() > 64 {
             return None;
         }
-        Some(
-            self.config_path
-                .parent()?
-                .join("art")
-                .join(format!("{id}.jpg")),
-        )
+        Some(crate::media::art::art_path(self.config_path.parent()?, id))
     }
 
     pub fn art(&self, id: &str) -> Option<Vec<u8>> {
@@ -194,6 +190,18 @@ impl Host {
     #[doc(hidden)]
     pub fn enable_library_for_test(&self) {
         self.config.lock().expect("config lock").library_enabled = true;
+    }
+
+    /// Stores the TMDb key and fetches whatever artwork it unlocks.
+    ///
+    /// Clearing it stops future lookups but leaves the posters already
+    /// downloaded: they are on this machine already, and deleting them would
+    /// be a second decision the user did not ask for.
+    pub async fn set_tmdb_key(self: &Arc<Self>, key: &str) -> Result<()> {
+        self.config.lock().expect("config lock").tmdb_key = key.trim().to_string();
+        self.persist()?;
+        self.start_scan();
+        Ok(())
     }
 
     /// Rescans whenever the drive changes, and once at startup.
@@ -278,9 +286,27 @@ impl Host {
         let Some(vault) = self.vault().await else {
             return Ok(false);
         };
-        let items = tokio::task::spawn_blocking(move || crate::media::scan(&vault))
+        let mut items = tokio::task::spawn_blocking(move || crate::media::scan(&vault))
             .await
             .map_err(|e| HostError::BadRequest(format!("the scan panicked: {e}")))?;
+
+        // Posters, if the user has supplied a key. Best effort and never fatal:
+        // no key, no network, or a title TMDb has never heard of each cost a
+        // poster and nothing more.
+        let config_dir = self
+            .config_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
+        let key = self.config.lock().expect("config lock").tmdb_key.clone();
+        crate::media::art::enrich(&items, &key, &config_dir).await;
+
+        // Marked after fetching, so an item whose poster just arrived is
+        // already flagged in the index the client is about to be sent.
+        let have = crate::media::art::cached(&config_dir);
+        for item in &mut items {
+            item.has_art = have.contains(&item.id);
+        }
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -444,6 +470,14 @@ impl Host {
                 .iter()
                 .filter(|i| i.confidence < basalt_proto::msg::CONFIDENT)
                 .count(),
+            with_art: library.items.iter().filter(|i| i.has_art).count(),
+            has_key: !self
+                .config
+                .lock()
+                .expect("config lock")
+                .tmdb_key
+                .trim()
+                .is_empty(),
             scanned_at: library.scanned_at,
         }
     }

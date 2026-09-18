@@ -55,6 +55,15 @@ pub struct HostConfig {
     #[serde(default)]
     pub library_enabled: bool,
 
+    /// TMDb key, for downloading posters. Empty means do not look anything up.
+    ///
+    /// Pasted in by hand, and empty by default, because a lookup tells a third
+    /// party what is on the drive — and a list of titles is a list of what
+    /// somebody watches. That must never start happening because of an
+    /// upgrade.
+    #[serde(default)]
+    pub tmdb_key: String,
+
     #[serde(default)]
     pub devices: Vec<Device>,
 }
@@ -74,6 +83,7 @@ impl HostConfig {
             require_pin: true,
             start_with_windows: false,
             library_enabled: false,
+            tmdb_key: String::new(),
             devices: Vec::new(),
         })
     }

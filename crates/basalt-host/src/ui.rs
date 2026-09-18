@@ -77,6 +77,13 @@ pub struct LibraryStatus {
     pub series: usize,
     /// Items the parser was not sure about, worth a person's eye.
     pub uncertain: usize,
+    /// Items with a poster downloaded.
+    pub with_art: usize,
+    /// Whether a TMDb key has been supplied at all.
+    ///
+    /// The key itself never leaves the host — the interface only needs to know
+    /// whether one is set, so it can say so without ever displaying it.
+    pub has_key: bool,
     /// Unix seconds of the last completed scan, zero if never.
     pub scanned_at: i64,
 }
@@ -266,6 +273,8 @@ mod tests {
                 films: 0,
                 series: 0,
                 uncertain: 0,
+                with_art: 0,
+                has_key: false,
                 scanned_at: 0,
             },
             serving: true,
@@ -297,6 +306,8 @@ mod tests {
             films: 1,
             series: 2,
             uncertain: 3,
+            with_art: 1,
+            has_key: true,
             scanned_at: 4,
         };
         assert_eq!(
@@ -304,10 +315,12 @@ mod tests {
             [
                 "enabled",
                 "films",
+                "hasKey",
                 "scannedAt",
                 "scanning",
                 "series",
-                "uncertain"
+                "uncertain",
+                "withArt"
             ]
         );
     }

@@ -200,6 +200,26 @@ async fn library(
     Ok(state.client.library(known_revision).await?)
 }
 
+/// A poster, as a data URL an `<img>` can use directly.
+///
+/// A data URL rather than a byte array because the alternative is shipping
+/// megabytes of JSON-encoded numbers across the IPC boundary and rebuilding a
+/// blob on the other side. Posters are ~40 KB and cached by the interface, so
+/// the base64 overhead is paid once per title.
+#[tauri::command]
+async fn library_art(state: State<'_, AppState>, id: String) -> Answer<Option<String>> {
+    match state.client.art(&id).await {
+        Ok(bytes) if !bytes.is_empty() => {
+            use base64::Engine;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            Ok(Some(format!("data:image/jpeg;base64,{encoded}")))
+        }
+        // A missing poster is not an error worth a banner: the interface draws
+        // its own instead.
+        _ => Ok(None),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Browsing
 // ---------------------------------------------------------------------------
@@ -556,6 +576,7 @@ pub fn run() {
             cancel_pairing,
             connect_saved,
             library,
+            library_art,
             connect_to,
             disconnect,
             forget_host,
