@@ -44,6 +44,9 @@ pub struct Host {
     /// The media index, and whether a scan is running.
     library: std::sync::Mutex<crate::media::Library>,
     scanning: std::sync::atomic::AtomicBool,
+    /// When the last scan finished and how long it took, so the next one can
+    /// be held off in proportion to what scanning this drive actually costs.
+    last_scan: std::sync::Mutex<Option<(std::time::Instant, std::time::Duration)>>,
     /// Where each file has been watched to, shared by every device.
     progress: std::sync::Mutex<crate::media::Progress>,
 }
@@ -95,6 +98,7 @@ impl Host {
             watch: tokio::sync::RwLock::new(watch),
             library: std::sync::Mutex::new(library),
             scanning: std::sync::atomic::AtomicBool::new(false),
+            last_scan: std::sync::Mutex::new(None),
             progress: std::sync::Mutex::new(progress),
         }))
     }
@@ -275,14 +279,32 @@ impl Host {
     ///
     /// The watcher keeps *listings* live; without this the index would not be,
     /// and a film copied in would sit in Files but never appear under Movies
-    /// until somebody pressed a button. Heavily debounced, because copying a
-    /// season produces a change per episode and each scan walks the drive.
+    /// until somebody pressed a button.
+    ///
+    /// Two limits, both learned the hard way. The drive is allowed to settle
+    /// for [`SETTLE`] before a scan starts, because copying a season produces a
+    /// change per episode. And no two scans may begin within [`MIN_GAP`] of
+    /// each other, because a scan of a whole drive is minutes of disk on the
+    /// kind of old laptop this runs on — and a drive that something else is
+    /// writing to continuously would otherwise mean scanning continuously,
+    /// which is indistinguishable from the machine having seized up.
     ///
     /// Also covers the case a restart would otherwise lose: the index on disk
     /// says nothing about what happened while the host was off.
     pub fn keep_library_current(self: &Arc<Self>) {
         /// Quiet time after the last change before rescanning.
         const SETTLE: std::time::Duration = std::time::Duration::from_secs(8);
+        /// How much of the time a drive may spend being scanned.
+        ///
+        /// The gap before the next scan is this multiple of how long the last
+        /// one took, so the limit tunes itself to the drive: a small library
+        /// scans in a blink and stays live, while a whole drive that takes
+        /// ninety seconds earns a quarter of an hour to itself. Nothing else
+        /// would work for both — a fixed gap is either too slow for a folder
+        /// of films or far too eager for a 4 TB disk on an old laptop.
+        const REST_MULTIPLE: u32 = 10;
+        /// However costly a scan was, it never earns more than this.
+        const MAX_GAP: std::time::Duration = std::time::Duration::from_secs(900);
 
         self.start_scan();
 
@@ -311,6 +333,20 @@ impl Host {
                         Ok(Err(_)) => continue,
                         Err(_) => break,
                     }
+                }
+                // Wait the floor out rather than skipping the scan: the
+                // changes are real, and dropping them would leave the index
+                // wrong until something else happened to trigger one.
+                let wait = {
+                    let last = host.last_scan.lock().expect("scan clock");
+                    last.and_then(|(finished, took)| {
+                        let gap = (took * REST_MULTIPLE).min(MAX_GAP);
+                        gap.checked_sub(finished.elapsed())
+                    })
+                };
+                if let Some(wait) = wait {
+                    tracing::debug!("holding the next scan off for {wait:?}");
+                    tokio::time::sleep(wait).await;
                 }
                 host.start_scan();
             }
@@ -353,6 +389,7 @@ impl Host {
         let Some(vault) = self.vault().await else {
             return Ok(false);
         };
+        let began = std::time::Instant::now();
         let mut items = tokio::task::spawn_blocking(move || crate::media::scan(&vault))
             .await
             .map_err(|e| HostError::BadRequest(format!("the scan panicked: {e}")))?;
@@ -391,6 +428,9 @@ impl Host {
         {
             tracing::warn!("could not save the library index: {e}");
         }
+
+        *self.last_scan.lock().expect("scan clock") =
+            Some((std::time::Instant::now(), began.elapsed()));
         Ok(changed)
     }
 
@@ -482,16 +522,26 @@ impl Host {
 
     /// Everything the host's own window needs to draw itself once.
     pub async fn status(&self, serving: bool) -> crate::ui::HostStatus {
-        let vault = self.vault().await.map(|vault| {
-            let (free, total) = vault.space();
-            crate::ui::VaultView {
-                path: vault.root().to_string_lossy().into_owned(),
-                name: vault.name().to_string(),
-                free,
-                total,
-                available: crate::drives::is_available(vault.root()),
-            }
-        });
+        // Off the async runtime. Both of these are Windows calls against the
+        // drive, and a drive that has spun down — or that a scan is currently
+        // hammering — can leave them sitting for seconds. The interface asks
+        // for this every two seconds, so blocking a runtime thread here means
+        // blocking it more or less permanently.
+        let vault = match self.vault().await {
+            Some(vault) => tokio::task::spawn_blocking(move || {
+                let (free, total) = vault.space();
+                crate::ui::VaultView {
+                    path: vault.root().to_string_lossy().into_owned(),
+                    name: vault.name().to_string(),
+                    free,
+                    total,
+                    available: crate::drives::is_available(vault.root()),
+                }
+            })
+            .await
+            .ok(),
+            None => None,
+        };
 
         let (host_name, port, require_pin) = {
             let config = self.config.lock().expect("config lock");
@@ -678,13 +728,20 @@ impl Host {
 /// the whole drive — so `Modified` is deliberately ignored. `Resynchronise`
 /// means the host lost track, which is exactly when a rescan is warranted.
 fn worth_rescanning(change: &basalt_proto::msg::Change) -> bool {
+    use crate::media::parse::{is_system, is_video};
     use basalt_proto::msg::Change;
+
+    // Windows writes to its own folders constantly. A drive root shared whole
+    // would otherwise be permanently "just changed", and the index would scan
+    // for ever on a machine that is doing nothing a person would recognise.
+    let interesting = |path: &String| !is_system(path);
+
     match change {
         Change::Created { path } | Change::Removed { path } => {
-            crate::media::parse::is_video(path) || !path.contains('.')
+            interesting(path) && (is_video(path) || !path.contains('.'))
         }
         Change::Renamed { from, to } => {
-            crate::media::parse::is_video(from) || crate::media::parse::is_video(to)
+            (interesting(from) && is_video(from)) || (interesting(to) && is_video(to))
         }
         Change::Resynchronise => true,
         Change::Modified { .. } | Change::LibraryChanged => false,

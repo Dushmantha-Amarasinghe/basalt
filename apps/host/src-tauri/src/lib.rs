@@ -50,12 +50,23 @@ async fn status(state: State<'_, AppState>) -> Answer<HostStatus> {
     Ok(status)
 }
 
+/// The drives this machine could share.
+///
+/// On a blocking thread, and `async` so Tauri keeps it off the main one.
+/// Enumerating volumes means asking Windows about every drive letter present,
+/// and a disconnected network drive or an empty optical bay can leave
+/// `GetVolumeInformationW` sitting there for tens of seconds. On the main
+/// thread that is a frozen window; here it is a slow list.
 #[tauri::command]
-fn list_drives() -> Vec<DriveView> {
-    basalt_host::drives::list()
-        .into_iter()
-        .map(DriveView::from)
-        .collect()
+async fn list_drives() -> Vec<DriveView> {
+    tokio::task::spawn_blocking(|| {
+        basalt_host::drives::list()
+            .into_iter()
+            .map(DriveView::from)
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// Locks in a drive or folder.
@@ -105,15 +116,18 @@ async fn set_host_name(state: State<'_, AppState>, name: String) -> Answer<HostS
 /// the speeds honest: the interval measured is exactly the one between two
 /// readings, whatever the interface's polling loop actually managed.
 #[tauri::command]
-fn devices(state: State<'_, AppState>) -> Vec<DeviceView> {
+async fn devices(state: State<'_, AppState>) -> Answer<Vec<DeviceView>> {
     let traffic = state.host.traffic();
+    let devices = state.host.devices();
+    // The guard is taken and dropped without an await in between, which is what
+    // keeps a plain mutex safe inside an async command.
     let mut rates = state.rates.lock().expect("rates lock");
     let sampled = rates.sample(std::time::Instant::now(), traffic.clone());
-    basalt_host::ui::devices_view(&state.host.devices(), &traffic, sampled)
+    Ok(basalt_host::ui::devices_view(&devices, &traffic, sampled))
 }
 
 #[tauri::command]
-fn revoke_device(state: State<'_, AppState>, id: String) -> Answer<bool> {
+async fn revoke_device(state: State<'_, AppState>, id: String) -> Answer<bool> {
     let removed = state.host.revoke(&id)?;
     if removed {
         state.rates.lock().expect("rates lock").forget(&id);
@@ -122,12 +136,16 @@ fn revoke_device(state: State<'_, AppState>, id: String) -> Answer<bool> {
 }
 
 #[tauri::command]
-fn rename_device(state: State<'_, AppState>, id: String, name: String) -> Answer<bool> {
+async fn rename_device(state: State<'_, AppState>, id: String, name: String) -> Answer<bool> {
     Ok(state.host.rename_device(&id, &name)?)
 }
 
 #[tauri::command]
-fn set_device_writable(state: State<'_, AppState>, id: String, writable: bool) -> Answer<bool> {
+async fn set_device_writable(
+    state: State<'_, AppState>,
+    id: String,
+    writable: bool,
+) -> Answer<bool> {
     Ok(state.host.set_writable(&id, writable)?)
 }
 
@@ -136,19 +154,19 @@ fn set_device_writable(state: State<'_, AppState>, id: String, writable: bool) -
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-fn pending_pairings(state: State<'_, AppState>) -> Vec<PairingView> {
+async fn pending_pairings(state: State<'_, AppState>) -> Answer<Vec<PairingView>> {
     let now = std::time::Instant::now();
-    state
+    Ok(state
         .host
         .pending_pairings()
         .iter()
         .map(|request| PairingView::new(request, now))
-        .collect()
+        .collect())
 }
 
 #[tauri::command]
-fn deny_pairing(state: State<'_, AppState>, id: String) -> bool {
-    state.host.deny_pairing(&id)
+async fn deny_pairing(state: State<'_, AppState>, id: String) -> Answer<bool> {
+    Ok(state.host.deny_pairing(&id))
 }
 
 #[tauri::command]
@@ -198,7 +216,7 @@ async fn set_tmdb_key(state: State<'_, AppState>, key: String) -> Answer<HostSta
 }
 
 #[tauri::command]
-fn open_vault_folder(state: State<'_, AppState>, app: tauri::AppHandle) -> Answer<()> {
+async fn open_vault_folder(state: State<'_, AppState>, app: tauri::AppHandle) -> Answer<()> {
     use tauri_plugin_opener::OpenerExt;
 
     let path = state
@@ -266,13 +284,51 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 // Startup
 // ---------------------------------------------------------------------------
 
-pub fn run() {
+/// Sends the log to a file beside the config, and returns its path.
+///
+/// A release build sets `windows_subsystem = "windows"`, which means there is
+/// no console and anything written to stdout goes nowhere at all. That made a
+/// host misbehaving on another machine completely undiagnosable — the first
+/// report of trouble had nothing to look at but guesswork.
+///
+/// One file, truncated at each start. A host that has been running for a month
+/// should not have a log nobody will ever read; what matters is the session
+/// that went wrong, and that is the one still open.
+fn start_logging() -> Option<std::path::PathBuf> {
+    let path = basalt_host::config::default_path()
+        .parent()?
+        .join("host.log");
+    std::fs::create_dir_all(path.parent()?).ok()?;
+
+    let file = std::fs::File::create(&path).ok()?;
     tracing_subscriber::fmt()
+        .with_writer(std::sync::Mutex::new(file))
+        .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "basalt_host=info".into()),
+                .unwrap_or_else(|_| "basalt_host=debug,basalt_host_lib=debug".into()),
         )
         .init();
+
+    // A panic on a background thread otherwise vanishes without trace, and a
+    // panic is exactly the thing somebody reporting "it stopped responding"
+    // needs recorded.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("panic: {info}");
+        previous(info);
+    }));
+
+    Some(path)
+}
+
+pub fn run() {
+    let log = start_logging();
+    tracing::info!(
+        "Basalt Host {} starting; log at {:?}",
+        env!("CARGO_PKG_VERSION"),
+        log
+    );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
