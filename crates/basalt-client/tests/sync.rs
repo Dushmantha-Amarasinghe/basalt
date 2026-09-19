@@ -437,6 +437,95 @@ async fn a_watching_client_is_told_when_the_library_changes() {
     );
 }
 
+/// The status has to come back.
+///
+/// It did not. `library_status` wrote two `self.config.lock()` calls as field
+/// values of one struct literal, and a guard built inline that way is a
+/// temporary that lives to the end of the whole statement — so the second lock
+/// waited on the first, on the same thread, forever.
+///
+/// The damage was not one slow call. The window asks for this every two
+/// seconds, so it wedged a thread each time while holding `library` and
+/// `registry`: scans could no longer save their index, paired devices could no
+/// longer authenticate, and eventually the app stopped responding altogether.
+/// Every test in this file talked to the host over the protocol, and none of
+/// them ever asked it for the status, which is how it shipped.
+///
+/// Run on a plain OS thread with its own runtime, and waited for with
+/// `recv_timeout` rather than `tokio::time::timeout`.
+///
+/// That detail is load-bearing. The first version of this test used
+/// `tokio::time::timeout` on a spawned task, and against the bug it hung
+/// forever instead of failing: a thread deadlocked inside a worker never
+/// returns to the scheduler, so it never hands back tokio's time driver and the
+/// timeout it was supposed to trip never fires. `recv_timeout` blocks on an OS
+/// primitive and cannot be starved that way.
+///
+/// Against the bug this reports `the status deadlocked on attempt 1` within ten
+/// seconds, and the binary then hangs at exit, because the wedged thread can
+/// never be reclaimed. The diagnosis is printed long before that, which is the
+/// part that matters; there is no way to un-deadlock a thread to tidy up after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn asking_for_the_status_answers() {
+    let fixture = start_host().await;
+    put_feature(&fixture.vault_path("films/Arrival.2016.mkv"));
+    fixture.host.enable_library_for_test();
+
+    for attempt in 1..=2 {
+        let host = Arc::clone(&fixture.host);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime for the call");
+            let _ = tx.send(runtime.block_on(host.status(true)));
+        });
+
+        let status = rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap_or_else(|_| panic!("the status deadlocked on attempt {attempt}"));
+        assert!(status.library.enabled);
+    }
+
+    // The locks it takes have to be free afterwards, or the freeze simply moves
+    // to whatever asks next. These are the two that were held.
+    assert!(fixture.host.devices().is_empty());
+    assert_eq!(fixture.host.library_items().len(), 0);
+}
+
+/// The index has to reach the disk.
+///
+/// Found by running the host over a real drive and looking in its config
+/// folder: the scan logged success, the items were there over the wire, and no
+/// `library-*.json` was ever written. Nothing caught it because every test
+/// asked the running host what it had found, which it answers from memory.
+///
+/// The cost of getting this wrong is a full rescan of the whole drive at every
+/// start — twenty-two seconds on the 500 GB disk this was found on.
+#[tokio::test]
+async fn a_scan_writes_the_index_to_disk() {
+    let fixture = start_host().await;
+    put_feature(&fixture.vault_path("films/Arrival.2016.mkv"));
+    fixture.host.set_library_enabled(true).await.unwrap();
+
+    let client = fixture.paired_client().await;
+    assert_eq!(library_of(&client, 1).await.len(), 1);
+
+    // The client is only told after the scan finishes, and the scan saves
+    // before it announces, so by here the file is either there or never coming.
+    let path = basalt_host::media::index::index_path(&fixture.dir, &fixture.dir.join("vault"));
+    assert!(path.exists(), "no index written to {}", path.display());
+
+    let saved = basalt_host::media::index::Library::load(&path);
+    assert_eq!(
+        saved.items.len(),
+        1,
+        "the index on disk has to hold what the scan found"
+    );
+    assert_eq!(saved.items[0].title, "Arrival");
+}
+
 /// The bug this exists for: a host restarted with the library already on used
 /// the index it had saved and never looked again, so anything added while it
 /// was off stayed invisible until somebody pressed a button.

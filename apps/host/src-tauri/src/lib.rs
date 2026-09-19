@@ -40,13 +40,30 @@ struct AppState {
 // Status and setup
 // ---------------------------------------------------------------------------
 
+/// How long a command may take before the log mentions it.
+///
+/// The window asks for the status every two seconds, so anything slower than
+/// this is already visible as a stutter. Naming it in the log turns "the app
+/// feels stuck" into a line saying which call and for how long.
+const SLOW_COMMAND: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[tauri::command]
 async fn status(state: State<'_, AppState>) -> Answer<HostStatus> {
+    let began = std::time::Instant::now();
     let mut status = state
         .host
         .status(state.serving.load(Ordering::Relaxed))
         .await;
     status.problem = state.problem.lock().expect("problem lock").clone();
+
+    let took = began.elapsed();
+    if took > SLOW_COMMAND {
+        tracing::warn!("the status took {took:?}");
+    } else {
+        // Debug rather than info: one line every two seconds forever would
+        // bury the things worth reading.
+        tracing::debug!("status in {took:?}");
+    }
     Ok(status)
 }
 
@@ -322,6 +339,63 @@ fn start_logging() -> Option<std::path::PathBuf> {
     Some(path)
 }
 
+/// Notices when the window stops answering, and writes it down.
+///
+/// "Not responding" is Windows saying a program has not collected its messages
+/// for a few seconds, which on this app means the main thread is stuck in
+/// something. From the outside that is indistinguishable from a crash, a slow
+/// drive, or a command that never returns, and guessing between those cost two
+/// rebuilds already.
+///
+/// So: post a do-nothing closure to the main thread every couple of seconds and
+/// see whether it comes back. If it does not, the main thread is the problem and
+/// the log says so with a timestamp. If it keeps coming back while the window
+/// still shows nothing, the main thread is fine and the fault is in a command —
+/// which is the other half of the answer, and just as useful.
+fn watch_main_thread(app: tauri::AppHandle) {
+    use std::time::{Duration, Instant};
+
+    /// How often to ask.
+    const PING: Duration = Duration::from_secs(2);
+    /// How long an unanswered ping means trouble. Windows uses five seconds for
+    /// the same judgement, so this agrees with what the user is shown.
+    const STALL: Duration = Duration::from_secs(5);
+
+    std::thread::spawn(move || {
+        let mut stuck_since: Option<Instant> = None;
+        loop {
+            std::thread::sleep(PING);
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            // Only fails once the app is shutting down, which is this thread's
+            // cue to stop rather than a fault to report.
+            if app
+                .run_on_main_thread(move || {
+                    let _ = tx.send(());
+                })
+                .is_err()
+            {
+                return;
+            }
+
+            match (rx.recv_timeout(STALL), stuck_since) {
+                (Ok(()), Some(since)) => {
+                    tracing::warn!("the window answered again after {:?}", since.elapsed());
+                    stuck_since = None;
+                }
+                (Ok(()), None) => {}
+                (Err(_), Some(since)) => {
+                    tracing::error!("the window is still stuck, {:?} now", since.elapsed())
+                }
+                (Err(_), None) => {
+                    tracing::error!("the window has stopped answering; the main thread is stuck");
+                    stuck_since = Some(Instant::now() - STALL);
+                }
+            }
+        }
+    });
+}
+
 /// Which build this is: the commit, and when it was made.
 ///
 /// Every build calls itself 0.1.0, so the version alone never answered "am I
@@ -386,11 +460,24 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // Logged step by step because this runs on the main thread, and a
+            // main thread that never finishes here is a window that never
+            // responds. Silence used to leave no way to tell which step it was.
+            watch_main_thread(app.handle().clone());
+
             let config_path = basalt_host::config::default_path();
+            tracing::info!("reading {}", config_path.display());
             let config =
                 HostConfig::load_or_create(&config_path, &basalt_host::config::machine_name())?;
             let port = config.port;
+            tracing::info!(
+                vault = ?config.vault_path,
+                library = config.library_enabled,
+                devices = config.devices.len(),
+                "opening the vault"
+            );
             let host = Host::new(config, config_path)?;
+            tracing::info!("vault open");
 
             let serving = Arc::new(AtomicBool::new(false));
             let problem = Arc::new(Mutex::new(None));
@@ -444,7 +531,12 @@ pub fn run() {
                 });
             }
 
+            // Its own step in the log because it talks to the notification
+            // area, and the notification area belongs to Explorer — which at
+            // login is the busiest process on the machine.
+            tracing::info!("building the tray icon");
             build_tray(app.handle())?;
+            tracing::info!("tray icon built");
 
             // Windows started this, not the user: stay out of the way. The
             // host serves whether or not anyone is looking at its window, and
@@ -453,8 +545,10 @@ pub fn run() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
                 }
+                tracing::info!("started by Windows, so the window stays hidden");
             }
 
+            tracing::info!("ready");
             Ok(())
         })
         // Closing the window keeps the drive shared.
