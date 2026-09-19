@@ -18,6 +18,11 @@ const STATUS_INTERVAL = 2_000
 const DEVICE_INTERVAL = 1_000
 /** Faster still: a PIN is on a two-minute clock and someone is waiting. */
 const PAIRING_INTERVAL = 900
+/** How long the first answer may take before the splash admits something is wrong. */
+const SLOW_START = 10_000
+/** Said plainly, with somewhere to go next. */
+const STUCK =
+  'This is taking longer than it should. The drive may be slow to wake, or something is stuck — the log will say which.'
 
 export function App(): React.JSX.Element {
   const status = usePoll<HostStatus>(useCallback(() => api.status(), []), STATUS_INTERVAL)
@@ -49,6 +54,22 @@ export function App(): React.JSX.Element {
     void api.buildInfo().then(setBuild).catch(() => {})
   }, [])
 
+  /**
+   * Whether the very first status call has taken suspiciously long.
+   *
+   * The splash used to say "Starting up…" for as long as nothing answered,
+   * which after ten seconds is no longer true and reads as a hang with no
+   * explanation. Saying where the log is turns a blank wait into something the
+   * user can act on.
+   */
+  const [slow, setSlow] = useState(false)
+  const answered = status.data !== null
+  useEffect(() => {
+    if (answered) return
+    const timer = setTimeout(() => setSlow(true), SLOW_START)
+    return () => clearTimeout(timer)
+  }, [answered])
+
   const chooseVault = useCallback(
     async (path: string, name: string) => {
       apply(await api.chooseVault(path, name))
@@ -57,10 +78,15 @@ export function App(): React.JSX.Element {
     [apply],
   )
 
-  if (status.loading && !status.data) return <Splash />
-
   const current = status.data
-  if (!current) return <Splash message={status.error ?? undefined} />
+  if (!current) {
+    return (
+      <Splash
+        message={status.error ?? (slow ? STUCK : undefined)}
+        onOpenLog={slow ? () => void api.openLogFolder().catch(() => {}) : undefined}
+      />
+    )
+  }
 
   const needsSetup = !current.vault || reconfiguring
 
@@ -225,7 +251,13 @@ export function App(): React.JSX.Element {
  * It says something. The client once showed a bare black window here, and the
  * only honest reading of that from the outside was a crash.
  */
-function Splash({ message }: { message?: string }): React.JSX.Element {
+function Splash({
+  message,
+  onOpenLog,
+}: {
+  message?: string
+  onOpenLog?: () => void
+}): React.JSX.Element {
   return (
     <div className="relative flex h-full flex-col items-center justify-center gap-4">
       <div className="backdrop" />
@@ -239,6 +271,14 @@ function Splash({ message }: { message?: string }): React.JSX.Element {
       <p className="relative z-10 max-w-[320px] text-center text-[12px] leading-relaxed text-textFaint">
         {message ?? 'Starting up…'}
       </p>
+      {onOpenLog && (
+        <button
+          onClick={onOpenLog}
+          className="relative z-10 font-mono text-[10px] text-textFaint underline decoration-dotted underline-offset-2 transition-colors hover:text-textDim"
+        >
+          open the log folder
+        </button>
+      )}
     </div>
   )
 }

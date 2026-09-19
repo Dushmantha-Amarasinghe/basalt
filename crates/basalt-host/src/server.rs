@@ -548,6 +548,19 @@ impl Host {
             (config.host_name.clone(), config.port, config.require_pin)
         };
 
+        // Both taken before the struct is built, for the reason spelled out on
+        // `library_status`: a guard written inline as a field value is a
+        // temporary that outlives its field and is still held while every later
+        // field is evaluated. `device_count` used to hold `registry` across the
+        // `library_status()` call below, so a deadlock in there took the device
+        // list and every incoming connection down with it.
+        let device_count = self.registry.lock().expect("registry lock").device_count();
+        let library = self.library_status();
+        let addresses = basalt_net::discovery::local_addresses()
+            .into_iter()
+            .map(|ip| ip.to_string())
+            .collect();
+
         crate::ui::HostStatus {
             host_id: self.identity.host_id.clone(),
             host_name,
@@ -555,23 +568,40 @@ impl Host {
             require_pin,
             start_with_windows: self.start_with_windows(),
             vault,
-            addresses: basalt_net::discovery::local_addresses()
-                .into_iter()
-                .map(|ip| ip.to_string())
-                .collect(),
-            device_count: self.registry.lock().expect("registry lock").device_count(),
-            library: self.library_status(),
+            addresses,
+            device_count,
+            library,
             serving,
             problem: None,
         }
     }
 
     /// What the host's own window shows about the index.
-    pub fn library_status(&self) -> crate::ui::LibraryStatus {
+    ///
+    /// Every lock is taken once, into a local, **before** the struct is built.
+    ///
+    /// This function used to lock `config` twice inside the struct literal —
+    /// once for `enabled` and once for `has_key`. A guard created in a struct
+    /// expression is a temporary, and a temporary lives to the end of the whole
+    /// statement, not to the end of its field: the first guard was still held
+    /// when the second lock was attempted, and `std::sync::Mutex` is not
+    /// reentrant, so the thread waited on itself forever.
+    ///
+    /// It froze the entire app rather than one call. The window asks for the
+    /// status every two seconds, and each attempt wedged another thread while
+    /// holding `library` — which also stopped every scan from saving its index,
+    /// and `registry`, which stopped paired devices from connecting at all.
+    fn library_status(&self) -> crate::ui::LibraryStatus {
+        let (enabled, has_key) = {
+            let config = self.config.lock().expect("config lock");
+            (config.library_enabled, !config.tmdb_key.trim().is_empty())
+        };
+        let scanning = self.is_scanning();
         let library = self.library.lock().expect("library lock");
+
         crate::ui::LibraryStatus {
-            enabled: self.config.lock().expect("config lock").library_enabled,
-            scanning: self.is_scanning(),
+            enabled,
+            scanning,
             films: library
                 .items
                 .iter()
@@ -588,13 +618,7 @@ impl Host {
                 .filter(|i| i.confidence < basalt_proto::msg::CONFIDENT)
                 .count(),
             with_art: library.items.iter().filter(|i| i.has_art).count(),
-            has_key: !self
-                .config
-                .lock()
-                .expect("config lock")
-                .tmdb_key
-                .trim()
-                .is_empty(),
+            has_key,
             scanned_at: library.scanned_at,
         }
     }
