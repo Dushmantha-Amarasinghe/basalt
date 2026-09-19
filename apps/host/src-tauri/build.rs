@@ -36,10 +36,20 @@ fn main() {
             .unwrap_or(0)
     );
 
-    // Without this the stamp would be baked in once and never refreshed,
-    // which is worse than having none at all.
-    println!("cargo:rerun-if-changed=../../../.git/HEAD");
-    println!("cargo:rerun-if-changed=build.rs");
+    // Rerun on every build, by naming a path that does not exist: cargo treats
+    // a missing dependency as changed.
+    //
+    // The obvious version of this watched `.git/HEAD`, and it was wrong in the
+    // one case the stamp exists for. Committing writes `.git/refs/heads/<branch>`
+    // and leaves `HEAD` alone, so the build script never reran and the binary
+    // went on claiming the commit before the fix — a stamp that lies is worse
+    // than no stamp, since it is trusted.
+    //
+    // Watching the resolved ref and `packed-refs` too would fix that case and
+    // still get the date wrong for any build made without committing. The only
+    // stamp that is always true is one recomputed every time. It costs this one
+    // crate a relink per build, and it is rebuilt for a release anyway.
+    println!("cargo:rerun-if-changed=.build-stamp-always-reruns");
 
     tauri_build::build()
 }
