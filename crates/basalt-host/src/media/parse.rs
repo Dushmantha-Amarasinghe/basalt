@@ -243,7 +243,27 @@ pub fn parse(path: &str) -> Option<Parsed> {
                 parsed.confidence = if number > 0 { 78 } else { 45 };
                 Some(parsed)
             }
-            None => Some(film_from(stem, folders)),
+            None => {
+                let parsed = film_from(stem, folders);
+                // Something has to say "this is a film" other than its size.
+                //
+                // Anything else means a personal drive indexes to nonsense.
+                // Run over a real one, this filed a hundred and one "films":
+                // lecture captures, CapCut exports, assignment submissions, an
+                // Instagram reel — every video over fifty megabytes, with the
+                // filename as its title. A wall of those is worse than an
+                // empty library, because it buries the four real series that
+                // were also on the drive.
+                //
+                // A year, or a folder that names the thing, and otherwise it
+                // stays in Files where it is still perfectly reachable.
+                // Episodes never reach here: `SxxExx` and a `Season NN` folder
+                // are signals in their own right.
+                if parsed.year.is_none() && !in_media_folder(folders) {
+                    return None;
+                }
+                Some(parsed)
+            }
         },
     }
 }
@@ -293,6 +313,13 @@ fn episode_numbers(stem: &str) -> Option<(u16, u16)> {
             .rposition(|c| !c.is_ascii_digit())
             .map_or(0, |at| at + 1);
         if start == i {
+            continue;
+        }
+        // `1920x1080` is a resolution, and it is the same shape as `3x07`.
+        // Nothing has a four-digit season, so the width is what tells them
+        // apart — without this, a Zoom recording became season 1920, episode
+        // 1080 of itself.
+        if i - start > 2 {
             continue;
         }
         let season: u16 = match chars[start..i].iter().collect::<String>().parse() {
@@ -521,6 +548,19 @@ fn year_in(text: &str) -> Option<u16> {
         if i + 4 < chars.len() && chars[i + 4].is_ascii_digit() {
             continue;
         }
+        // `1920x1080` is a resolution. The digit-run guard above misses it
+        // because the `x` breaks the run, and 1920 is a perfectly plausible
+        // year — a Zoom recording called `..._Recording_1920x1080.mp4` was
+        // filed as a 1920 release.
+        if is_resolution_at(&chars, i + 4) {
+            continue;
+        }
+        // `2025-06-17` is a date, not a release year. A drive of screen
+        // recordings named `Day 23 [2025-06-17].mp4` filed every one of them
+        // as a film of that year, with the confidence a real year earns.
+        if is_date_at(&chars, i + 4) {
+            continue;
+        }
         let value: u16 = chars[i..i + 4].iter().collect::<String>().parse().ok()?;
         if (1900..=2099).contains(&value) {
             // The last plausible year wins: `Blade Runner 2049 (2017)` is a
@@ -529,6 +569,65 @@ fn year_in(text: &str) -> Option<u16> {
         }
     }
     found
+}
+
+/// Whether what follows a four-digit run makes it the width of a resolution.
+///
+/// `at` is the index just past the digits, so this asks whether the rest reads
+/// as `x1080`.
+fn is_resolution_at(chars: &[char], at: usize) -> bool {
+    matches!(chars.get(at), Some('x') | Some('X'))
+        && chars.get(at + 1).is_some_and(char::is_ascii_digit)
+}
+
+/// Whether what follows a four-digit run makes it the year of a date.
+///
+/// `at` is the index just past the digits: this asks whether the rest reads as
+/// `-06-17`, for any of the separators these names use.
+///
+/// Two digits in each position, exactly. `Blade Runner 2049.2017.1080p` must
+/// not read as a date — the group after the separator there is four digits
+/// long, which is what tells the two apart.
+fn is_date_at(chars: &[char], at: usize) -> bool {
+    fn separator(c: Option<&char>) -> bool {
+        matches!(c, Some('-') | Some('.') | Some('_') | Some('/'))
+    }
+    fn two_digits(chars: &[char], at: usize) -> bool {
+        chars.get(at).is_some_and(char::is_ascii_digit)
+            && chars.get(at + 1).is_some_and(char::is_ascii_digit)
+            && !chars.get(at + 2).is_some_and(char::is_ascii_digit)
+    }
+
+    separator(chars.get(at))
+        && two_digits(chars, at + 1)
+        && separator(chars.get(at + 3))
+        && two_digits(chars, at + 4)
+}
+
+/// Folder names that say, plainly, what is inside them.
+///
+/// Someone who put a file in `Movies` has already answered the question the
+/// filename is being interrogated about, and their answer beats any guess.
+const MEDIA_FOLDERS: &[&str] = &[
+    "movies",
+    "movie",
+    "films",
+    "film",
+    "cinema",
+    "tv",
+    "tv shows",
+    "tvshows",
+    "tv series",
+    "shows",
+    "series",
+];
+
+/// Whether any folder on the way to this file names it as part of a library.
+pub fn in_media_folder(folders: &[&str]) -> bool {
+    folders.iter().any(|folder| {
+        let name = folder.trim().to_ascii_lowercase().replace(['_', '-'], " ");
+        MEDIA_FOLDERS.contains(&name.as_str())
+    })
 }
 
 /// A token that opens with a plausible year: `2016`, `(2016)`, `2020-RARBG`.
@@ -594,6 +693,76 @@ mod tests {
     // -----------------------------------------------------------------------
     // What counts as a video at all
     // -----------------------------------------------------------------------
+
+    /// Every one of these came off a real drive, and every one was filed as a
+    /// film of the year in its name.
+    #[test]
+    fn a_date_in_the_name_is_not_a_release_year() {
+        assert_eq!(year_in("Day 23 [2025-06-17]"), None);
+        assert_eq!(year_in("2026-06-01"), None);
+        assert_eq!(year_in("Project Management Day 01 (2026-05-04)"), None);
+        assert_eq!(year_in("bandicam 2025-12-03 13-59-35-420"), None);
+        assert_eq!(year_in("AIEngineer Day 19 [2026-05-02]"), None);
+    }
+
+    /// `GMT20260910-140358_Recording_1920x1080.mp4` was filed as a 1920 release.
+    #[test]
+    fn a_resolution_is_not_a_release_year() {
+        assert_eq!(year_in("Recording_1920x1080"), None);
+        assert_eq!(year_in("clip 1920X1080"), None);
+    }
+
+    /// The fixes above must not cost a real release its year.
+    #[test]
+    fn a_real_year_still_reads_as_one() {
+        assert_eq!(year_in("Arrival.2016.1080p.BluRay.x264-SPARKS"), Some(2016));
+        assert_eq!(year_in("Blade Runner 2049 (2017)"), Some(2017));
+        assert_eq!(year_in("Blade.Runner.2049.2017.1080p"), Some(2017));
+        assert_eq!(year_in("Some Film (1999)"), Some(1999));
+    }
+
+    /// A drive is full of video that is not cinema.
+    ///
+    /// Over a real drive this filed a hundred and one "films" — lecture
+    /// captures, CapCut exports, an assignment submission, an Instagram reel —
+    /// and buried the four series that were genuinely there.
+    #[test]
+    fn a_big_video_file_is_not_a_film_on_its_own() {
+        assert_eq!(
+            parse("Bandicam Recs/cyberSecurity/Day 23 [2025-06-17].mp4"),
+            None
+        );
+        assert_eq!(parse("Capcut/video 7.mp4"), None);
+        assert_eq!(parse("ABDownloader/Videos/MOV_1308.mp4"), None);
+        assert_eq!(
+            parse("ABDownloader/Videos/GMT20260910-140358_Recording_1920x1080.mp4"),
+            None
+        );
+        assert_eq!(
+            parse("Downloads/2K Wallpapers/Juliano julianofantone_ Instagram reel.mp4"),
+            None
+        );
+    }
+
+    /// The other half: saying no to junk must not say no to the library.
+    #[test]
+    fn a_film_with_a_year_or_a_home_still_counts() {
+        let year =
+            parse("Downloads/Arrival.2016.1080p.BluRay-SPARKS.mkv").expect("a year is enough");
+        assert_eq!(year.title, "Arrival");
+        assert_eq!(year.year, Some(2016));
+
+        // No year anywhere, but somebody filed it under Movies and that is an
+        // answer, not a guess.
+        let placed = parse("Movies/Inception.mkv").expect("a media folder is enough");
+        assert_eq!(placed.title, "Inception");
+
+        // Episodes never needed a year: the numbering is its own signal.
+        assert!(parse("Quick Shared/FROM/Season 1/From_1080P_S01_E01.mp4").is_some());
+        assert!(
+            parse("Games/Outlander Season 1 [2160p x265]/Outlander S01E01 Sassenach.mkv").is_some()
+        );
+    }
 
     #[test]
     fn windows_own_folders_are_left_alone() {
