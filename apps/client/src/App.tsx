@@ -970,6 +970,7 @@ export function App(): React.JSX.Element {
                 scanning={media.scanning}
                 watched={watchedByPath}
                 continueWatching={watched.continueWatching}
+                playing={playing !== null}
                 onPlay={(path) => void playPath(path)}
                 onForget={watched.forget}
               />

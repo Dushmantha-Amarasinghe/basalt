@@ -27,6 +27,7 @@ export function LibraryView({
   scanning,
   watched,
   continueWatching,
+  playing,
   onPlay,
   onForget,
 }: {
@@ -38,6 +39,15 @@ export function LibraryView({
   watched: Map<string, Watched>
   /** Everything part-watched, newest first, for the row at the top. */
   continueWatching: Watched[]
+  /**
+   * Whether the player is up.
+   *
+   * The episode list is a full-screen sheet, and it used to stay on screen
+   * over the player — you picked an episode and then watched it from behind
+   * the list you picked it from. Hidden rather than closed, so dismissing the
+   * player puts you back on the same series where you left off.
+   */
+  playing: boolean
   onPlay: (path: string) => void
   onForget: (path: string) => void
 }): React.JSX.Element {
@@ -138,7 +148,7 @@ export function LibraryView({
       </div>
 
       <AnimatePresence>
-        {open && (
+        {open && !playing && (
           <SeriesSheet
             item={open}
             watched={watched}

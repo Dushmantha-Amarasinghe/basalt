@@ -83,11 +83,15 @@ export function ContinueWatching({
 
   return (
     <section className="mb-7">
-      <h3 className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">
+      <h3 className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">
         Continue watching
       </h3>
 
-      <div className="flex gap-3 overflow-x-auto pb-1">
+      {/* `pt-2` is not decoration: the remove button hangs six pixels above
+          each card, and setting `overflow-x` forces `overflow-y` to clip as
+          well — so without room made for it the button was sliced in half
+          along its top edge. */}
+      <div className="flex gap-3 overflow-x-auto pb-1 pt-2">
         {entries.map(({ watched, item, episode }, index) => (
           <motion.div
             key={watched.path}
