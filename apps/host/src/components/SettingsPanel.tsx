@@ -25,6 +25,8 @@ export function SettingsPanel({
   onRescan,
   onTmdbKey,
   onRename,
+  build,
+  onOpenLog,
 }: {
   status: HostStatus
   onRequirePin: (require: boolean) => void
@@ -33,6 +35,9 @@ export function SettingsPanel({
   onRescan: () => void
   onTmdbKey: (key: string) => void
   onRename: (name: string) => void
+  /** Which build this is, for telling one install from another. */
+  build: string
+  onOpenLog: () => void
 }): React.JSX.Element {
   const [editingName, setEditingName] = useState(false)
   const [draft, setDraft] = useState(status.hostName)
@@ -173,6 +178,19 @@ export function SettingsPanel({
           For your information only — your devices find this machine by themselves, and keep
           finding it when the address changes.
         </p>
+
+        {/* Which build this is, and where it writes its log. Both exist
+            because "am I running the new one?" and "where do I look when it
+            misbehaves?" each cost a round trip to answer once. */}
+        <div className="tnum mt-3 border-t border-line pt-3 font-mono text-[10px] text-textFaint">
+          <div>{build || 'build unknown'}</div>
+          <button
+            onClick={onOpenLog}
+            className="mt-1 underline decoration-dotted underline-offset-2 transition-colors hover:text-textDim"
+          >
+            open the log folder
+          </button>
+        </div>
       </div>
     </div>
   )

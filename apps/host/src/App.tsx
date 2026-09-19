@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import { AlertTriangle } from 'lucide-react'
 import { api, type DeviceView, type HostStatus } from '@/lib/api'
@@ -25,6 +25,8 @@ export function App(): React.JSX.Element {
   const pairings = usePoll(useCallback(() => api.pendingPairings(), []), PAIRING_INTERVAL)
 
   const [prompt, setPrompt] = useState<PromptRequest | null>(null)
+  /** Which build this is. Asked once — it cannot change while running. */
+  const [build, setBuild] = useState('')
   /** Set when the user asks to share something else, over a live vault. */
   const [reconfiguring, setReconfiguring] = useState(false)
 
@@ -42,6 +44,10 @@ export function App(): React.JSX.Element {
     },
     [status],
   )
+
+  useEffect(() => {
+    void api.buildInfo().then(setBuild).catch(() => {})
+  }, [])
 
   const chooseVault = useCallback(
     async (path: string, name: string) => {
@@ -195,6 +201,8 @@ export function App(): React.JSX.Element {
                     onTmdbKey={(key) => {
                       void api.setTmdbKey(key).then(apply)
                     }}
+                    build={build}
+                    onOpenLog={() => void api.openLogFolder().catch(() => {})}
                     onRename={(name) => {
                       void api.setHostName(name).then(apply)
                     }}

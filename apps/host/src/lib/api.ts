@@ -156,6 +156,9 @@ export const api = {
   rescanLibrary: (): Promise<HostStatus> => call('rescan_library'),
   setTmdbKey: (key: string): Promise<HostStatus> => call('set_tmdb_key', { key }),
   openVaultFolder: (): Promise<void> => call('open_vault_folder'),
+  /** Which build this is — the commit and the day it was made. */
+  buildInfo: (): Promise<string> => call('build_info'),
+  openLogFolder: (): Promise<void> => call('open_log_folder'),
 }
 
 /** Opens the native folder picker, for sharing a folder rather than a drive. */
@@ -332,6 +335,10 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
           ? sample.status.library.films + sample.status.library.series
           : sample.status.library.withArt
         return sample.status
+      case 'build_info':
+        return 'preview · not a real build'
+      case 'open_log_folder':
+        return undefined
       case 'open_vault_folder':
         return undefined
       default:
