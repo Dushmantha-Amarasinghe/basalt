@@ -292,7 +292,8 @@ fn group(found: Vec<Found>) -> Vec<LibraryItem> {
             // A series is only as trustworthy as its least certain episode.
             item.confidence = item.confidence.min(parsed.confidence);
             item.year = item.year.or(parsed.year);
-            item.size += entry.size;
+            // Size is summed at the end, from the episodes that survive
+            // deduplication — adding it here would count a second copy twice.
             item.added = item.added.max(entry.mtime);
 
             let number = parsed.season.unwrap_or(0);
@@ -344,10 +345,30 @@ fn group(found: Vec<Found>) -> Vec<LibraryItem> {
     let mut items: Vec<LibraryItem> = films;
     for mut item in series.into_values() {
         for season in &mut item.seasons {
-            season.episodes.sort_by_key(|e| (e.number, e.path.clone()));
-            season.episodes.dedup_by(|a, b| a.path == b.path);
+            // By number, then largest first, so the copy kept below is the
+            // better one — the same rule films already used.
+            season.episodes.sort_by(|a, b| {
+                a.number
+                    .cmp(&b.number)
+                    .then(b.size.cmp(&a.size))
+                    .then(a.path.cmp(&b.path))
+            });
+            // The same episode twice is one episode.
+            //
+            // This deduplicated on *path*, which can never collide, so a
+            // second copy of an episode anywhere on the drive got a row of its
+            // own: a sixteen-episode season listed seventeen, with one of them
+            // appearing twice. Both files are still there in Files; the
+            // library shows the episode once and plays the larger.
+            season.episodes.dedup_by(|a, b| a.number == b.number);
         }
         item.seasons.sort_by_key(|s| s.number);
+        item.size = item
+            .seasons
+            .iter()
+            .flat_map(|season| &season.episodes)
+            .map(|episode| episode.size)
+            .sum();
         items.push(item);
     }
 
@@ -431,6 +452,40 @@ mod tests {
             "the film one level down has to be found before a deep branch, got {items:?}"
         );
         assert_eq!(items[0].title, "Arrival");
+    }
+
+    /// A spare copy of an episode is not a second episode.
+    ///
+    /// Seen on a real drive: a season folder of sixteen episodes listed
+    /// seventeen, because one episode also existed loose in an unrelated
+    /// folder. Films already collapsed duplicates and episodes did not.
+    #[test]
+    fn the_same_episode_twice_is_listed_once() {
+        let dir = temp_dir();
+        put(
+            &dir.0,
+            "Shows/Outlander/Season 01/Outlander S01E09 The Reckoning.mkv",
+        );
+        // A second copy elsewhere, and deliberately the larger of the two.
+        let spare = dir.0.join("Spare/Outlander S01E09 The Reckoning.mkv");
+        std::fs::create_dir_all(spare.parent().unwrap()).unwrap();
+        std::fs::File::create(&spare)
+            .unwrap()
+            .set_len(MIN_FEATURE_BYTES * 3)
+            .unwrap();
+
+        let items = scan(&vault_of(&dir));
+        assert_eq!(items.len(), 1, "one series, got {items:?}");
+        let episodes = &items[0].seasons[0].episodes;
+        assert_eq!(episodes.len(), 1, "one episode, got {episodes:?}");
+        // The larger copy is the one worth playing.
+        assert!(
+            episodes[0].path.starts_with("Spare/"),
+            "got {:?}",
+            episodes[0].path
+        );
+        // And the series size counts it once.
+        assert_eq!(items[0].size, MIN_FEATURE_BYTES * 3);
     }
 
     #[test]
