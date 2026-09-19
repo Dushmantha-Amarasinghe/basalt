@@ -130,23 +130,46 @@ struct Found {
 /// Synchronous and blocking: it is disk-bound and belongs on a blocking thread,
 /// not in the async runtime.
 pub fn scan(vault: &Vault) -> Vec<LibraryItem> {
+    scan_within(vault, MAX_DIRS, MAX_DURATION)
+}
+
+/// The walk, with its limits passed in so a test can reach them.
+///
+/// **Breadth-first, and that is the point.** This used to be a `Vec` with
+/// `pop()`, which is last-in-first-out: the walk dived into whichever top-level
+/// folder sorted last and followed it all the way down. Combined with a ceiling
+/// on directories, that meant one deep branch could swallow the entire budget
+/// before the walk ever looked at the others — a drive with films in `Films`
+/// and a deep tree in `Projects` reported no films at all, which is exactly
+/// what was seen on a real drive: forty thousand directories visited, four
+/// items found.
+///
+/// A queue fixes it for the shape libraries actually have. Media sits three or
+/// four levels down, so breadth-first reaches all of it early and the ceiling
+/// now truncates the deepest corners — the part least likely to hold a film —
+/// rather than everything after the first one.
+pub fn scan_within(
+    vault: &Vault,
+    max_dirs: usize,
+    max_duration: std::time::Duration,
+) -> Vec<LibraryItem> {
     let started = std::time::Instant::now();
     let mut found = Vec::new();
-    let mut queue = vec![String::new()];
+    let mut queue = std::collections::VecDeque::from([String::new()]);
     let mut visited = 0usize;
 
-    while let Some(dir) = queue.pop() {
+    while let Some(dir) = queue.pop_front() {
         visited += 1;
-        if visited > MAX_DIRS {
+        if visited > max_dirs {
             tracing::warn!(
-                "stopped after {MAX_DIRS} directories with {} still to look at",
+                "stopped after {max_dirs} directories with {} still to look at",
                 queue.len()
             );
             break;
         }
         // Checked every so often rather than every directory: the clock itself
         // is cheap, but not as cheap as not reading it.
-        if visited.is_multiple_of(64) && started.elapsed() > MAX_DURATION {
+        if visited.is_multiple_of(64) && started.elapsed() > max_duration {
             tracing::warn!(
                 "stopped after {:?} with {} directories still to look at",
                 started.elapsed(),
@@ -157,9 +180,27 @@ pub fn scan(vault: &Vault) -> Vec<LibraryItem> {
 
         // Every read goes through the vault, so the scan cannot reach outside
         // the one security boundary in the system.
-        let Ok(entries) = vault.list(&dir) else {
-            continue;
+        let entries = match vault.list(&dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                // One unreadable folder is normal and not worth a line each.
+                // The root failing is the whole scan failing, and saying so is
+                // the difference between "no films on this drive" and "this
+                // host cannot read the drive at all" — which looked identical
+                // from the outside.
+                if dir.is_empty() {
+                    tracing::warn!("the vault root could not be read: {e}");
+                }
+                continue;
+            }
         };
+
+        if dir.is_empty() {
+            // Reported because an empty root and a drive full of films look
+            // the same in the result: nothing found. This line tells them
+            // apart without anyone having to guess which it was.
+            tracing::info!("the vault root has {} entries", entries.len());
+        }
 
         for entry in entries {
             let path = if dir.is_empty() {
@@ -171,7 +212,7 @@ pub fn scan(vault: &Vault) -> Vec<LibraryItem> {
             match entry.kind {
                 basalt_proto::msg::EntryKind::Dir => {
                     if !parse::is_extra(&path) && !parse::is_system(&path) {
-                        queue.push(path);
+                        queue.push_back(path);
                     }
                 }
                 basalt_proto::msg::EntryKind::File => {
@@ -358,6 +399,38 @@ mod tests {
 
     fn vault_of(dir: &TempDir) -> Vault {
         Vault::open(&dir.0, "Test").unwrap()
+    }
+
+    /// A deep branch must not be able to eat the whole budget.
+    ///
+    /// The real report: a drive with films on it indexed to nothing. The walk
+    /// was last-in-first-out, so it dived into the top-level folder that sorted
+    /// last and followed it down until the directory ceiling stopped it — the
+    /// films, one level from the root, were never reached. On the drive it was
+    /// found on that was forty thousand directories visited and four items
+    /// found.
+    ///
+    /// `Zzz` sorts after `Films`, so under the old order it was taken first.
+    #[test]
+    fn a_deep_branch_does_not_hide_the_films_beside_it() {
+        let dir = temp_dir();
+        put(&dir.0, "Films/Arrival.2016.1080p.BluRay-SPARKS.mkv");
+
+        // Deeper than the budget, so a walk that goes down before it goes
+        // across can never come back up to look at `Films`.
+        let mut deep = dir.0.join("Zzz");
+        for level in 0..40 {
+            deep = deep.join(format!("level-{level}"));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+
+        let items = scan_within(&vault_of(&dir), 10, std::time::Duration::from_secs(30));
+        assert_eq!(
+            items.len(),
+            1,
+            "the film one level down has to be found before a deep branch, got {items:?}"
+        );
+        assert_eq!(items[0].title, "Arrival");
     }
 
     #[test]

@@ -142,6 +142,16 @@ fn summarise(events: Vec<notify::Result<notify::Event>>, root: &Path) -> Vec<Cha
             let Some(rel) = relative(root, path) else {
                 continue;
             };
+            // Windows writes to its own folders constantly, and a drive shared
+            // whole includes all of them. Left in, that churn counts towards
+            // `MAX_BATCH` and tips ordinary windows into `Resynchronise` — and
+            // a resynchronise is the one change no filter downstream can
+            // narrow, so every client reloads and the host rescans, over and
+            // over, for files nobody can see. Dropped here, at the source,
+            // rather than by each consumer deciding separately.
+            if crate::media::parse::is_system(&rel) {
+                continue;
+            }
             match event.kind {
                 EventKind::Create(_) => {
                     created.insert(rel);
@@ -445,6 +455,40 @@ mod tests {
             })
             .collect();
         assert_eq!(summarise(events, &dir.0), vec![Change::Resynchronise]);
+    }
+
+    /// Windows churning through its own folders must not tip an ordinary
+    /// window over the ceiling.
+    ///
+    /// A drive shared whole includes `$RECYCLE.BIN`, `System Volume
+    /// Information` and the rest, all of which Windows writes to constantly
+    /// and none of which any client is looking at. Counted, they overflow the
+    /// batch and it collapses to `Resynchronise` — the one change no filter
+    /// downstream can narrow, so every client reloads its listing and the host
+    /// rescans the drive, repeatedly, for files nobody can see.
+    #[test]
+    fn churn_in_windows_own_folders_is_not_reported_and_cannot_overflow() {
+        let dir = temp_dir();
+        let mut events: Vec<_> = (0..MAX_BATCH * 4)
+            .map(|i| {
+                event(
+                    EventKind::Modify(ModifyKind::Any),
+                    &[dir.0.join(format!("$RECYCLE.BIN/noise{i}.tmp"))],
+                )
+            })
+            .collect();
+        events.push(event(
+            EventKind::Create(CreateKind::File),
+            &[dir.0.join("Films/Arrival.mkv")],
+        ));
+
+        assert_eq!(
+            summarise(events, &dir.0),
+            vec![Change::Created {
+                path: "Films/Arrival.mkv".into()
+            }],
+            "the one real change has to survive, and survive as itself"
+        );
     }
 
     #[test]
