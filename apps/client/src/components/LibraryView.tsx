@@ -11,6 +11,7 @@ import {
 } from '@/lib/api'
 import { cn, formatBytes } from '@/lib/utils'
 import { Poster } from './Poster'
+import { subtitleBadge, subtitleTitle } from '@/lib/subtitles'
 import { ContinueWatching, resumable } from './ContinueWatching'
 
 /**
@@ -236,6 +237,21 @@ function Card({
           </div>
         )}
 
+        {/* Says a subtitle file exists for this, without claiming which
+            languages — the player reads that from the file when it opens it. */}
+        {subtitleBadge(item) && (
+          <span
+            title={
+              item.kind === 'film'
+                ? subtitleTitle(item.subtitles)
+                : 'Some episodes have subtitle files on the drive'
+            }
+            className="absolute right-2 top-2 rounded-[4px] bg-black/70 px-1.5 py-[2px] font-mono text-[8.5px] uppercase tracking-[0.1em] text-textDim"
+          >
+            {subtitleBadge(item)}
+          </span>
+        )}
+
         {item.confidence < CONFIDENT && (
           <span
             title="Recognised from the filename, but not confidently"
@@ -383,6 +399,15 @@ function EpisodeRow({
       >
         {episode.title ?? nameOf(episode.path)}
       </span>
+
+      {(episode.subtitles?.length ?? 0) > 0 && (
+        <span
+          title={subtitleTitle(episode.subtitles)}
+          className="shrink-0 rounded-[3px] border border-line px-1 py-[1px] font-mono text-[8.5px] uppercase tracking-[0.1em] text-textFaint"
+        >
+          sub
+        </span>
+      )}
 
       {done && <Check size={12} className="shrink-0 text-textFaint" />}
       {part > 0 && (

@@ -421,6 +421,12 @@ pub struct LibraryItem {
     /// offer the user a chance to correct it rather than assert it.
     #[serde(default)]
     pub confidence: u8,
+    /// Subtitle files on the drive that belong to this film.
+    ///
+    /// Empty for a series: an episode's subtitles belong to the episode, and
+    /// there is nothing a series-level list could usefully mean.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtitles: Vec<SubtitleTrack>,
     /// Whether the host has a poster cached for this item.
     ///
     /// Here so a client knows whether to ask at all: without it, a library of
@@ -459,6 +465,24 @@ pub struct Episode {
     pub size: u64,
     #[serde(default)]
     pub added: i64,
+    /// Subtitle files on the drive that belong to this episode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtitles: Vec<SubtitleTrack>,
+}
+
+/// A subtitle file sitting beside a film or an episode.
+///
+/// Only the ones found on the drive. Tracks *inside* the video are not listed
+/// here: the player reads those from the file itself when it opens it, and
+/// duplicating them would mean the host guessing at something mpv already
+/// knows exactly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtitleTrack {
+    /// Vault-relative path.
+    pub path: String,
+    /// `English`, `Spanish forced`, or `Subtitles` when the name says nothing.
+    pub label: String,
 }
 
 /// Artwork for one item.
@@ -694,6 +718,7 @@ mod tests {
                 size: 10,
                 added: 1,
                 seasons: Vec::new(),
+                subtitles: Vec::new(),
                 confidence: 95,
                 has_art: false,
             },
@@ -705,6 +730,7 @@ mod tests {
                 path: None,
                 size: 20,
                 added: 2,
+                subtitles: Vec::new(),
                 seasons: vec![Season {
                     number: 1,
                     episodes: vec![Episode {
@@ -713,6 +739,7 @@ mod tests {
                         title: None,
                         size: 20,
                         added: 2,
+                        subtitles: Vec::new(),
                     }],
                 }],
                 confidence: 88,
@@ -749,6 +776,7 @@ mod tests {
             path: Some("a.mkv".into()),
             size: 1,
             added: 2,
+            subtitles: Vec::new(),
             seasons: vec![Season {
                 number: 1,
                 episodes: vec![Episode {
@@ -757,6 +785,7 @@ mod tests {
                     title: Some("Pilot".into()),
                     size: 3,
                     added: 4,
+                    subtitles: Vec::new(),
                 }],
             }],
             confidence: 90,
