@@ -158,11 +158,16 @@ async fn forget_host(state: State<'_, AppState>, host_id: String) -> Answer<Stat
 }
 
 fn status_of(client: &Arc<Basalt>) -> Status {
-    Status::new(
-        client.status(),
-        !client.known_hosts().is_empty(),
-        client.device_name(),
-    )
+    // The paired host on disk, which is what the window needs in order to name
+    // the vault — or to forget it — while nothing is answering.
+    let saved = client.known_hosts();
+    let live = client.status();
+    let paired = live
+        .as_ref()
+        .and_then(|info| saved.iter().find(|host| host.host_id == info.host_id))
+        .or_else(|| saved.first());
+
+    Status::new(live.clone(), paired, client.device_name())
 }
 
 // ---------------------------------------------------------------------------
