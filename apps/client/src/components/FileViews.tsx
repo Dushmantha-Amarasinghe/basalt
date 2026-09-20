@@ -55,11 +55,14 @@ const Tile = memo(function Tile({
   entry,
   selected,
   cut,
+  dropHighlight,
   handlers,
 }: {
   entry: Entry
   selected: boolean
   cut: boolean
+  /** True while files dragged in from outside are hovering this folder. */
+  dropHighlight: boolean
   handlers: RowHandlers
 }): React.JSX.Element {
   const Icon = iconFor(entry)
@@ -67,6 +70,10 @@ const Tile = memo(function Tile({
   return (
     <button
       draggable
+      // Advertises this row as a drop destination for files dragged in
+      // from outside. The position of an external drag arrives as a bare
+      // coordinate, so the hit test reads it back out of the document.
+      data-drop-dir={isDir ? entry.id : undefined}
       onClick={(e) =>
         handlers.onSelect(entry.id, {
           additive: e.ctrlKey || e.metaKey,
@@ -109,6 +116,7 @@ const Tile = memo(function Tile({
           ? 'bg-basalt/[0.09] ring-1 ring-inset ring-basalt/20'
           : 'hover:bg-white/[0.035]',
         cut && 'opacity-45',
+        dropHighlight && 'bg-basalt/[0.14] ring-1 ring-inset ring-basalt/45',
       )}
     >
       <Icon
@@ -138,12 +146,15 @@ export function TileView({
   entries,
   selected,
   cutPaths,
+  dropHighlight,
   handlers,
   onBackgroundContextMenu,
 }: {
   entries: Entry[]
   selected: Set<string>
   cutPaths?: Set<string>
+  /** Vault path of the folder an external drag is hovering, if any. */
+  dropHighlight?: string | null
   handlers: RowHandlers
   onBackgroundContextMenu?: (event: { clientX: number; clientY: number }) => void
 }): React.JSX.Element {
@@ -163,6 +174,7 @@ export function TileView({
               entry={entry}
               selected={selected.has(entry.id)}
               cut={cutPaths?.has(entry.id) ?? false}
+              dropHighlight={dropHighlight === entry.id}
               handlers={handlers}
             />
           ))}
@@ -199,11 +211,14 @@ const ListCell = memo(function ListCell({
   entry,
   selected,
   cut,
+  dropHighlight,
   handlers,
 }: {
   entry: Entry
   selected: boolean
   cut: boolean
+  /** True while files dragged in from outside are hovering this folder. */
+  dropHighlight: boolean
   handlers: RowHandlers
 }): React.JSX.Element {
   const Icon = iconFor(entry)
@@ -211,6 +226,10 @@ const ListCell = memo(function ListCell({
   return (
     <button
       draggable
+      // Advertises this row as a drop destination for files dragged in
+      // from outside. The position of an external drag arrives as a bare
+      // coordinate, so the hit test reads it back out of the document.
+      data-drop-dir={isDir ? entry.id : undefined}
       onClick={(e) =>
         handlers.onSelect(entry.id, {
           additive: e.ctrlKey || e.metaKey,
@@ -253,6 +272,7 @@ const ListCell = memo(function ListCell({
           ? 'bg-basalt/[0.09] text-text ring-1 ring-inset ring-basalt/20'
           : 'text-textDim hover:bg-white/[0.035] hover:text-text',
         cut && 'opacity-45',
+        dropHighlight && 'bg-basalt/[0.14] ring-1 ring-inset ring-basalt/45',
       )}
     >
       <Icon
@@ -272,12 +292,15 @@ export function ListView({
   entries,
   selected,
   cutPaths,
+  dropHighlight,
   handlers,
   onBackgroundContextMenu,
 }: {
   entries: Entry[]
   selected: Set<string>
   cutPaths?: Set<string>
+  /** Vault path of the folder an external drag is hovering, if any. */
+  dropHighlight?: string | null
   handlers: RowHandlers
   onBackgroundContextMenu?: (event: { clientX: number; clientY: number }) => void
 }): React.JSX.Element {
@@ -297,6 +320,7 @@ export function ListView({
               entry={entry}
               selected={selected.has(entry.id)}
               cut={cutPaths?.has(entry.id) ?? false}
+              dropHighlight={dropHighlight === entry.id}
               handlers={handlers}
             />
           ))}

@@ -103,6 +103,10 @@ const Row = memo(function Row({
       role="row"
       aria-selected={selected}
       draggable
+      // Advertises this row as a drop destination for files dragged in
+      // from outside. The position of an external drag arrives as a bare
+      // coordinate, so the hit test reads it back out of the document.
+      data-drop-dir={isDir ? entry.id : undefined}
       onClick={(e) =>
         handlers.onSelect(entry.id, {
           additive: e.ctrlKey || e.metaKey,
@@ -222,6 +226,7 @@ export function FileList({
   entries,
   selected,
   cutPaths,
+  dropHighlight,
   handlers,
   onBackgroundContextMenu,
 }: {
@@ -229,6 +234,8 @@ export function FileList({
   selected: Set<string>
   /** Paths on the clipboard awaiting a move, drawn dimmed. */
   cutPaths?: Set<string>
+  /** Vault path of the folder an external drag is hovering, if any. */
+  dropHighlight?: string | null
   handlers: RowHandlers
   /** Right-click on empty space, for New folder / Paste. */
   onBackgroundContextMenu?: (event: { clientX: number; clientY: number }) => void
@@ -258,13 +265,13 @@ export function FileList({
             entry={entry}
             selected={selected.has(entry.id)}
             cut={cutPaths?.has(entry.id) ?? false}
-            dropTarget={dropTarget === entry.id}
+            dropTarget={dropTarget === entry.id || dropHighlight === entry.id}
             handlers={handlers}
           />
         </div>
       )
     },
-    [entries, selected, cutPaths, dropTarget, handlers],
+    [entries, selected, cutPaths, dropTarget, dropHighlight, handlers],
   )
 
   if (entries.length === 0) return <EmptyState />
