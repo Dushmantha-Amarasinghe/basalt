@@ -85,6 +85,20 @@ export function PlayerOverlay({
    */
   const [showControls, setShowControls] = useState(true)
   const [overBar, setOverBar] = useState(false)
+  /**
+   * When the volume last changed by key, so it can be shown.
+   *
+   * Without something on screen a five per cent step is nearly inaudible,
+   * and a control you cannot tell is working is indistinguishable from one
+   * that is not — which is how this was reported.
+   */
+  const [volumeOsd, setVolumeOsd] = useState(false)
+  const volumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flashVolume = useCallback(() => {
+    setVolumeOsd(true)
+    if (volumeTimer.current) clearTimeout(volumeTimer.current)
+    volumeTimer.current = setTimeout(() => setVolumeOsd(false), 1200)
+  }, [])
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const keepControls = useCallback(() => {
@@ -313,11 +327,13 @@ export function PlayerOverlay({
           break
         case 'ArrowUp':
           e.preventDefault()
-          void mpv.setVolume(Math.min(130, mpv.volume + 5))
+          void mpv.nudgeVolume(5)
+          flashVolume()
           break
         case 'ArrowDown':
           e.preventDefault()
-          void mpv.setVolume(Math.max(0, mpv.volume - 5))
+          void mpv.nudgeVolume(-5)
+          flashVolume()
           break
         // mpv's own keys for this, because anyone who wants frame stepping
         // already knows them.
@@ -341,7 +357,7 @@ export function PlayerOverlay({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [item, escape, mpv, fullscreen])
+  }, [item, escape, mpv, fullscreen, flashVolume])
 
   const percent = mpv.duration > 0 ? (mpv.position / mpv.duration) * 100 : 0
   const problem = failed ?? mpv.problem
@@ -424,6 +440,34 @@ export function PlayerOverlay({
               )}
             </AnimatePresence>
 
+            {/* What the volume keys just did. */}
+            <AnimatePresence>
+              {volumeOsd && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.94 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.12 }}
+                  className="pointer-events-none absolute left-1/2 top-12 flex -translate-x-1/2 items-center gap-2.5 rounded-full bg-black/70 px-4 py-2.5 backdrop-blur"
+                >
+                  {mpv.muted || mpv.volume === 0 ? (
+                    <VolumeX size={15} className="text-textDim" />
+                  ) : (
+                    <Volume2 size={15} className="text-textDim" />
+                  )}
+                  <div className="h-1 w-28 overflow-hidden rounded-full bg-white/15">
+                    <div
+                      className="h-full rounded-full bg-basalt"
+                      style={{ width: `${Math.min(100, (mpv.volume / 130) * 100)}%` }}
+                    />
+                  </div>
+                  <span className="tnum w-9 text-right font-mono text-[11px] text-text">
+                    {Math.round(mpv.volume)}
+                  </span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* A paused film shows nothing else; this says it is paused. */}
             <AnimatePresence>
               {mpv.paused && mpv.picture && !mpv.buffering && (
@@ -454,6 +498,20 @@ export function PlayerOverlay({
               </button>
             )}
 
+            {/*
+              Somewhere to hold the window by.
+
+              The app's title bar is the drag handle, and the player hides it
+              along with the rest of the app — so while a film was open the
+              window could not be moved at all. This is a strip of the same
+              height in the same place, and it comes and goes with the
+              controls so there is no dead band across the top of a film
+              nobody is currently touching.
+            */}
+            {controlsUp && (
+              <div className="drag absolute inset-x-0 top-0 h-9" />
+            )}
+
             <motion.button
               initial={false}
               animate={{ opacity: controlsUp ? 1 : 0 }}
@@ -464,7 +522,7 @@ export function PlayerOverlay({
                 void leave()
               }}
               aria-label="Close player"
-              className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-black/40 text-textDim backdrop-blur transition-colors hover:bg-black/60 hover:text-text"
+              className="no-drag absolute right-4 top-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-black/40 text-textDim backdrop-blur transition-colors hover:bg-black/60 hover:text-text"
             >
               <X size={16} />
             </motion.button>
