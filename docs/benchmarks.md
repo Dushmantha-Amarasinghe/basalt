@@ -6,11 +6,11 @@ _Generated 2026-09-15 17:09:08_
 
 | | |
 |---|---|
-| Host | FST |
+| Host | (redacted) |
 | OS | Microsoft Windows 11 Pro |
 | CPU | 13th Gen Intel(R) Core(TM) i5-13420H (12 threads) |
 | RAM | 15.7 GB |
-| Wi-Fi | FST-5G · 802.11ac · 5 GHz · tx 866 Mbps / rx 866 Mbps · signal 100% |
+| Wi-Fi | (redacted) · 802.11ac · 5 GHz · tx 866 Mbps / rx 866 Mbps · signal 100% |
 | Implied one-way ceiling | ~60 MB/s |
 
 ## disk-sequential

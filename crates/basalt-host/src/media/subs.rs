@@ -115,9 +115,9 @@ pub fn label_for(sub_path: &str, video_stem: &str) -> String {
 /// What is left of `name` once the video's name has been read off the front.
 ///
 /// Compared through [`key`] rather than literally, because the two spell the
-/// same title differently as a matter of course: `Outlander.S01E01.eng.srt`
-/// sits beside `Outlander S01E01.mkv`, and a literal `strip_prefix` leaves the
-/// whole filename — so the subtitle ends up labelled `Outlander S01e01
+/// same title differently as a matter of course: `Northwind.S01E01.eng.srt`
+/// sits beside `Northwind S01E01.mkv`, and a literal `strip_prefix` leaves the
+/// whole filename — so the subtitle ends up labelled `Northwind S01e01
 /// English` instead of `English`.
 fn suffix_after<'a>(name: &'a str, video_stem: &str) -> Option<&'a str> {
     let want = key(video_stem);
@@ -366,8 +366,8 @@ mod tests {
     #[test]
     fn the_same_episode_of_another_show_is_not_claimed() {
         let subs = for_video(
-            "Outlander/Season 1/Outlander S01E01.mkv",
-            &paths(&["Alien Earth/Season 1/Alien.Earth.S01E01.en.srt"]),
+            "The Quiet Coast/Season 1/The Quiet Coast S01E01.mkv",
+            &paths(&["Northwind/Season 1/Northwind.S01E01.en.srt"]),
         );
         assert!(subs.is_empty(), "got {subs:?}");
     }

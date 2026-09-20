@@ -66,7 +66,7 @@ export { isMediaFile } from './playback'
  * pilot of whatever happens to sort next.
  *
  * That was the bug. The order was one flat list over every series, so ten
- * seconds into Alice in Borderland the player moved itself to Alien Earth.
+ * seconds into one show the player moved itself to a different one.
  */
 export function nextEpisodes(
   series: LibraryItem[],
