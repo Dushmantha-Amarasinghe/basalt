@@ -35,29 +35,6 @@ export async function pickFiles(): Promise<string[]> {
   return typeof chosen === 'string' ? [chosen] : []
 }
 
-/**
- * Confirms something destructive.
- *
- * Throws rather than returning false when the dialog cannot be shown. Those are
- * different things and the difference matters: a failure returned as "no" would
- * make a button that quietly does nothing, which is exactly what happened when
- * `dialog:allow-confirm` was missing from the capability file — Forget this
- * vault, Pair with a different vault and Delete all became dead buttons with no
- * message anywhere. Whatever else it does, this must never answer "yes" on
- * failure.
- */
-export async function confirmAction(
-  message: string,
-  title: string,
-): Promise<boolean> {
-  if (!inTauri()) return window.confirm(`${title}\n\n${message}`)
-  const { confirm } = await import('@tauri-apps/plugin-dialog')
-  try {
-    return await confirm(message, { title, kind: 'warning' })
-  } catch (e) {
-    throw new Error(`Could not ask you to confirm this: ${e}`)
-  }
-}
 
 /**
  * Files dragged into the window from Explorer.

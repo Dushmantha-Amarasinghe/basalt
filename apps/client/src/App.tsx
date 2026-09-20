@@ -47,6 +47,7 @@ import { HexMark } from '@/components/HexMark'
 import { PropertiesPanel } from '@/components/PropertiesPanel'
 import { useContextMenu, type MenuAction } from '@/components/ui/ContextMenu'
 import { PromptDialog, type PromptRequest } from '@/components/ui/PromptDialog'
+import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { api, joinPath, parentOf } from '@/lib/api'
 import { useVault } from '@/lib/useVault'
 import { filterKind, recentOf, useLibraryScan } from '@/lib/useLibrary'
@@ -109,7 +110,12 @@ export function App(): React.JSX.Element {
   const connected = vault.status?.connected ?? false
   const writable = vault.status?.writable ?? false
 
-  const actions = useFileActions({ onChanged: vault.refresh, onError: setNotice })
+  const { confirm, dialog: confirmDialog } = useConfirm()
+  const actions = useFileActions({
+    onChanged: vault.refresh,
+    onError: setNotice,
+    confirm,
+  })
 
   const stars = useStars(vault.status?.hostId, nav === 'starred')
 
@@ -796,11 +802,13 @@ export function App(): React.JSX.Element {
     // went wrong in it escaped this callback entirely and the button did
     // nothing at all, silently.
     try {
-      const { confirmAction } = await import('@/lib/dialogs')
-      const ok = await confirmAction(
-        'This device will have to pair again with a new PIN. Nothing on the drive is affected.',
-        'Forget this vault?',
-      )
+      const ok = await confirm({
+        title: 'Forget this vault?',
+        message:
+          'This device will have to pair again with a new PIN. Nothing on the drive is affected.',
+        confirmLabel: 'Forget it',
+        danger: true,
+      })
       if (!ok) return
 
       const next = await api.forgetHost(hostId)
@@ -809,7 +817,7 @@ export function App(): React.JSX.Element {
     } catch (e) {
       setNotice(e instanceof Error ? e.message : String(e))
     }
-  }, [vault])
+  }, [vault, confirm])
 
   const selectedSize = useMemo(() => {
     if (selected.size === 0) return 0
@@ -1118,6 +1126,7 @@ export function App(): React.JSX.Element {
       />
 
       <PromptDialog request={prompt} onClose={() => setPrompt(null)} />
+      {confirmDialog}
       {menu.node}
     </div>
   )
