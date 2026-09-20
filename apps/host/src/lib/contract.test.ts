@@ -229,7 +229,11 @@ function pluginCalls(sources: string[]): Set<string> {
       for (const raw of (names ?? '').split(',')) {
         // `{ open: openPath }` — the permission follows the imported name.
         const name = raw.split(':')[0]!.trim()
-        if (name) needed.add(`${plugin}:allow-${name}`)
+        // Tauri names permissions in kebab-case, so `openUrl` is
+        // `open-url`. Deriving them verbatim asked for a permission that
+        // cannot exist, which failed even when the right one was granted.
+        const kebab = name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase()
+        if (name) needed.add(`${plugin}:allow-${kebab}`)
       }
     }
   }

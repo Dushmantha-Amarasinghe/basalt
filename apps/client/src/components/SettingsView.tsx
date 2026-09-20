@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
-import { HardDrive, Laptop, Shield, Volume2, Wifi, Zap } from 'lucide-react'
+import { HardDrive, Info, Laptop, Shield, Volume2, Wifi, Zap } from 'lucide-react'
 import type { Status } from '@/lib/api'
 import {
   audioDevices,
@@ -8,6 +8,7 @@ import {
   setAudioDevice,
   type AudioDevice,
 } from '@/lib/useMpv'
+import { About } from './About'
 import { Dropdown } from './ui/Dropdown'
 import { cn, formatBytes } from '@/lib/utils'
 
@@ -89,6 +90,10 @@ export function SettingsView({
             were never asked to type one.
           </Note>
           <Action label="Forget this vault" danger onClick={onForget} />
+        </Section>
+
+        <Section icon={Info} title="About" hint="Basalt, by Refora Technologies">
+          <About product="Basalt" />
         </Section>
 
         <Section icon={Volume2} title="Playback" hint="Where the sound goes">

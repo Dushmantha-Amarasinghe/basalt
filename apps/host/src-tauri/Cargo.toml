@@ -1,6 +1,6 @@
 [package]
 name = "basalt-host-shell"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "Basalt host desktop shell"
 # Higher than the client shell's: this depends on an edition-2024 crate, and
@@ -22,6 +22,7 @@ tauri-build = { version = "2", features = [] }
 # that nothing here is covered by a test, which is why every shape this file
 # sends to the interface is defined and tested in `basalt-host::ui` instead.
 basalt-host = { path = "../../../crates/basalt-host" }
+basalt-update = { path = "../../../crates/basalt-update" }
 basalt-net = { path = "../../../crates/basalt-net" }
 
 # `tray-icon` because this is a server with a window, not a window that
