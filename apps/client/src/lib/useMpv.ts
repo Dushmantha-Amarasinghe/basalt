@@ -36,10 +36,28 @@ export interface MpvState {
   muted: boolean
   /** True once the file has played to the end. */
   ended: boolean
+  /**
+   * True while playback is stalled waiting for data.
+   *
+   * Worth its own state: a film that has run out of buffer looks identical
+   * to a player that has crashed, and the difference matters over Wi-Fi.
+   */
+  buffering: boolean
+  /**
+   * Whether mpv has a frame on screen yet.
+   *
+   * The player area is transparent so the video behind it shows through, and
+   * before the first frame there is nothing behind it — so it has to stay
+   * black until this turns true, or there is a second or two where the
+   * controls float over the desktop and it reads as two windows.
+   */
+  picture: boolean
   /** Subtitle and audio tracks inside the file, as mpv reports them. */
   tracks: MpvTrack[]
   /** The selected subtitle track id, or null for none. */
   subtitleId: number | null
+  /** The selected audio track id. */
+  audioId: number | null
   /** Seconds the subtitles are shifted by. Positive shows them later. */
   subtitleDelay: number
 }
@@ -59,10 +77,34 @@ const OBSERVED = [
   ['volume', 'double', 'none'],
   ['mute', 'flag'],
   ['eof-reached', 'flag', 'none'],
+  ['dwidth', 'int64', 'none'],
+  ['paused-for-cache', 'flag', 'none'],
   ['track-list/count', 'int64', 'none'],
   ['sid', 'int64', 'none'],
+  ['aid', 'int64', 'none'],
   ['sub-delay', 'double', 'none'],
 ] as const satisfies mpv.MpvObservableProperty[]
+
+/**
+ * Whether the file has genuinely finished.
+ *
+ * `eof-reached` on its own is not "the film ended". mpv trips it whenever the
+ * demuxer runs out of what it has — while idle, between files, and
+ * transiently around a seek or a frame step. Trusting it cost two reported
+ * bugs: stepping one frame jumped to the next episode, and so did clicking
+ * the middle of the timeline.
+ *
+ * So the position has to agree. Something that has really ended sits within a
+ * couple of seconds of its own duration, and nothing in the middle of a film
+ * can pass that.
+ */
+export function hasEnded(flag: unknown, position: number, duration: number): boolean {
+  if (flag !== true || duration <= 0) return false
+  return position >= duration - END_SLACK
+}
+
+/** How close to the duration still counts as the end. */
+const END_SLACK = 2
 
 const EMPTY: MpvState = {
   ready: false,
@@ -73,8 +115,11 @@ const EMPTY: MpvState = {
   volume: 100,
   muted: false,
   ended: false,
+  buffering: false,
+  picture: false,
   tracks: [],
   subtitleId: null,
+  audioId: null,
   subtitleDelay: 0,
 }
 
@@ -92,6 +137,7 @@ export interface Mpv extends MpvState {
   setVolume: (volume: number) => Promise<void>
   toggleMute: () => Promise<void>
   selectSubtitle: (id: number | null) => Promise<void>
+  selectAudio: (id: number) => Promise<void>
   /** Loads a subtitle file and selects it. */
   addSubtitle: (path: string) => Promise<void>
   setSubtitleDelay: (seconds: number) => Promise<void>
@@ -158,6 +204,10 @@ export function useMpv(): Mpv {
             'input-vo-keyboard': 'no',
             osc: 'no',
             'osd-level': 0,
+            // The volume slider goes to 130, and without this mpv silently
+            // clamps at 100 — so the top third of the control did nothing.
+            // Amplification earns its place on quietly mastered films.
+            'volume-max': 130,
           },
           observedProperties: OBSERVED,
         })
@@ -177,17 +227,19 @@ export function useMpv(): Mpv {
                 return { ...s, volume: Number(data) || 0 }
               case 'mute':
                 return { ...s, muted: Boolean(data) }
-              case 'eof-reached': {
-                // mpv reports this while idle and in the gap between files,
-                // so taking it at face value skipped to the next episode the
-                // instant one opened — ten seconds into a film, the player
-                // moved itself on. Only a file that actually got somewhere
-                // can have ended.
-                const ended = Boolean(data) && s.duration > 0 && s.position > 1
-                return { ...s, ended }
-              }
+              case 'eof-reached':
+                return { ...s, ended: hasEnded(data, s.position, s.duration) }
+              case 'paused-for-cache':
+                return { ...s, buffering: data === true }
+              case 'dwidth':
+                // Non-null once a frame has actually been decoded and the
+                // output is configured. Until then the window behind this
+                // page is empty, and anything transparent shows the desktop.
+                return { ...s, picture: Number(data) > 0 }
               case 'sid':
                 return { ...s, subtitleId: data === null ? null : Number(data) }
+              case 'aid':
+                return { ...s, audioId: data === null ? null : Number(data) }
               case 'sub-delay':
                 return { ...s, subtitleDelay: Number(data) || 0 }
               default:
@@ -212,7 +264,14 @@ export function useMpv(): Mpv {
       // Transparent only while something is playing. The rest of the app is
       // opaque graphite and has no business showing the desktop through it.
       document.body.style.background = 'transparent'
-      setState((s) => ({ ...s, ended: false, tracks: [], position: startAt }))
+      setState((s) => ({
+      ...s,
+      ended: false,
+      picture: false,
+      tracks: [],
+      position: startAt,
+      duration: 0,
+    }))
       const options = startAt > 1 ? `start=${startAt.toFixed(3)}` : ''
       await mpv.command('loadfile', options ? [url, 'replace', '0', options] : [url])
       loaded.current = true
@@ -229,7 +288,14 @@ export function useMpv(): Mpv {
     } catch {
       // Closing a player that already stopped is not a failure.
     }
-    setState((s) => ({ ...s, position: 0, duration: 0, ended: false, tracks: [] }))
+    setState((s) => ({
+      ...s,
+      position: 0,
+      duration: 0,
+      ended: false,
+      picture: false,
+      tracks: [],
+    }))
   }, [])
 
   const setPaused = useCallback(
@@ -280,6 +346,13 @@ export function useMpv(): Mpv {
     [set],
   )
 
+  const selectAudio = useCallback(
+    async (id: number) => {
+      if (inTauri()) await set('aid', id)
+    },
+    [set],
+  )
+
   const addSubtitle = useCallback(async (path: string) => {
     if (!inTauri()) return
     // `select` makes it the active track, which is what someone who just
@@ -306,6 +379,7 @@ export function useMpv(): Mpv {
     setVolume,
     toggleMute,
     selectSubtitle,
+    selectAudio,
     addSubtitle,
     setSubtitleDelay,
   }
