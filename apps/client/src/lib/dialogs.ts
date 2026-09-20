@@ -71,19 +71,54 @@ export async function confirmAction(
  */
 export async function onExternalFileDrop(handlers: {
   onEnter: () => void
+  /** Where the pointer is, in CSS pixels, as it moves over the window. */
+  onOver: (x: number, y: number) => void
   onLeave: () => void
-  onDrop: (paths: string[]) => void
+  onDrop: (paths: string[], x: number, y: number) => void
 }): Promise<() => void> {
   if (!inTauri()) return () => {}
   const { getCurrentWebview } = await import('@tauri-apps/api/webview')
   const webview = getCurrentWebview()
 
+  // Tauri reports **physical** pixels; everything in the document is in CSS
+  // pixels. On a scaled display — which is most laptops — skipping this
+  // conversion aims the hit test at roughly half the intended position, so it
+  // would work on exactly the machines nobody tests on.
+  const toCss = (p?: { x: number; y: number }): [number, number] => {
+    const ratio = window.devicePixelRatio || 1
+    return p ? [p.x / ratio, p.y / ratio] : [-1, -1]
+  }
+
   return webview.onDragDropEvent((event) => {
-    const payload = event.payload as { type: string; paths?: string[] }
-    if (payload.type === 'over' || payload.type === 'enter') handlers.onEnter()
-    else if (payload.type === 'leave') handlers.onLeave()
-    else if (payload.type === 'drop') handlers.onDrop(payload.paths ?? [])
+    const payload = event.payload as {
+      type: string
+      paths?: string[]
+      position?: { x: number; y: number }
+    }
+    const [x, y] = toCss(payload.position)
+
+    if (payload.type === 'enter') handlers.onEnter()
+    else if (payload.type === 'over') {
+      handlers.onEnter()
+      handlers.onOver(x, y)
+    } else if (payload.type === 'leave') handlers.onLeave()
+    else if (payload.type === 'drop') handlers.onDrop(payload.paths ?? [], x, y)
   })
+}
+
+/**
+ * The folder the pointer is over, or null for "wherever we are now".
+ *
+ * Read from the document rather than from React state because the position
+ * arrives from the window, not from a React event — there is no hovered
+ * element to consult, only a coordinate. Rows advertise themselves with
+ * `data-drop-dir`, so this stays correct however the list is being drawn.
+ */
+export function folderUnder(x: number, y: number): string | null {
+  if (typeof document === 'undefined' || x < 0 || y < 0) return null
+  const element = document.elementFromPoint(x, y)
+  const row = element?.closest('[data-drop-dir]')
+  return row?.getAttribute('data-drop-dir') ?? null
 }
 
 /** The last segment of a local path, whichever separator it uses. */

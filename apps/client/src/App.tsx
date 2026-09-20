@@ -58,6 +58,7 @@ import { entriesToMedia, isPlayable } from '@/lib/media'
 import type { MediaItem } from '@/lib/mockMedia'
 import {
   baseName,
+  folderUnder,
   localJoin,
   onExternalFileDrop,
   pickFiles,
@@ -102,6 +103,8 @@ export function App(): React.JSX.Element {
   const [prompt, setPrompt] = useState<PromptRequest | null>(null)
   const [properties, setProperties] = useState<Entry | null>(null)
   const [dropActive, setDropActive] = useState(false)
+  /** The folder an external drag is hovering, or null for the one that is open. */
+  const [dropInto, setDropInto] = useState<string | null>(null)
 
   const connected = vault.status?.connected ?? false
   const writable = vault.status?.writable ?? false
@@ -736,10 +739,23 @@ export function App(): React.JSX.Element {
     () =>
       onExternalFileDrop({
         onEnter: () => setDropActive(true),
-        onLeave: () => setDropActive(false),
-        onDrop: (paths) => {
+        // Hovering a folder aims at that folder; anywhere else means the
+        // folder currently open. Both are shown before letting go, because
+        // "which folder did that just go into" is not a question anyone should
+        // have to answer by going and looking.
+        onOver: (x, y) => setDropInto(folderUnder(x, y)),
+        onLeave: () => {
           setDropActive(false)
-          void latestUpload.current(paths, latestDir.current)
+          setDropInto(null)
+        },
+        onDrop: (paths, x, y) => {
+          // Read from the drop's own position rather than from the last `over`:
+          // they are normally the same, but a drop that arrives without a
+          // preceding hover would otherwise use a stale target.
+          const into = folderUnder(x, y) ?? latestDir.current
+          setDropActive(false)
+          setDropInto(null)
+          void latestUpload.current(paths, into)
         },
       }),
     [latestUpload, latestDir],
@@ -819,6 +835,7 @@ export function App(): React.JSX.Element {
     entries,
     selected,
     cutPaths,
+    dropHighlight: dropInto,
     handlers,
     onBackgroundContextMenu: (event: { clientX: number; clientY: number }) => {
       setSelected(new Set())
@@ -1019,7 +1036,7 @@ export function App(): React.JSX.Element {
               <FileList {...viewProps} />
             )}
 
-            <DropOverlay active={dropActive && nav === 'files'} dir={vault.dir} />
+            <DropOverlay active={dropActive && nav === 'files'} dir={dropInto ?? vault.dir} />
           </motion.div>
 
           {nav !== 'settings' && !isLibrary && !isMedia && (
@@ -1166,10 +1183,18 @@ function DropOverlay({
           transition={{ duration: 0.12 }}
           className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-lg border-2 border-dashed border-basalt/40 bg-ink/70 backdrop-blur-[1px]"
         >
-          <div className="text-center">
+          <div className="max-w-[80%] text-center">
             <Upload size={26} className="mx-auto text-basaltDeep" />
             <p className="mt-3 text-sm text-text">
               Drop to upload into {dir ? nameOf(dir) : 'the vault'}
+            </p>
+            {/* The whole path, not just the last part of it.
+                A folder called `Season 1` is three of those on this drive, and
+                a name alone cannot tell you which one you are about to drop
+                into — which is the entire question being asked at the moment
+                somebody is holding files over a window. */}
+            <p className="tnum mt-1.5 break-all font-mono text-[11px] text-textFaint">
+              {dir ? `/${dir}` : '/'}
             </p>
           </div>
         </motion.div>
