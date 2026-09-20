@@ -88,7 +88,7 @@ Download the latest installers from the
 [releases page](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest):
 
 - **`Basalt-Host-x.y.z-setup.exe`** — on the machine with the drive.
-- **`Basalt-x.y.z-setup.exe`** — on every device that should reach it.
+- **`Basalt-Client-x.y.z-setup.exe`** — on every device that should reach it.
 
 Both install per-user and need no administrator. Each release also publishes a
 `.sha256` beside each installer if you want to check what you downloaded.
