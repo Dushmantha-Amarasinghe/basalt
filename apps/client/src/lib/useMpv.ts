@@ -50,19 +50,28 @@ export function savedAudioDevice(): string {
  */
 export async function audioDevices(): Promise<AudioDevice[]> {
   if (!inTauri()) return []
-  try {
-    const raw = await mpv.getProperty('audio-device-list', 'node')
-    if (!Array.isArray(raw)) return []
-    return raw
-      .map((entry) => entry as { name?: unknown; description?: unknown })
-      .map((entry) => ({
-        name: String(entry.name ?? ''),
-        description: String(entry.description ?? entry.name ?? ''),
-      }))
-      .filter((device) => device.name !== '')
-  } catch {
-    return []
+  // Read one indexed string at a time, never as a `node`.
+  //
+  // Asking for `audio-device-list` whole, as a node, segfaults the wrapper
+  // outright — the app died the moment Settings opened. Strings cross that
+  // boundary safely, which is how the track list is read too.
+  const read = async (name: string): Promise<string> => {
+    try {
+      return String((await mpv.getProperty(name, 'string')) ?? '')
+    } catch {
+      return ''
+    }
   }
+
+  const count = Number(await read('audio-device-list/count')) || 0
+  const devices: AudioDevice[] = []
+  for (let i = 0; i < count; i++) {
+    const name = await read(`audio-device-list/${i}/name`)
+    if (!name) continue
+    const description = await read(`audio-device-list/${i}/description`)
+    devices.push({ name, description: description || name })
+  }
+  return devices
 }
 
 /** Switches output, and remembers it for next time. */
