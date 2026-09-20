@@ -415,7 +415,13 @@ pub struct LibraryItem {
     #[serde(default)]
     pub added: i64,
     /// Seasons, for a series. Empty for a film.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ///
+    /// Always sent, empty list and all. Skipping it saved a dozen bytes per
+    /// film and cost the client its whole Movies screen: the field is read
+    /// unconditionally there, so an absent one threw rather than counted
+    /// zero. A field a reader treats as always present should be written
+    /// that way.
+    #[serde(default)]
     pub seasons: Vec<Season>,
     /// How sure the parser is, 0–100. Below `CONFIDENT` the interface should
     /// offer the user a chance to correct it rather than assert it.
@@ -750,6 +756,36 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Vec<LibraryItem>>(&json).unwrap(),
             items
+        );
+    }
+
+    /// A film has no seasons, and must say so rather than stay silent.
+    ///
+    /// The interface reads `seasons` on every card without checking, because
+    /// the type says it is always there. Omitting it for a film — which is
+    /// what `skip_serializing_if` did — threw out of render and left the
+    /// whole Movies screen black.
+    #[test]
+    fn a_film_still_carries_an_empty_seasons_list() {
+        let film = LibraryItem {
+            id: "f1".into(),
+            kind: LibraryKind::Film,
+            title: "Arrival".into(),
+            year: Some(2016),
+            path: Some("films/Arrival.mkv".into()),
+            size: 10,
+            added: 1,
+            seasons: Vec::new(),
+            subtitles: Vec::new(),
+            confidence: 95,
+            has_art: false,
+        };
+
+        let value: serde_json::Value = serde_json::to_value(&film).unwrap();
+        assert_eq!(
+            value.get("seasons"),
+            Some(&serde_json::json!([])),
+            "a film must send `seasons: []`, not leave the key out",
         );
     }
 
