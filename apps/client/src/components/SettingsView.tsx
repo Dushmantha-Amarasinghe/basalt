@@ -8,6 +8,7 @@ import {
   setAudioDevice,
   type AudioDevice,
 } from '@/lib/useMpv'
+import { Dropdown } from './ui/Dropdown'
 import { cn, formatBytes } from '@/lib/utils'
 
 /**
@@ -36,23 +37,21 @@ function AudioOutput(): React.JSX.Element {
   return (
     <div className="flex items-center justify-between gap-4 px-4 py-2.5">
       <span className="shrink-0 text-[12.5px] text-textDim">Audio output</span>
-      <select
+      <Dropdown
+        label="Audio output"
+        className="w-[62%] max-w-[420px]"
         value={chosen}
-        onChange={(e) => {
-          setChosen(e.target.value)
-          void setAudioDevice(e.target.value)
+        onChange={(next) => {
+          setChosen(next)
+          void setAudioDevice(next)
         }}
-        className="min-w-0 max-w-[62%] truncate rounded-md border border-line bg-ink2 px-2 py-1 font-mono text-[11.5px] text-text outline-none transition-colors focus:border-lineBright"
-      >
-        <option value="auto">Automatic</option>
-        {devices
-          .filter((device) => device.name !== 'auto')
-          .map((device) => (
-            <option key={device.name} value={device.name}>
-              {device.description}
-            </option>
-          ))}
-      </select>
+        options={[
+          { value: 'auto', label: 'Automatic' },
+          ...devices
+            .filter((device) => device.name !== 'auto')
+            .map((device) => ({ value: device.name, label: device.description })),
+        ]}
+      />
     </div>
   )
 }

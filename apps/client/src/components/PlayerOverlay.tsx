@@ -246,11 +246,36 @@ export function PlayerOverlay({
     void fullscreenRef.current()
   }, [])
 
+  /** Whether the window was maximised before it went fullscreen. */
+  const wasMaximised = useRef(false)
+
+  /**
+   * Fullscreen, including from a maximised window.
+   *
+   * A maximised window refuses to go fullscreen — the call is accepted and
+   * simply does nothing, which is exactly how it was reported: the button
+   * worked from a normal window and did nothing from a maximised one. So it
+   * is unmaximised first, and put back on the way out, because coming out of
+   * fullscreen into a small window when you started maximised is its own
+   * small annoyance.
+   */
   const fullscreen = useCallback(async () => {
     try {
       const { getCurrentWindow } = await import('@tauri-apps/api/window')
       const window = getCurrentWindow()
-      await window.setFullscreen(!(await window.isFullscreen()))
+
+      if (await window.isFullscreen()) {
+        await window.setFullscreen(false)
+        if (wasMaximised.current) {
+          wasMaximised.current = false
+          await window.maximize()
+        }
+        return
+      }
+
+      wasMaximised.current = await window.isMaximized()
+      if (wasMaximised.current) await window.unmaximize()
+      await window.setFullscreen(true)
     } catch {
       // Not in the shell, or the window refused; neither is worth an error.
     }
@@ -278,9 +303,9 @@ export function PlayerOverlay({
   const escape = useCallback(async () => {
     try {
       const { getCurrentWindow } = await import('@tauri-apps/api/window')
-      const window = getCurrentWindow()
-      if (await window.isFullscreen()) {
-        await window.setFullscreen(false)
+      if (await getCurrentWindow().isFullscreen()) {
+        // Through the same path, so the window is put back the way it was.
+        await fullscreenRef.current()
         return
       }
     } catch {
@@ -293,8 +318,7 @@ export function PlayerOverlay({
   const leave = useCallback(async () => {
     try {
       const { getCurrentWindow } = await import('@tauri-apps/api/window')
-      const window = getCurrentWindow()
-      if (await window.isFullscreen()) await window.setFullscreen(false)
+      if (await getCurrentWindow().isFullscreen()) await fullscreenRef.current()
     } catch {
       // Not in the shell.
     }
