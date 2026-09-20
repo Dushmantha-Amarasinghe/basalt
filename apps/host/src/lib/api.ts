@@ -33,6 +33,8 @@ export interface LibraryStatus {
   uncertain: number
   /** Items with a poster downloaded. */
   withArt: number
+  /** Whether poster downloads are switched on. */
+  posters: boolean
   /** Whether a TMDb key is set. The key itself never leaves the host. */
   hasKey: boolean
   /** Unix seconds of the last completed scan, zero if never. */
@@ -154,6 +156,8 @@ export const api = {
   setLibraryEnabled: (enabled: boolean): Promise<HostStatus> =>
     call('set_library_enabled', { enabled }),
   rescanLibrary: (): Promise<HostStatus> => call('rescan_library'),
+  setPosters: (enabled: boolean): Promise<HostStatus> =>
+    call('set_posters', { enabled }),
   setTmdbKey: (key: string): Promise<HostStatus> => call('set_tmdb_key', { key }),
   openVaultFolder: (): Promise<void> => call('open_vault_folder'),
   /** Which build this is — the commit and the day it was made. */
@@ -198,6 +202,7 @@ const sample: {
       series: 0,
       uncertain: 0,
       withArt: 0,
+      posters: false,
       hasKey: false,
       scannedAt: 0,
     },
@@ -305,7 +310,8 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
               films: 42,
               series: 7,
               uncertain: 3,
-              withArt: sample.status.library.hasKey ? 46 : 0,
+              withArt: sample.status.library.posters ? 46 : 0,
+              posters: sample.status.library.posters,
               hasKey: sample.status.library.hasKey,
               scannedAt: Math.floor(Date.now() / 1000),
             }
@@ -316,6 +322,7 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
               series: 0,
               uncertain: 0,
               withArt: 0,
+              posters: sample.status.library.posters,
               hasKey: sample.status.library.hasKey,
               scannedAt: 0,
             }
@@ -329,11 +336,14 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
           sample.status.library.scannedAt = Math.floor(Date.now() / 1000)
         }, 2500)
         return sample.status
+      case 'set_posters':
+        sample.status.library.posters = Boolean(args?.enabled)
+        sample.status.library.withArt = sample.status.library.posters
+          ? sample.status.library.films + sample.status.library.series
+          : 0
+        return sample.status
       case 'set_tmdb_key':
         sample.status.library.hasKey = String(args?.key ?? '').trim().length > 0
-        sample.status.library.withArt = sample.status.library.hasKey
-          ? sample.status.library.films + sample.status.library.series
-          : sample.status.library.withArt
         return sample.status
       case 'build_info':
         return 'preview · not a real build'

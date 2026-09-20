@@ -23,6 +23,7 @@ export function SettingsPanel({
   onStartWithWindows,
   onLibrary,
   onRescan,
+  onPosters,
   onTmdbKey,
   onRename,
   build,
@@ -33,6 +34,7 @@ export function SettingsPanel({
   onStartWithWindows: (enabled: boolean) => void
   onLibrary: (enabled: boolean) => void
   onRescan: () => void
+  onPosters: (enabled: boolean) => void
   onTmdbKey: (key: string) => void
   onRename: (name: string) => void
   /** Which build this is, for telling one install from another. */
@@ -93,7 +95,7 @@ export function SettingsPanel({
                 <RefreshCw size={11} className={status.library.scanning ? 'animate-spin' : ''} />
                 {status.library.scanning ? 'Scanning…' : 'Scan again'}
               </button>
-              <Artwork status={status} onSave={onTmdbKey} />
+              <Artwork status={status} onPosters={onPosters} onSave={onTmdbKey} />
             </>
           ) : null
         }
@@ -231,30 +233,46 @@ function libraryDetail(status: HostStatus): string {
  */
 function Artwork({
   status,
+  onPosters,
   onSave,
 }: {
   status: HostStatus
+  onPosters: (enabled: boolean) => void
   onSave: (key: string) => void
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState('')
-  const { hasKey, withArt, films, series } = status.library
+  const { posters, hasKey, withArt, films, series } = status.library
   const total = films + series
 
   return (
-    <div className="mt-2">
-      {!open ? (
+    <div className="mt-2.5 border-t border-line pt-2.5">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-[12px] text-textDim">Download posters</div>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-textFaint">
+            {/* Said plainly, because this is the actual cost of the switch and
+                no key is required any more to make somebody think about it. */}
+            {posters
+              ? `Sending each recognised title to a lookup service. ${withArt} of ${total} have artwork.`
+              : 'Off. Covers are drawn from the title. Turning this on sends each recognised title to a lookup service.'}
+          </p>
+        </div>
+        <div className="mt-0.5 shrink-0">
+          <Switch checked={posters} onChange={onPosters} label="Download posters" />
+        </div>
+      </div>
+
+      {!posters ? null : !open ? (
         <button
           onClick={() => {
             setDraft('')
             setOpen(true)
           }}
-          className="flex items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] text-textFaint transition-colors hover:bg-panel2 hover:text-textDim"
+          className="mt-1.5 flex items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] text-textFaint transition-colors hover:bg-panel2 hover:text-textDim"
         >
           <ImageIcon size={11} />
-          {hasKey
-            ? `Posters: ${withArt} of ${total}`
-            : 'Download posters…'}
+          {hasKey ? 'A TMDb key is saved' : 'Add a TMDb key for more coverage…'}
         </button>
       ) : (
         <motion.div
@@ -265,11 +283,12 @@ function Artwork({
         >
           <div className="mt-1 rounded-md border border-line bg-ink2 p-3">
             <p className="text-[11px] leading-relaxed text-textFaint">
-              {/* Said plainly. A list of titles is a list of what somebody
-                  watches, and that is the actual cost of switching this on. */}
-              Posters come from TMDb, which means sending them each title on
-              this drive. Paste a free API key to turn it on; leave it empty and
-              the app draws its own covers instead.
+              {/* The key is genuinely optional now. Saying so matters: asking
+                  for one when none is needed is how an app trains people to
+                  paste credentials they were never required to have. */}
+              Posters already work without this. A free TMDb key is only
+              consulted for titles the default source has never heard of, so it
+              widens coverage and nothing more.
             </p>
             <div className="mt-2.5 flex items-center gap-1.5">
               <input
@@ -311,7 +330,7 @@ function Artwork({
                 }}
                 className="mt-2 text-[10.5px] text-textFaint transition-colors hover:text-danger"
               >
-                Stop looking titles up
+                Remove the key
               </button>
             )}
           </div>

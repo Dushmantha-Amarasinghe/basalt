@@ -1,17 +1,33 @@
 //! Fetching posters, when the user has asked for it.
 //!
-//! Off unless a TMDb key is set, and the key has to be pasted in by hand. That
-//! is not an oversight: looking a title up means telling a third party what is
-//! on somebody's drive, and a filename list is a list of what a person watches.
-//! It should never begin happening because of an upgrade.
+//! Off until it is switched on, and switched on by a person rather than by an
+//! upgrade. Looking a title up means telling a third party what is on
+//! somebody's drive, and a list of filenames is a list of what a person
+//! watches. No key is needed any more, so the *switch* is the consent — it
+//! would have been easy to let this start happening silently once the key
+//! stopped being required, and that would have been the wrong trade.
 //!
-//! With no key the library still works — [`crate::media`] parses everything the
-//! same way, and the interface draws a poster from the title. Artwork is an
-//! improvement on that, not a prerequisite for it.
+//! Two sources, tried in order:
 //!
-//! **Best effort throughout.** A title TMDb has never heard of, a network that
-//! is down, a key that has been revoked: each costs one missing poster and
-//! nothing else. Nothing here can fail a scan.
+//! 1. **Free Movie DB**, which needs no key at all and is what makes this work
+//!    out of the box. It answers from JustWatch's catalogue, which covers
+//!    silent film through last week.
+//! 2. **TMDb**, if the user has pasted a key. Only consulted when the first
+//!    found nothing, so a key is a widening of coverage rather than a
+//!    requirement.
+//!
+//! **Artwork never decides anything.** What is a film, what is an episode and
+//! what it is called are settled by [`super::parse`] from the path alone,
+//! before this module is asked for a picture. That separation is deliberate:
+//! the search here is fuzzy enough to answer `video 7` with *Scream 7* and
+//! `MOV 1308` with *Scary Movie*, so letting it name things would mean a
+//! library confidently full of the wrong titles. It is given a decision and
+//! asked only for the image that goes with it — and even then it has to prove
+//! the match before the image is kept. See [`matches`].
+//!
+//! **Best effort throughout.** A title neither source has heard of, a network
+//! that is down, a service that has gone away: each costs one missing poster
+//! and nothing else. Nothing here can fail a scan.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -30,6 +46,13 @@ const POSTER_SIZE: &str = "w500";
 
 const API: &str = "https://api.themoviedb.org/3";
 const IMAGES: &str = "https://image.tmdb.org/t/p";
+
+/// The keyless source.
+///
+/// Its documented IMDb endpoints return an error for every input — only this
+/// one answers — but it happens to carry everything wanted here: title, year,
+/// whether it is a film or a series, and posters at several widths.
+const FREE_MOVIE_DB: &str = "https://imdb.iamidiotareyoutoo.com/justwatch";
 
 /// Requests in flight at once.
 ///
@@ -77,12 +100,79 @@ struct SearchResult {
     poster_path: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct FreeMovieDbResponse {
+    #[serde(default)]
+    description: Vec<FreeMovieDbResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FreeMovieDbResult {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    year: Option<u16>,
+    /// `MOVIE` or `SHOW`.
+    #[serde(rename = "type", default)]
+    kind: String,
+    /// Widest first, as the service returns them.
+    #[serde(default)]
+    photo_url: Vec<String>,
+}
+
+/// A title reduced to what is worth comparing.
+///
+/// Case, punctuation and spacing all differ between a release name and a
+/// catalogue entry without meaning anything: `Alien Earth` and `Alien: Earth`
+/// are the same programme.
+fn normalise(title: &str) -> String {
+    title
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Whether a search result is the thing that was asked for.
+///
+/// **Deliberately strict.** This is a fuzzy search over a large catalogue, and
+/// it always has an answer: asked for `video 7` it offers *Scream 7*, asked for
+/// `MOV 1308` it offers *Scary Movie*. Both look entirely plausible in a
+/// response and would hang a real film's poster on somebody's screen recording.
+///
+/// So the title has to match exactly once punctuation and case are set aside,
+/// the kind has to agree, and a year — when both sides have one — has to be
+/// within a year, because a release is often dated to the year either side of a
+/// catalogue's. Being too strict costs a poster that could have been found.
+/// Being too loose costs the user's trust in everything else on the screen.
+fn matches(result: &FreeMovieDbResult, item: &LibraryItem) -> bool {
+    let wanted_kind = match item.kind {
+        LibraryKind::Film => "MOVIE",
+        LibraryKind::Series => "SHOW",
+    };
+    if !result.kind.eq_ignore_ascii_case(wanted_kind) {
+        return false;
+    }
+    if normalise(&result.title) != normalise(&item.title) {
+        return false;
+    }
+    match (item.year, result.year) {
+        (Some(ours), Some(theirs)) => ours.abs_diff(theirs) <= 1,
+        _ => true,
+    }
+}
+
 /// Fetches whatever is missing, and returns how many posters arrived.
 ///
 /// Only items with no cached poster are looked up, so a rescan of a settled
 /// library makes no requests at all.
-pub async fn enrich(items: &[LibraryItem], key: &str, config_dir: &Path) -> usize {
-    if key.trim().is_empty() {
+pub async fn enrich(
+    items: &[LibraryItem],
+    wanted_at_all: bool,
+    key: &str,
+    config_dir: &Path,
+) -> usize {
+    if !wanted_at_all {
         return 0;
     }
     let have = cached(config_dir);
@@ -105,8 +195,8 @@ pub async fn enrich(items: &[LibraryItem], key: &str, config_dir: &Path) -> usiz
     };
 
     // A few at a time, not all at once. A library of five hundred titles would
-    // otherwise open five hundred connections, which is both rude to TMDb and
-    // a good way to be rate-limited into getting nothing at all.
+    // otherwise open five hundred connections, which is both rude to a free
+    // service and a good way to be rate-limited into getting nothing at all.
     let mut added = 0usize;
     let mut running = tokio::task::JoinSet::new();
     let mut queue = wanted.into_iter();
@@ -143,10 +233,16 @@ async fn fetch_one(
     item: &LibraryItem,
     config_dir: &Path,
 ) -> bool {
-    let Some(poster) = search(client, key, item).await else {
-        return false;
+    // The keyless source first, so this works for somebody who has pasted
+    // nothing. TMDb is asked only when that found nothing, which makes a key a
+    // way to widen coverage rather than the price of entry.
+    let url = match free_movie_db(client, item).await {
+        Some(url) => url,
+        None => match search(client, key, item).await {
+            Some(poster) => format!("{IMAGES}/{POSTER_SIZE}{poster}"),
+            None => return false,
+        },
     };
-    let url = format!("{IMAGES}/{POSTER_SIZE}{poster}");
 
     let bytes = match client.get(&url).send().await {
         Ok(response) if response.status().is_success() => match response.bytes().await {
@@ -175,6 +271,32 @@ async fn fetch_one(
         return false;
     }
     std::fs::rename(&temp, &target).is_ok()
+}
+
+/// Asks the keyless source for a poster, and only takes one it can vouch for.
+///
+/// Returns a complete URL, unlike TMDb's, which hands back a path to be joined
+/// to an image host.
+async fn free_movie_db(client: &reqwest::Client, item: &LibraryItem) -> Option<String> {
+    let url = format!("{FREE_MOVIE_DB}?q={}", urlencode(&item.title));
+    let response = client.get(&url).send().await.ok()?;
+    if !response.status().is_success() {
+        tracing::debug!("looking up {}: {}", item.title, response.status());
+        return None;
+    }
+    let body: FreeMovieDbResponse = response.json().await.ok()?;
+
+    // Every candidate is checked, not just the first. The service orders by
+    // its own relevance, which puts the popular remake above the film actually
+    // asked for — `Nosferatu 1922` answers with the 2024 one first.
+    let found = body
+        .description
+        .iter()
+        .find(|result| matches(result, item))?;
+
+    // Widest first, and the widest on offer is around 592px — ample for a card
+    // and still small enough to be worth caching per title.
+    found.photo_url.first().cloned()
 }
 
 async fn search(client: &reqwest::Client, key: &str, item: &LibraryItem) -> Option<String> {
@@ -263,6 +385,87 @@ mod tests {
         }
     }
 
+    fn result(title: &str, year: Option<u16>, kind: &str) -> FreeMovieDbResult {
+        FreeMovieDbResult {
+            title: title.into(),
+            year,
+            kind: kind.into(),
+            photo_url: vec!["https://example.test/p.jpg".into()],
+        }
+    }
+
+    fn series(title: &str, year: Option<u16>) -> LibraryItem {
+        LibraryItem {
+            kind: LibraryKind::Series,
+            title: title.into(),
+            year,
+            path: None,
+            ..film("s1", title)
+        }
+    }
+
+    /// Every one of these is a real answer the service gave to a real filename
+    /// off a real drive. Accepting any of them hangs a film's poster on
+    /// somebody's screen recording, which looks far more broken than no poster.
+    #[test]
+    fn a_plausible_wrong_answer_is_refused() {
+        let asked = film("f1", "video 7");
+        assert!(!matches(&result("Scream 7", Some(2026), "MOVIE"), &asked));
+
+        let asked = film("f2", "Day 23");
+        assert!(!matches(
+            &result("Disclosure Day", Some(2026), "MOVIE"),
+            &asked
+        ));
+
+        let asked = film("f3", "MOV 1308");
+        assert!(!matches(
+            &result("Scary Movie", Some(2026), "MOVIE"),
+            &asked
+        ));
+    }
+
+    /// A film is not its series and a series is not its film, whatever the
+    /// title says.
+    #[test]
+    fn the_wrong_kind_is_refused() {
+        let asked = film("f1", "Outlander");
+        assert!(!matches(&result("Outlander", Some(2014), "SHOW"), &asked));
+    }
+
+    /// The same title, a different decade: a real risk for remakes, and the
+    /// service offers the newest first regardless of what was asked.
+    #[test]
+    fn the_wrong_year_is_refused() {
+        let asked = LibraryItem {
+            year: Some(1922),
+            ..film("f1", "Nosferatu")
+        };
+        assert!(!matches(&result("Nosferatu", Some(2024), "MOVIE"), &asked));
+        assert!(matches(&result("Nosferatu", Some(1922), "MOVIE"), &asked));
+        // A release dated a year either side of the catalogue is still it.
+        assert!(matches(&result("Nosferatu", Some(1923), "MOVIE"), &asked));
+    }
+
+    /// And the ones that should be accepted, taken from the same drive.
+    #[test]
+    fn the_right_answer_is_taken_through_punctuation_and_case() {
+        // `Alien Earth` off the filename, `Alien: Earth` in the catalogue.
+        assert!(matches(
+            &result("Alien: Earth", Some(2025), "SHOW"),
+            &series("Alien Earth", None)
+        ));
+        assert!(matches(
+            &result("FROM", Some(2022), "SHOW"),
+            &series("From", None)
+        ));
+        // No year on our side is not a mismatch, just less to go on.
+        assert!(matches(
+            &result("Outlander", Some(2014), "SHOW"),
+            &series("Outlander", None)
+        ));
+    }
+
     #[test]
     fn a_title_with_spaces_and_punctuation_survives_a_query_string() {
         assert_eq!(urlencode("Blade Runner 2049"), "Blade%20Runner%202049");
@@ -307,13 +510,22 @@ mod tests {
         assert!(cached(&dir.0).is_empty(), "only finished jpegs count");
     }
 
-    /// Without a key this must do nothing at all — not fail, not try, not
-    /// reach the network. Looking titles up is opt-in.
+    /// Switched off, this must do nothing at all — not fail, not try, not
+    /// reach the network, not even make a folder.
+    ///
+    /// The switch carries the whole consent now that no key is needed. When a
+    /// key was required, forgetting this check would simply have done nothing;
+    /// today it would silently start sending every title on somebody's drive
+    /// to a stranger the moment they upgraded.
     #[tokio::test]
-    async fn no_key_means_no_requests_and_no_cache_directory() {
+    async fn switched_off_means_no_requests_and_no_cache_directory() {
         let dir = temp_dir();
-        assert_eq!(enrich(&[film("f1", "Arrival")], "", &dir.0).await, 0);
-        assert_eq!(enrich(&[film("f1", "Arrival")], "   ", &dir.0).await, 0);
+        assert_eq!(enrich(&[film("f1", "Arrival")], false, "", &dir.0).await, 0);
+        assert_eq!(
+            enrich(&[film("f1", "Arrival")], false, "a-key", &dir.0).await,
+            0,
+            "a key present but the switch off is still off"
+        );
         assert!(
             !dir.0.join(CACHE_DIR).exists(),
             "nothing should be created before anyone opts in"
@@ -329,7 +541,7 @@ mod tests {
         // A key that would fail if it were ever used, so a request would show
         // up as a hang or an error rather than passing quietly.
         assert_eq!(
-            enrich(&[film("f1", "Arrival")], "not-a-real-key", &dir.0).await,
+            enrich(&[film("f1", "Arrival")], true, "not-a-real-key", &dir.0).await,
             0
         );
     }
@@ -337,6 +549,6 @@ mod tests {
     #[tokio::test]
     async fn an_empty_library_asks_for_nothing() {
         let dir = temp_dir();
-        assert_eq!(enrich(&[], "not-a-real-key", &dir.0).await, 0);
+        assert_eq!(enrich(&[], true, "not-a-real-key", &dir.0).await, 0);
     }
 }

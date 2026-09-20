@@ -227,6 +227,12 @@ async fn rescan_library(state: State<'_, AppState>) -> Answer<HostStatus> {
 /// The key only ever travels inwards. `status` reports whether one is set, not
 /// what it is, so it cannot be read back out of the interface.
 #[tauri::command]
+async fn set_posters(state: State<'_, AppState>, enabled: bool) -> Answer<HostStatus> {
+    state.host.set_posters(enabled).await?;
+    status(state).await
+}
+
+#[tauri::command]
 async fn set_tmdb_key(state: State<'_, AppState>, key: String) -> Answer<HostStatus> {
     state.host.set_tmdb_key(&key).await?;
     status(state).await
@@ -577,6 +583,7 @@ pub fn run() {
             set_start_with_windows,
             set_library_enabled,
             rescan_library,
+            set_posters,
             set_tmdb_key,
             build_info,
             open_log_folder,
