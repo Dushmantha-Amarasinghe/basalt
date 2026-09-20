@@ -55,7 +55,7 @@ import { transferId, useTransfers } from '@/lib/useTransfers'
 import { nameOf, useFileActions } from '@/lib/useFileActions'
 import { useAsyncSubscription, useLatest } from '@/lib/useAsyncSubscription'
 import { useStars } from '@/lib/useStars'
-import { entriesToMedia, isPlayable } from '@/lib/media'
+import { entriesToMedia, isMediaFile, isPlayable } from '@/lib/media'
 import type { MediaItem } from '@/lib/mockMedia'
 import {
   baseName,
@@ -511,7 +511,10 @@ export function App(): React.JSX.Element {
         })
       }
 
-      if (!many && entry.kind === 'file') {
+      // Only for media. This used to be offered for every file, so a PDF and
+      // a zip archive were both advertised as something to watch — and the
+      // external player would be launched and left with nothing to do.
+      if (!many && entry.kind === 'file' && isMediaFile(entry.name)) {
         items.push({
           id: 'open-external',
           label: 'Play in your player',

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  isMediaFile,
   isPlayable,
   judgeSound,
   playabilityOf,
@@ -118,5 +119,36 @@ describe('the messages', () => {
   it('does not say "THIS FILE file" when there is no extension', () => {
     expect(unplayableMessage('README')).toContain('this file')
     expect(unplayableMessage('README')).not.toContain('undefined')
+  })
+})
+
+describe('isMediaFile', () => {
+  /// The report: a PDF and a zip both offered "Play in your player".
+  it('does not offer to play a document or an archive', () => {
+    for (const name of [
+      'මූලික_විමසීම්_වගු_මාර්ගෝපදේශය.pdf',
+      'Wireframe_Diagrams.zip',
+      'notes.txt',
+      'photo.jpg',
+      'setup.exe',
+      'no-extension',
+    ]) {
+      expect(isMediaFile(name)).toBe(false)
+    }
+  })
+
+  /// Wider than what this window can play: an external player is exactly the
+  /// answer for the containers Chromium refuses.
+  it('offers the containers only an external player can open', () => {
+    for (const name of ['film.avi', 'clip.wmv', 'old.flv', 'rip.vob']) {
+      expect(isPlayable(name)).toBe(false)
+      expect(isMediaFile(name)).toBe(true)
+    }
+  })
+
+  it('offers video and audio the obvious way', () => {
+    for (const name of ['a.mkv', 'b.mp4', 'c.mp3', 'd.flac', 'E.MKV']) {
+      expect(isMediaFile(name)).toBe(true)
+    }
   })
 })

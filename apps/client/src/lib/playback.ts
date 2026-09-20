@@ -99,6 +99,31 @@ export function isPlayable(name: string): boolean {
   return playabilityOf(name) !== 'none'
 }
 
+/**
+ * Anything an external media player would open, whether this window can or not.
+ *
+ * A wider set than [`isPlayable`] on purpose. VLC and MPC-HC play AVI, WMV and
+ * FLV perfectly well; Chromium will not touch them. So "Play in your player"
+ * is offered for files this window has to refuse, which is most of the point
+ * of having the option at all.
+ *
+ * It is still a *media* test. The menu used to offer "Play in your player" for
+ * every file of any kind, so a PDF and a zip archive were both advertised as
+ * something to watch.
+ */
+export function isMediaFile(name: string): boolean {
+  return PLAYER_MEDIA.has(extensionOf(name))
+}
+
+/** Extensions worth handing to a media player. */
+const PLAYER_MEDIA = new Set([
+  // Video containers, including the ones only an external player handles.
+  'mp4', 'mkv', 'avi', 'mov', 'm4v', 'webm', 'wmv', 'flv', 'ts', 'm2ts',
+  'mpg', 'mpeg', 'vob', 'divx', 'ogv', 'rmvb', 'asf', '3gp',
+  // Audio.
+  'mp3', 'flac', 'wav', 'm4a', 'aac', 'ogg', 'opus', 'wma', 'aiff', 'alac',
+])
+
 /** Why there is no sound, in terms of this particular file. */
 export function silenceMessage(name: string): string {
   const ext = extensionOf(name).toUpperCase()
