@@ -784,7 +784,14 @@ export function App(): React.JSX.Element {
 
   const forgetVault = useCallback(async () => {
     const hostId = vault.status?.hostId
-    if (!hostId) return
+    if (!hostId) {
+      // Never a silent return. This button has now failed to do anything
+      // twice, for two unrelated reasons, and both times the only symptom was
+      // a click that produced nothing at all. Whatever goes wrong next, it
+      // says so on screen.
+      setNotice('There is no paired vault to forget.')
+      return
+    }
     // Inside the try, all of it. With the confirmation outside, anything that
     // went wrong in it escaped this callback entirely and the button did
     // nothing at all, silently.

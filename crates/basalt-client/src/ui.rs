@@ -34,15 +34,42 @@ pub struct Status {
 }
 
 impl Status {
-    pub fn new(info: Option<SessionInfo>, has_paired: bool, device_name: &str) -> Self {
+    /// Builds the status from the live session and the paired host on disk.
+    ///
+    /// **Which vault this device is paired with is a property of the store,
+    /// not of the connection.** Reading it from the session alone meant that
+    /// the moment the host was unreachable, the app forgot which vault it even
+    /// belonged to: `host_id` went null, and the "Forget this vault" button —
+    /// whose entire purpose is to escape a vault you can no longer reach —
+    /// silently did nothing, because it had no id to act on.
+    ///
+    /// So identity falls back to `saved`. Only `address` and `writable` stay
+    /// session-only, and deliberately: the address is where the host answered
+    /// *today*, which the settings screen says in as many words, and claiming
+    /// write access this device cannot currently exercise would be a guess
+    /// dressed as a fact.
+    pub fn new(
+        info: Option<SessionInfo>,
+        saved: Option<&crate::store::KnownHost>,
+        device_name: &str,
+    ) -> Self {
         Self {
             connected: info.is_some(),
-            host_id: info.as_ref().map(|i| i.host_id.clone()),
-            host_name: info.as_ref().map(|i| i.host_name.clone()),
-            vault: info.as_ref().map(|i| i.vault.clone()),
+            host_id: info
+                .as_ref()
+                .map(|i| i.host_id.clone())
+                .or_else(|| saved.map(|h| h.host_id.clone())),
+            host_name: info
+                .as_ref()
+                .map(|i| i.host_name.clone())
+                .or_else(|| saved.map(|h| h.host_name.clone())),
+            vault: info
+                .as_ref()
+                .map(|i| i.vault.clone())
+                .or_else(|| saved.map(|h| h.vault.clone())),
             writable: info.as_ref().is_some_and(|i| i.writable),
             address: info.as_ref().map(|i| i.address.to_string()),
-            has_paired,
+            has_paired: saved.is_some(),
             device_name: device_name.to_string(),
         }
     }
@@ -154,7 +181,7 @@ mod tests {
     /// disagree, the app connects and then shows nothing.
     #[test]
     fn status_matches_what_the_interface_reads() {
-        let status = Status::new(None, false, "Laptop A");
+        let status = Status::new(None, None, "Laptop A");
         assert_eq!(
             keys(&status),
             vec![
@@ -331,7 +358,7 @@ mod tests {
     // Nothing may be snake_case. A single underscore is the whole bug.
     #[test]
     fn no_field_anywhere_reaches_javascript_in_snake_case() {
-        let status = Status::new(None, false, "Laptop A");
+        let status = Status::new(None, None, "Laptop A");
         let event = TransferEvent {
             id: "t".into(),
             kind: "upload",
@@ -357,14 +384,58 @@ mod tests {
         }
     }
 
+    fn saved_host() -> crate::store::KnownHost {
+        crate::store::KnownHost {
+            host_id: "aabb".into(),
+            token: "t".into(),
+            vault: "Films".into(),
+            host_name: "laptop-b".into(),
+            last_address: Some("192.168.1.11:7742".into()),
+            paired_at: 0,
+        }
+    }
+
+    /// Offline, it must still know *which* vault it is paired with.
+    ///
+    /// The regression this exists for: identity was read from the live
+    /// session, so losing the host meant `host_id` went null — and "Forget
+    /// this vault", whose whole job is escaping a vault you cannot reach,
+    /// found no id to act on and silently did nothing. Twice reported, and
+    /// invisible both times, because a button that does nothing looks
+    /// identical to a button that is broken.
     #[test]
-    fn a_disconnected_status_says_so_without_inventing_details() {
-        let status = Status::new(None, true, "Laptop A");
+    fn a_disconnected_status_still_knows_the_vault_it_is_paired_with() {
+        let host = saved_host();
+        let status = Status::new(None, Some(&host), "Laptop A");
         assert!(!status.connected);
-        assert!(status.host_id.is_none());
-        assert!(status.vault.is_none());
+        assert!(status.has_paired);
+        assert_eq!(
+            status.host_id.as_deref(),
+            Some("aabb"),
+            "without this the vault cannot be forgotten"
+        );
+        assert_eq!(status.vault.as_deref(), Some("Films"));
+        assert_eq!(status.host_name.as_deref(), Some("laptop-b"));
+    }
+
+    /// The other half: what it must *not* claim while disconnected.
+    #[test]
+    fn a_disconnected_status_invents_no_connection_details() {
+        let host = saved_host();
+        let status = Status::new(None, Some(&host), "Laptop A");
+        assert!(
+            status.address.is_none(),
+            "the address is where the host answered today, not a memory"
+        );
         assert!(!status.writable, "no connection means no write access");
-        assert!(status.has_paired, "but it still knows a host exists");
+    }
+
+    #[test]
+    fn a_status_with_nothing_paired_is_empty() {
+        let status = Status::new(None, None, "Laptop A");
+        assert!(!status.connected);
+        assert!(!status.has_paired);
+        assert!(status.host_id.is_none());
     }
 
     #[test]
@@ -376,7 +447,8 @@ mod tests {
             writable: true,
             address: "192.168.1.11:7742".parse().unwrap(),
         };
-        let status = Status::new(Some(info), true, "Laptop A");
+        let host = saved_host();
+        let status = Status::new(Some(info), Some(&host), "Laptop A");
         assert!(status.connected);
         assert_eq!(status.host_id.as_deref(), Some("aabb"));
         assert_eq!(status.vault.as_deref(), Some("Films"));
