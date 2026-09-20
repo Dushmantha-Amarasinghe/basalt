@@ -728,10 +728,7 @@ mod tests {
     /// and buried the four series that were genuinely there.
     #[test]
     fn a_big_video_file_is_not_a_film_on_its_own() {
-        assert_eq!(
-            parse("Bandicam Recs/cyberSecurity/Day 23 [2025-06-17].mp4"),
-            None
-        );
+        assert_eq!(parse("Screen Recs/course/Day 23 [2025-06-17].mp4"), None);
         assert_eq!(parse("Capcut/video 7.mp4"), None);
         assert_eq!(parse("ABDownloader/Videos/MOV_1308.mp4"), None);
         assert_eq!(
