@@ -141,6 +141,8 @@ export interface Mpv extends MpvState {
   /** Loads a subtitle file and selects it. */
   addSubtitle: (path: string) => Promise<void>
   setSubtitleDelay: (seconds: number) => Promise<void>
+  /** Lifts the subtitles off the bottom edge, in pixels. */
+  setSubtitleMargin: (pixels: number) => Promise<void>
 }
 
 export function useMpv(): Mpv {
@@ -219,8 +221,19 @@ export function useMpv(): Mpv {
             switch (name) {
               case 'pause':
                 return { ...s, paused: Boolean(data) }
-              case 'time-pos':
-                return { ...s, position: Number(data) || 0 }
+              case 'time-pos': {
+                const position = Number(data) || 0
+                // Also the signal that there is a picture.
+                //
+                // `dwidth` alone was not enough: an observed property only
+                // reports *changes*, and the next episode of a series is the
+                // same resolution as the one before it. So nothing fired, and
+                // the "opening" card sat on top of a film that was already
+                // playing behind it — but only ever on autoplay, which is
+                // what made it look like a different bug.
+                const picture = s.picture || (position > 0 && s.duration > 0)
+                return { ...s, position, picture }
+              }
               case 'duration':
                 return { ...s, duration: Number(data) || 0 }
               case 'volume':
@@ -367,6 +380,13 @@ export function useMpv(): Mpv {
     [set],
   )
 
+  const setSubtitleMargin = useCallback(
+    async (pixels: number) => {
+      if (inTauri()) await set('sub-margin-y', Math.round(pixels))
+    },
+    [set],
+  )
+
   return {
     ...state,
     load,
@@ -382,5 +402,6 @@ export function useMpv(): Mpv {
     selectAudio,
     addSubtitle,
     setSubtitleDelay,
+    setSubtitleMargin,
   }
 }
