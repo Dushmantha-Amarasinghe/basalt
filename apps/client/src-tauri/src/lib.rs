@@ -46,6 +46,15 @@ struct AppState {
     /// The live-change subscription. Replaced whenever the app reconnects, and
     /// the old one stops the moment it is dropped.
     watch: Mutex<Option<WatchHandle>>,
+    /// Paths handed to a player outside this app.
+    ///
+    /// The proxy records how far anything has *read*, which is the only
+    /// resume signal an external player gives away — but it is a poor one,
+    /// because a player reads ahead of what it is showing. The app's own
+    /// player reports real positions, so folding its read-ahead in as well
+    /// would push Continue watching minutes past where anybody has watched.
+    /// Only paths in here contribute that estimate.
+    external: Mutex<std::collections::HashSet<String>>,
 }
 
 impl AppState {
@@ -243,9 +252,12 @@ async fn watch_progress(
     // Whatever an external player read since the last poll, reported first so
     // the answer already includes it.
     if let Some(proxy) = state.proxy.lock().await.as_ref() {
+        let external = state.external.lock().expect("external lock").clone();
         for (path, reach) in proxy.take_reach() {
             let fraction = reach.fraction();
-            if fraction <= 0.0 {
+            // Read-ahead is only a resume signal for a player this app cannot
+            // see. Its own reports what it is actually showing.
+            if fraction <= 0.0 || !external.contains(&path) {
                 continue;
             }
             let _ = state
@@ -452,6 +464,11 @@ async fn open_externally(
 ) -> Answer<OpenResult> {
     if let Some(player) = basalt_client::players::find() {
         let url = state.proxy().await?.url_for(&remote);
+        state
+            .external
+            .lock()
+            .expect("external lock")
+            .insert(remote.clone());
         basalt_client::players::launch(&player, &url).map_err(|e| UiError {
             kind: "error".into(),
             message: format!("could not start {}: {e}", player.name),
@@ -561,6 +578,7 @@ pub fn run() {
                 proxy: tokio::sync::Mutex::new(None),
                 transfers: Mutex::new(HashMap::new()),
                 watch: Mutex::new(None),
+                external: Mutex::new(std::collections::HashSet::new()),
             });
 
             // Feed the throughput trace from the one counter that sees every
