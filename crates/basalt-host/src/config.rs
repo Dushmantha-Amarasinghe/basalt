@@ -55,12 +55,21 @@ pub struct HostConfig {
     #[serde(default)]
     pub library_enabled: bool,
 
-    /// TMDb key, for downloading posters. Empty means do not look anything up.
+    /// Whether to fetch artwork for what the library has recognised.
     ///
-    /// Pasted in by hand, and empty by default, because a lookup tells a third
-    /// party what is on the drive — and a list of titles is a list of what
-    /// somebody watches. That must never start happening because of an
-    /// upgrade.
+    /// Off by default, and the switch is the consent. A lookup tells a third
+    /// party what is on the drive, and a list of titles is a list of what
+    /// somebody watches — that must never start happening because of an
+    /// upgrade. It used to be the TMDb key below that gated this, simply
+    /// because a key was required; posters need no key now, so the decision
+    /// had to become a decision of its own rather than quietly disappear.
+    #[serde(default)]
+    pub posters: bool,
+
+    /// TMDb key, for titles the keyless source does not have. Optional.
+    ///
+    /// Only consulted when [`Self::posters`] is on and the free source found
+    /// nothing, so this widens coverage rather than unlocking the feature.
     #[serde(default)]
     pub tmdb_key: String,
 
@@ -83,6 +92,7 @@ impl HostConfig {
             require_pin: true,
             start_with_windows: false,
             library_enabled: false,
+            posters: false,
             tmdb_key: String::new(),
             devices: Vec::new(),
         })

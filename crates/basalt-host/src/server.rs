@@ -263,7 +263,22 @@ impl Host {
         self.config.lock().expect("config lock").library_enabled = true;
     }
 
-    /// Stores the TMDb key and fetches whatever artwork it unlocks.
+    /// Turns poster downloads on or off.
+    ///
+    /// Turning it off leaves the posters already downloaded where they are:
+    /// they are on this machine already, and deleting them would be a second
+    /// decision nobody asked for. Turning it on scans, which is what actually
+    /// fetches them.
+    pub async fn set_posters(self: &Arc<Self>, enabled: bool) -> Result<()> {
+        self.config.lock().expect("config lock").posters = enabled;
+        self.persist()?;
+        if enabled {
+            self.start_scan();
+        }
+        Ok(())
+    }
+
+    /// Stores the optional TMDb key and fetches whatever artwork it unlocks.
     ///
     /// Clearing it stops future lookups but leaves the posters already
     /// downloaded: they are on this machine already, and deleting them would
@@ -402,8 +417,11 @@ impl Host {
             .parent()
             .unwrap_or(std::path::Path::new("."))
             .to_path_buf();
-        let key = self.config.lock().expect("config lock").tmdb_key.clone();
-        crate::media::art::enrich(&items, &key, &config_dir).await;
+        let (posters, key) = {
+            let config = self.config.lock().expect("config lock");
+            (config.posters, config.tmdb_key.clone())
+        };
+        crate::media::art::enrich(&items, posters, &key, &config_dir).await;
 
         // Marked after fetching, so an item whose poster just arrived is
         // already flagged in the index the client is about to be sent.
@@ -592,9 +610,13 @@ impl Host {
     /// holding `library` — which also stopped every scan from saving its index,
     /// and `registry`, which stopped paired devices from connecting at all.
     fn library_status(&self) -> crate::ui::LibraryStatus {
-        let (enabled, has_key) = {
+        let (enabled, posters, has_key) = {
             let config = self.config.lock().expect("config lock");
-            (config.library_enabled, !config.tmdb_key.trim().is_empty())
+            (
+                config.library_enabled,
+                config.posters,
+                !config.tmdb_key.trim().is_empty(),
+            )
         };
         let scanning = self.is_scanning();
         let library = self.library.lock().expect("library lock");
@@ -618,6 +640,7 @@ impl Host {
                 .filter(|i| i.confidence < basalt_proto::msg::CONFIDENT)
                 .count(),
             with_art: library.items.iter().filter(|i| i.has_art).count(),
+            posters,
             has_key,
             scanned_at: library.scanned_at,
         }

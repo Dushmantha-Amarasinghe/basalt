@@ -224,6 +224,9 @@ export function App(): React.JSX.Element {
                     onRescan={() => {
                       void api.rescanLibrary().then(apply)
                     }}
+                    onPosters={(enabled) => {
+                      void api.setPosters(enabled).then(apply)
+                    }}
                     onTmdbKey={(key) => {
                       void api.setTmdbKey(key).then(apply)
                     }}

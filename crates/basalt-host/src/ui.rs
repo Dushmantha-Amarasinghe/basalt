@@ -79,6 +79,8 @@ pub struct LibraryStatus {
     pub uncertain: usize,
     /// Items with a poster downloaded.
     pub with_art: usize,
+    /// Whether poster downloads are switched on.
+    pub posters: bool,
     /// Whether a TMDb key has been supplied at all.
     ///
     /// The key itself never leaves the host — the interface only needs to know
@@ -274,6 +276,7 @@ mod tests {
                 series: 0,
                 uncertain: 0,
                 with_art: 0,
+                posters: false,
                 has_key: false,
                 scanned_at: 0,
             },
@@ -307,6 +310,7 @@ mod tests {
             series: 2,
             uncertain: 3,
             with_art: 1,
+            posters: true,
             has_key: true,
             scanned_at: 4,
         };
@@ -316,6 +320,7 @@ mod tests {
                 "enabled",
                 "films",
                 "hasKey",
+                "posters",
                 "scannedAt",
                 "scanning",
                 "series",
