@@ -6,9 +6,11 @@
 //! and that API.
 //!
 //! The window is frameless because the app draws its own title bar (see
-//! `TitleBar.tsx`), and transparency is off: the design is solid graphite, and
-//! a transparent window would cost compositing work for an effect the palette
-//! never uses.
+//! `TitleBar.tsx`), and **transparent** — not for any visual effect, but
+//! because that is how video gets on screen. libmpv renders into the native
+//! window behind the webview, so the page has to be able to get out of its
+//! way. `body` stays opaque, so nothing about the app looks any different;
+//! only the player makes itself see-through, and mpv shows through the hole.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -540,6 +542,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_libmpv::init())
         .setup(|app| {
             let store_path = basalt_client::store::default_path();
             let client = Arc::new(Basalt::open(store_path)?);

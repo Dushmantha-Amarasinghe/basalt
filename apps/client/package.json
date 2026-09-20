@@ -26,6 +26,7 @@
     "react": "^19",
     "react-dom": "^19",
     "tailwind-merge": "^3",
+    "tauri-plugin-libmpv-api": "^0.3.2",
     "virtua": "^0.41.0",
     "zustand": "^5"
   },
