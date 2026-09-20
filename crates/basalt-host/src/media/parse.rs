@@ -277,7 +277,7 @@ pub fn parse(path: &str) -> Option<Parsed> {
 /// Works on characters throughout. Slicing the lowercased string by an index
 /// found while walking characters would panic the moment a title contains an
 /// accent, which is not a theoretical concern on a film library.
-fn episode_numbers(stem: &str) -> Option<(u16, u16)> {
+pub fn episode_numbers(stem: &str) -> Option<(u16, u16)> {
     let chars: Vec<char> = stem.to_ascii_lowercase().chars().collect();
 
     // sNNeNN, with anything non-alphanumeric allowed between the two halves.

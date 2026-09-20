@@ -83,12 +83,22 @@ export type Change =
   | { kind: 'resynchronise' }
   | { kind: 'library_changed' }
 
+/** A subtitle file the host found beside a film or an episode. */
+export interface SubtitleTrack {
+  /** Vault-relative path. */
+  path: string
+  /** `English`, `Spanish forced`, or `Subtitles` when the name says nothing. */
+  label: string
+}
+
 export interface LibraryEpisode {
   number: number
   path: string
   title?: string | null
   size: number
   added: number
+  /** Absent rather than empty when there are none — the host omits the field. */
+  subtitles?: SubtitleTrack[]
 }
 
 export interface LibrarySeason {
@@ -108,6 +118,9 @@ export interface LibraryItem {
   /** Unix seconds of the newest file in this item. */
   added: number
   seasons: LibrarySeason[]
+  /** Subtitle files beside a film. Empty for a series — its episodes carry
+   *  their own, and a series-level list would mean nothing. */
+  subtitles?: SubtitleTrack[]
   /** 0-100. Below CONFIDENT the interface offers a correction rather than
    *  asserting the match. */
   confidence: number

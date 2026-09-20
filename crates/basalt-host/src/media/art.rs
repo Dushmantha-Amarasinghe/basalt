@@ -380,6 +380,7 @@ mod tests {
             size: 1,
             added: 1,
             seasons: Vec::new(),
+            subtitles: Vec::new(),
             confidence: 90,
             has_art: false,
         }

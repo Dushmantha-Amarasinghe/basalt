@@ -12,6 +12,7 @@ pub mod art;
 pub mod index;
 pub mod parse;
 pub mod progress;
+pub mod subs;
 
 pub use index::{Library, scan};
 pub use parse::{Parsed, is_video};

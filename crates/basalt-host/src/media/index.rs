@@ -24,6 +24,7 @@ use basalt_proto::msg::{Episode, LibraryItem, LibraryKind, Season};
 use serde::{Deserialize, Serialize};
 
 use super::parse::{self, Parsed};
+use super::subs;
 use crate::vault::Vault;
 
 /// Directories descended into during one scan.
@@ -49,6 +50,13 @@ pub const MAX_DURATION: std::time::Duration = std::time::Duration::from_secs(90)
 /// a home video is not what this screen is for. Files below the line stay
 /// browsable in Files, they are simply not filed as cinema.
 pub const MIN_FEATURE_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Subtitle files remembered during one scan.
+///
+/// A ceiling for the same reason the directory count has one: a drive nobody
+/// organised for us might hold any number of these, and the matching below is
+/// linear in this list for every video.
+pub const MAX_SUBTITLES: usize = 20_000;
 
 /// The whole index.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -155,6 +163,9 @@ pub fn scan_within(
 ) -> Vec<LibraryItem> {
     let started = std::time::Instant::now();
     let mut found = Vec::new();
+    // Collected alongside the videos, in the same walk. A second pass looking
+    // for them would mean reading every directory on the drive twice.
+    let mut subtitles: Vec<String> = Vec::new();
     let mut queue = std::collections::VecDeque::from([String::new()]);
     let mut visited = 0usize;
 
@@ -216,6 +227,15 @@ pub fn scan_within(
                     }
                 }
                 basalt_proto::msg::EntryKind::File => {
+                    // Before the size floor: a subtitle is a few kilobytes,
+                    // and the floor exists to keep home videos out of the
+                    // library, not to throw away the subtitles for a film.
+                    if subs::is_subtitle(&entry.name) {
+                        if subtitles.len() < MAX_SUBTITLES {
+                            subtitles.push(path);
+                        }
+                        continue;
+                    }
                     if entry.size < MIN_FEATURE_BYTES {
                         continue;
                     }
@@ -232,7 +252,7 @@ pub fn scan_within(
         }
     }
 
-    let items = group(found);
+    let items = group(found, &subtitles);
     // Logged because this is the one expensive thing the host does, and when
     // somebody says it has stopped responding this line is what says whether a
     // scan was the reason.
@@ -261,8 +281,21 @@ pub fn item_id(kind: LibraryKind, title: &str, year: Option<u16>) -> String {
     format!("{prefix}{}", &blake3::hash(key.as_bytes()).to_hex()[..16])
 }
 
+/// The host's subtitle record, as the wire spells it.
+fn track(found: subs::Subtitle) -> basalt_proto::msg::SubtitleTrack {
+    basalt_proto::msg::SubtitleTrack {
+        path: found.path,
+        label: found.label,
+    }
+}
+
 /// Folds the files found into films and series.
-fn group(found: Vec<Found>) -> Vec<LibraryItem> {
+fn group(found: Vec<Found>, subtitles: &[String]) -> Vec<LibraryItem> {
+    // Matched once, up front, rather than per item: a season folder holds
+    // thirty of each and doing it inside the loop would be quadratic.
+    let videos: Vec<String> = found.iter().map(|f| f.path.clone()).collect();
+    let mut by_video = subs::map_all(&videos, subtitles);
+
     let mut films: Vec<LibraryItem> = Vec::new();
     // Ordered so the output is stable between scans, which keeps the revision
     // from bumping just because a hash map iterated differently.
@@ -278,6 +311,7 @@ fn group(found: Vec<Found>) -> Vec<LibraryItem> {
             let id = item_id(LibraryKind::Series, &parsed.title, None);
             let item = series.entry(id.clone()).or_insert_with(|| LibraryItem {
                 id,
+                subtitles: Vec::new(),
                 kind: LibraryKind::Series,
                 title: parsed.title.clone(),
                 year: parsed.year,
@@ -307,8 +341,10 @@ fn group(found: Vec<Found>) -> Vec<LibraryItem> {
                     item.seasons.last_mut().expect("just pushed")
                 }
             };
+            let subtitles = by_video.remove(&entry.path).unwrap_or_default();
             season.episodes.push(Episode {
                 number: parsed.episode.unwrap_or(0),
+                subtitles: subtitles.into_iter().map(track).collect(),
                 path: entry.path,
                 title: None,
                 size: entry.size,
@@ -323,6 +359,13 @@ fn group(found: Vec<Found>) -> Vec<LibraryItem> {
                     existing.added = existing.added.max(entry.mtime);
                     if entry.size > existing.size {
                         existing.size = entry.size;
+                        // The subtitles follow the copy that will be played.
+                        existing.subtitles = by_video
+                            .remove(&entry.path)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(track)
+                            .collect();
                         existing.path = Some(entry.path);
                     }
                 }
@@ -331,6 +374,12 @@ fn group(found: Vec<Found>) -> Vec<LibraryItem> {
                     kind: LibraryKind::Film,
                     title: parsed.title,
                     year: parsed.year,
+                    subtitles: by_video
+                        .remove(&entry.path)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(track)
+                        .collect(),
                     path: Some(entry.path),
                     size: entry.size,
                     added: entry.mtime,
@@ -486,6 +535,68 @@ mod tests {
         );
         // And the series size counts it once.
         assert_eq!(items[0].size, MIN_FEATURE_BYTES * 3);
+    }
+
+    /// Writes a small file, as a subtitle is.
+    fn put_small(root: &Path, rel: &str, bytes: &[u8]) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// Subtitles have to survive the size floor that keeps home videos out.
+    ///
+    /// They are a few kilobytes. Checking the floor before checking whether a
+    /// file is a subtitle would discard every one of them, and the library
+    /// would report that a drive full of subtitles had none.
+    #[test]
+    fn a_scan_finds_the_subtitles_beside_what_it_indexes() {
+        let dir = temp_dir();
+        put(&dir.0, "Films/Arrival (2016).mkv");
+        put_small(
+            &dir.0,
+            "Films/Arrival (2016).en.srt",
+            b"1
+",
+        );
+        put_small(
+            &dir.0,
+            "Films/Arrival (2016).fr.srt",
+            b"1
+",
+        );
+
+        put(&dir.0, "Shows/Outlander/Season 01/Outlander S01E01.mkv");
+        put_small(
+            &dir.0,
+            "Shows/Outlander/Season 01/Subs/Outlander.S01E01.eng.srt",
+            b"1
+",
+        );
+
+        let items = scan(&vault_of(&dir));
+        let film = items
+            .iter()
+            .find(|i| i.title == "Arrival")
+            .expect("the film");
+        assert_eq!(
+            film.subtitles
+                .iter()
+                .map(|s| s.label.as_str())
+                .collect::<Vec<_>>(),
+            ["English", "French"],
+        );
+
+        let show = items
+            .iter()
+            .find(|i| i.title == "Outlander")
+            .expect("the series");
+        let episode = &show.seasons[0].episodes[0];
+        assert_eq!(episode.subtitles.len(), 1, "got {:?}", episode.subtitles);
+        assert_eq!(episode.subtitles[0].label, "English");
+
+        // And a subtitle is never mistaken for something to watch.
+        assert!(!items.iter().any(|i| i.title.contains("srt")));
     }
 
     #[test]
