@@ -13,6 +13,31 @@ export interface MediaLibrary {
 }
 
 /**
+ * Fills in the list fields a host leaves out when they are empty.
+ *
+ * `seasons` is declared as always present and read as such — every card on
+ * the Movies screen runs `item.seasons.reduce(...)` to count episodes. A host
+ * that omits the field for a film, because serde was told to skip an empty
+ * list, therefore does not cost one card: it throws a TypeError out of render
+ * and takes the whole page down with it. That is exactly what happened —
+ * opening Movies showed a black window.
+ *
+ * Fixed on the host too, so the field is always sent. Normalised here as well
+ * because a client that blanks its window when a host words a reply slightly
+ * differently is a client with a bug, whatever the host does.
+ */
+export function withEmptyLists(items: LibraryItem[]): LibraryItem[] {
+  return items.map((item) => ({
+    ...item,
+    seasons: (item.seasons ?? []).map((season) => ({
+      ...season,
+      episodes: season.episodes ?? [],
+    })),
+    subtitles: item.subtitles ?? [],
+  }))
+}
+
+/**
  * The host's index of films and series.
  *
  * Fetched once and then only when the host says it changed, which is what the
@@ -51,7 +76,7 @@ export function useMediaLibrary(connected: boolean): MediaLibrary {
         enabled: response.enabled,
         scanning: response.scanning,
         // No items means "you already have them", not "there are none".
-        items: response.items ?? previous.items,
+        items: response.items ? withEmptyLists(response.items) : previous.items,
       }))
       setError(null)
     } catch (e) {
