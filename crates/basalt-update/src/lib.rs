@@ -121,6 +121,14 @@ struct GhAsset {
 }
 
 fn client() -> Result<reqwest::Client> {
+    // reqwest is built on `rustls-no-provider`, which *panics* rather than
+    // errors when no process-wide provider has been installed. The shells
+    // install one the moment they talk to a host, but checking for an update
+    // does not need a host — so this crate cannot assume somebody else went
+    // first. `init_crypto` is idempotent, so calling it here costs nothing
+    // beyond a `Once`.
+    basalt_net::tls::init_crypto();
+
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .user_agent(concat!("Basalt/", env!("CARGO_PKG_VERSION")))
@@ -295,6 +303,19 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Building the HTTP client must not depend on somebody else having set
+    /// up rustls first.
+    ///
+    /// It did once, and the failure was a *panic* rather than an error: a
+    /// freshly installed client that had never paired with a host had never
+    /// built a TLS config either, so opening About — which checks quietly on
+    /// open — took the whole app down. Nothing else in this test binary
+    /// installs a provider, which is exactly the situation being guarded.
+    #[test]
+    fn an_http_client_can_be_built_before_anything_has_touched_tls() {
+        assert!(client().is_ok());
+    }
 
     fn asset(name: &str) -> GhAsset {
         GhAsset {

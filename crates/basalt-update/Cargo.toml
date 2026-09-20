@@ -8,6 +8,8 @@ authors.workspace = true
 description = "Checks GitHub releases for a newer Basalt, and fetches it safely."
 
 [dependencies]
+# For its crypto provider: reqwest panics without one. See `client()`.
+basalt-net = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
