@@ -24,6 +24,57 @@ import { inTauri } from './api'
  * one window; opening a second file is a `loadfile`, not a second player.
  */
 
+/** Where the sound goes. */
+export interface AudioDevice {
+  /** mpv's own name for it, which is what gets stored. */
+  name: string
+  description: string
+}
+
+/** Remembered across runs, and applied to mpv as it starts. */
+const DEVICE_KEY = 'basalt.audioDevice'
+
+export function savedAudioDevice(): string {
+  try {
+    return localStorage.getItem(DEVICE_KEY) ?? 'auto'
+  } catch {
+    return 'auto'
+  }
+}
+
+/**
+ * The outputs mpv can see, for the Settings list.
+ *
+ * Standalone rather than part of the hook: Settings has no player and should
+ * not start one, and mpv is already running by the time anybody opens it.
+ */
+export async function audioDevices(): Promise<AudioDevice[]> {
+  if (!inTauri()) return []
+  try {
+    const raw = await mpv.getProperty('audio-device-list', 'node')
+    if (!Array.isArray(raw)) return []
+    return raw
+      .map((entry) => entry as { name?: unknown; description?: unknown })
+      .map((entry) => ({
+        name: String(entry.name ?? ''),
+        description: String(entry.description ?? entry.name ?? ''),
+      }))
+      .filter((device) => device.name !== '')
+  } catch {
+    return []
+  }
+}
+
+/** Switches output, and remembers it for next time. */
+export async function setAudioDevice(name: string): Promise<void> {
+  try {
+    localStorage.setItem(DEVICE_KEY, name)
+  } catch {
+    // Private mode, or storage full. The choice still applies to this run.
+  }
+  if (inTauri()) await mpv.command('set', ['audio-device', name])
+}
+
 /** What the interface needs to draw itself, mirrored out of mpv. */
 export interface MpvState {
   ready: boolean
@@ -135,6 +186,8 @@ export interface Mpv extends MpvState {
   /** One frame forward, or back. Exact — this is why mpv is here. */
   stepFrame: (direction: 1 | -1) => Promise<void>
   setVolume: (volume: number) => Promise<void>
+  /** Nudges the volume, letting mpv do the arithmetic and the clamping. */
+  nudgeVolume: (by: number) => Promise<void>
   toggleMute: () => Promise<void>
   selectSubtitle: (id: number | null) => Promise<void>
   selectAudio: (id: number) => Promise<void>
@@ -210,6 +263,8 @@ export function useMpv(): Mpv {
             // clamps at 100 — so the top third of the control did nothing.
             // Amplification earns its place on quietly mastered films.
             'volume-max': 130,
+            // Whatever was chosen in Settings last time, or let mpv decide.
+            'audio-device': savedAudioDevice(),
           },
           observedProperties: OBSERVED,
         })
@@ -348,6 +403,20 @@ export function useMpv(): Mpv {
     [set],
   )
 
+  /**
+   * Volume by delta, computed inside mpv.
+   *
+   * Reading our own mirrored `volume` and adding to it looks equivalent and
+   * is not: that mirror is fed by a property observer, and an observer only
+   * reports *changes*. Anything that failed to move the volume — asking for
+   * more than `volume-max`, most obviously — left the mirror stale, so every
+   * later press recomputed the same rejected number and the key did nothing
+   * at all. `add` has no such problem, and mpv clamps it properly.
+   */
+  const nudgeVolume = useCallback(async (by: number) => {
+    if (inTauri()) await mpv.command('add', ['volume', String(by)])
+  }, [])
+
   const toggleMute = useCallback(async () => {
     if (inTauri()) await mpv.command('cycle', ['mute'])
   }, [])
@@ -397,6 +466,7 @@ export function useMpv(): Mpv {
     seekBy,
     stepFrame,
     setVolume,
+    nudgeVolume,
     toggleMute,
     selectSubtitle,
     selectAudio,

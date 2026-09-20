@@ -1,6 +1,13 @@
+import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
-import { HardDrive, Laptop, Shield, Wifi, Zap } from 'lucide-react'
+import { HardDrive, Laptop, Shield, Volume2, Wifi, Zap } from 'lucide-react'
 import type { Status } from '@/lib/api'
+import {
+  audioDevices,
+  savedAudioDevice,
+  setAudioDevice,
+  type AudioDevice,
+} from '@/lib/useMpv'
 import { cn, formatBytes } from '@/lib/utils'
 
 /**
@@ -12,6 +19,44 @@ import { cn, formatBytes } from '@/lib/utils'
  * measurements left no case for turning them off, and a toggle implying
  * otherwise would be a lie about the software.
  */
+/**
+ * Which output mpv plays through.
+ *
+ * Read from mpv rather than from Windows: it is mpv that has to open the
+ * device, and its list is the one that can actually be selected.
+ */
+function AudioOutput(): React.JSX.Element {
+  const [devices, setDevices] = useState<AudioDevice[]>([])
+  const [chosen, setChosen] = useState(savedAudioDevice)
+
+  useEffect(() => {
+    void audioDevices().then(setDevices)
+  }, [])
+
+  return (
+    <div className="flex items-center justify-between gap-4 px-4 py-2.5">
+      <span className="shrink-0 text-[12.5px] text-textDim">Audio output</span>
+      <select
+        value={chosen}
+        onChange={(e) => {
+          setChosen(e.target.value)
+          void setAudioDevice(e.target.value)
+        }}
+        className="min-w-0 max-w-[62%] truncate rounded-md border border-line bg-ink2 px-2 py-1 font-mono text-[11.5px] text-text outline-none transition-colors focus:border-lineBright"
+      >
+        <option value="auto">Automatic</option>
+        {devices
+          .filter((device) => device.name !== 'auto')
+          .map((device) => (
+            <option key={device.name} value={device.name}>
+              {device.description}
+            </option>
+          ))}
+      </select>
+    </div>
+  )
+}
+
 export function SettingsView({
   status,
   space,
@@ -45,6 +90,17 @@ export function SettingsView({
             were never asked to type one.
           </Note>
           <Action label="Forget this vault" danger onClick={onForget} />
+        </Section>
+
+        <Section icon={Volume2} title="Playback" hint="Where the sound goes">
+          <AudioOutput />
+          <Note>
+            {/* Worth saying, because the list is mpv's and not Windows's, and
+                the names differ enough to be confusing. */}
+            Chosen for this app only — it does not change what anything else on
+            this machine plays through. <span className="text-textDim">Automatic</span>{' '}
+            follows whatever Windows is using at the time.
+          </Note>
         </Section>
 
         <Section icon={Wifi} title="Connection" hint="How this link behaves">
