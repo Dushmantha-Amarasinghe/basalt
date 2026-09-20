@@ -1,0 +1,29 @@
+[package]
+name = "basalt-update"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Checks GitHub releases for a newer Basalt, and fetches it safely."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+sha2 = "0.11.0"
+
+# `rustls-no-provider` rather than `rustls`, for the same reason as the host:
+# the default pulls aws-lc-rs and with it a cmake build dependency this
+# project deliberately does not have. `basalt-net::tls` installs ring's
+# provider process-wide, so reqwest finds one already waiting.
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls-no-provider",
+    "charset",
+    "http2",
+    "json",
+    "stream",
+] }
+futures-util = { version = "0.3", default-features = false }

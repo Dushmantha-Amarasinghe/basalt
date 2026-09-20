@@ -1,168 +1,153 @@
-# Basalt
+<div align="center">
+  <h1>Basalt</h1>
+  <p><b>One drive, on every device in the house. No addresses, no accounts, no setup.</b></p>
+  <p>
+    <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-blue?style=flat-square" alt="Windows 10/11" />
+    <img src="https://img.shields.io/github/license/Dushmantha-Amarasinghe/basalt?style=flat-square" alt="License" />
+    <img src="https://img.shields.io/github/v/release/Dushmantha-Amarasinghe/basalt?style=flat-square" alt="Release" />
+    <img src="https://img.shields.io/github/downloads/Dushmantha-Amarasinghe/basalt/total?style=flat-square" alt="Downloads" />
+  </p>
+  <p>
+    <a href="https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest">⬇️ Download</a> &nbsp;·&nbsp;
+    <a href="https://reforatech.com">🌐 Refora Technologies</a>
+  </p>
+</div>
 
-A personal NAS built from a spare laptop and a desktop HDD.
+<br/>
 
-- **Basalt Host** — runs on the laptop, locks in a drive, serves it over the LAN.
-- **Basalt** — runs on your PC. Pair once; after that it is just there.
+## Overview
 
-Currently at **Phase 0**: measuring before building. See
-[the plan](../../../Users/dsbam/.claude/plans/i-want-to-make-quirky-rainbow.md)
-for the full design.
+**Basalt** by Refora Technologies turns one spare machine into a drive your
+other devices can use. It comes in two halves: **Basalt Host** runs on the
+machine with the drive, and **Basalt** runs everywhere else.
 
-## Why Phase 0 exists
+The point of it is that there is nothing to configure. You pick a drive on the
+host; on another device you pick the host from a list and read a PIN across.
+That is the whole setup. No IP address is ever typed, no account is made, and
+no Windows sharing settings are touched — your devices find the host by
+themselves and keep finding it when the router hands it a different address,
+because what they trust is its pinned identity rather than where it happens to
+be today.
 
-Building a NAS client is months of work. Windows already ships SMB, and on a
-LAN a tuned SMB3 share is genuinely fast. Discovering in month six that file
-sharing was already quicker would be an expensive way to learn it.
+## Screenshots
 
-So before any UI is written, `basalt-bench` measures the real stack — the same
-framing and compression code the shipped apps will use — against an SMB
-baseline, on the actual laptop, the actual drive, and the actual radio.
+<div align="center">
+  <img src="docs/screenshots/host.png" alt="Basalt Host — sharing a drive" width="420" />
+  <img src="docs/screenshots/files.png" alt="Browsing the drive" width="420" />
+</div>
+<div align="center">
+  <img src="docs/screenshots/series.png" alt="The TV Series library" width="420" />
+  <img src="docs/screenshots/about.png" alt="Settings" width="420" />
+</div>
 
-**The gate:** match or beat SMB on both a single large file and ten thousand
-small ones. If we cannot, the approach gets revisited.
+## Key Features
 
-## Layout
+- **Finds itself.** The host announces itself on the local network and the
+  client lists what it finds. Pairing is a PIN read from one screen to the
+  other, once. Addresses change freely afterwards and nothing breaks.
+- **Pinned, encrypted, private.** Every connection is TLS 1.3, and the client
+  pins the host's public key on first pairing — an imposter on the same network
+  is refused rather than trusted. Nothing leaves your network, and there is no
+  cloud account anywhere in the design.
+- **Browse the whole drive.** Files, folders, search, copy, move, rename,
+  delete, upload by drag-and-drop onto whichever folder you drop on. Transfers
+  are compressed where that helps, batched for small files, and verified with
+  BLAKE3 end to end.
+- **Films and series, recognised.** Turn it on and the host reads the drive and
+  files what it finds under Movies and TV Series, with seasons and episodes in
+  order. Posters are optional and need no API key.
+- **A real player.** Built on **mpv**, so it plays what a browser cannot —
+  HEVC, E-AC3, DTS, MKV, and the rest — without the host transcoding anything.
+  Click to pause, arrow keys to seek and change volume, `,` and `.` to step one
+  frame at a time, subtitle track selection, subtitle files found on the drive,
+  and a sync offset for subtitles that drift.
+- **Carries on where you left off.** Resume points live on the host, not on the
+  device, so you can start something on one machine and finish it on another.
+  Episodes play on to the next one by themselves.
+- **Live, both ways.** The host watches the drive itself, so a file added,
+  renamed or deleted — by Basalt, by Explorer, or by anything else — reaches
+  every connected device at once.
+- **Several devices at once.** There is no device limit and no connection
+  limit; the host serves bytes and nothing more, so more viewers cost it
+  almost nothing.
 
-```
-crates/basalt-proto/   wire framing + compression policy (ships in Phase 1)
-bench/                 Phase 0 measurement harness
-docs/                  generated benchmark reports
-```
+## Technical Stack
 
-`basalt-proto` is deliberately not benchmark-only code. The batch stream format
-and the entropy-based compression policy are what the host and client will
-actually speak, so Phase 0 measures the real thing rather than a stand-in.
-
-## Setup
-
-Requires Rust (stable) and the MSVC build tools.
-
-```bash
-cargo build --release
-cargo test
-```
-
-Enable the pre-commit hook once per clone. It runs `cargo fmt --check`,
-`cargo clippy -D warnings`, and the full test suite before every commit, so a
-regression cannot land quietly:
-
-```bash
-git config core.hooksPath .githooks
-```
-
-The whole suite runs in a few seconds — a slow gate is one people start
-skipping. Use `git commit --no-verify` to bypass it deliberately.
-
-## Tests
-
-| Suite | What it guards |
+| Part | Built with |
 |---|---|
-| `basalt-proto` unit | framing, codec policy, path rules |
-| `frame_stress` | randomised round trips, truncation at every byte offset, bit-flip corruption, hostile length fields |
-| `path_safety` | ~50 adversarial paths — traversal, UNC, drive letters, NUL, Windows device names, trailing-dot tricks |
-| `net_integration` | the real server and client over real TCP and TLS: batching, inline errors, concurrency, malformed input |
-| `compression_policy` | the Phase 0 conclusion itself — that the corpus still models reality and compression still beats the link |
-| `disk` / `winio` | unbuffered reads return correct bytes, the concurrency classifier reads curves the right way round |
+| Host and client cores | Rust 2024, Tokio |
+| Transport | TCP, TLS 1.3 (rustls + ring), SPKI pinning, custom binary protocol |
+| Discovery | UDP beacon on the local network |
+| Desktop shells | Tauri v2, React 19, TypeScript, Tailwind, Framer Motion |
+| Playback | libmpv |
+| Integrity | BLAKE3 per transfer, SHA-256 on updates |
 
-Two tests measure real throughput and so are time-sensitive. They take the
-**best of five runs** rather than one, because `cargo test` runs them in
-parallel with everything else and any single run can be descheduled
-mid-measurement. Thresholds are set loose (2x the link speed against ~14x
-measured headroom) so they only fire on a genuinely bad change, such as raising
-the default zstd level.
+## Installation
 
-`net_integration` and `frame_stress` deliberately attack the code rather than
-demonstrate it. Two real bugs came out of writing them: a decoder that accepted
-a stream truncated after its terminator, and a server that put an unsanitised
-path into an error entry, which made the *decoder* reject the whole batch —
-exactly the failure inline errors exist to prevent.
+Download the latest installers from the
+[releases page](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest):
 
-## Running the benchmarks
+- **`Basalt-Host-x.y.z-setup.exe`** — on the machine with the drive.
+- **`Basalt-x.y.z-setup.exe`** — on every device that should reach it.
 
-### 1. Compression — run this first, no second machine needed
+Both install per-user and need no administrator. Each release also publishes a
+`.sha256` beside each installer if you want to check what you downloaded.
 
-The highest-value measurement. On a ~30 MB/s Wi-Fi link, zstd compresses
-roughly 20x faster than the radio can transmit, so compressible data should
-move several times faster than raw.
+Then: open Basalt Host, pick a drive, and open Basalt on another device. It
+will list the host; select it and type the PIN the host shows.
 
-```bash
-cargo run --release -p basalt-bench -- compress
+Both apps check for updates on their own and will tell you what is in the new
+version before you install it.
+
+## Configuration & Usage
+
+Everything Basalt keeps lives in `%APPDATA%\Basalt\`:
+
+| File | What it is |
+|---|---|
+| `host.json` | The host's identity, its settings and its paired devices |
+| `client.json` | The vault this device is paired with |
+| `host.log` | The host's log, replaced at each start |
+| `library-*.json` | The media index, rebuilt by a scan |
+| `progress-*.json` | Where each file was watched to |
+| `art/` | Downloaded posters |
+
+Deleting `host.json` regenerates the host's identity, which un-pairs every
+device. The rest can be deleted freely.
+
+**Optional, and off by default:** recognising films and series reads the whole
+drive, and downloading posters sends each recognised title to a lookup service.
+Neither happens until you turn it on.
+
+## Building from source
+
+```
+rustup toolchain install stable          # Rust 1.98+ MSVC
+cd apps/client/src-tauri && pwsh -File fetch-libmpv.ps1
+cd apps/client && npm install && npx tauri build
+cd apps/host   && npm install && npx tauri build
 ```
 
-### 2. Generate the corpus on the laptop
+`fetch-libmpv.ps1` downloads libmpv and a small wrapper into `src-tauri/lib/`
+and verifies the wrapper's checksum. They are not in the repository because
+`libmpv-2.dll` is 96 MB.
 
-Point `--root` at the drive under test. Use `--quick` (~1 GB) to smoke-test the
-harness, or omit it for the full ~8 GB corpus.
+`cargo test --all` runs the Rust suite; `npm test` in either app runs its own.
 
-```bash
-cargo run --release -p basalt-bench -- gen-corpus --root D:\bench-corpus
-```
+## License
 
-The corpus is deterministic: the same `--seed` produces byte-identical files, so
-runs are comparable across machines and across days.
+This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
 
-### 3. Serve from the laptop
+You are free to use, modify and distribute this software, provided any
+derivative works are also open-source under the identical terms. See the
+`LICENSE` file for the complete terms.
 
-```bash
-cargo run --release -p basalt-bench -- serve --root D:\bench-corpus
-```
+Basalt bundles libmpv (LGPL-2.1-or-later) and links a number of open-source
+libraries. See `THIRD-PARTY-NOTICES.txt` for full attribution.
 
-Prints the addresses it is reachable on. Allow it through Windows Firewall when
-prompted — ports 7742 (plaintext) and 7743 (TLS).
+---
 
-### 4. Disk benchmarks, on the laptop
-
-Run this against the drive under test. Every read bypasses the Windows file
-cache, so the numbers are the drive rather than RAM.
-
-```bash
-cargo run --release -p basalt-bench -- disk --root D:\bench-corpus
-```
-
-The output that matters is the **concurrency curve**. If throughput falls as
-threads are added, the host needs an I/O scheduler that caps disk parallelism.
-If it keeps climbing, that whole component can be dropped.
-
-### 5. Measure from the PC
-
-```bash
-cargo run --release -p basalt-bench -- net --host 192.168.1.42
-```
-
-### 6. The SMB baseline — the actual gate
-
-Share the corpus folder on the laptop, then from the PC:
-
-```bash
-cargo run --release -p basalt-bench -- smb --share \\LAPTOP\bench-corpus
-```
-
-Use the same `--small-files` count as the `net` run, or the comparison is
-meaningless. Compare the batched request against SMB's **best parallel**
-result, not its sequential one — beating a strawman proves nothing.
-
-### Check the environment any time
-
-```bash
-cargo run --release -p basalt-bench -- env
-```
-
-Reports CPU, RAM, and the Wi-Fi link — band, channel, rate, signal — plus
-advice when the link is the thing holding transfers back.
-
-## Output
-
-Every run writes `docs/benchmarks.md` (readable) and `docs/benchmarks.json`
-(diffable), both stamped with the machine that produced them. Numbers from
-different CPUs or different radio conditions are not comparable, and the report
-makes that explicit.
-
-## Reading the results
-
-- **Medians, not means.** One antivirus scan turns a mean into fiction.
-- **`⚠ unstable`** means p95 ran more than 25% over the median. Close background
-  apps and re-run; do not record unstable numbers.
-- **Loopback proves the harness works, not the design.** With a 77 µs RTT and a
-  2900 MB/s "link", batching and compression both look pointless — correctly so.
-  Only a run across the real radio answers the real question.
+<div align="center">
+  <p>Crafted by <b>Refora Technologies</b></p>
+  <p><a href="https://reforatech.com">reforatech.com</a></p>
+</div>

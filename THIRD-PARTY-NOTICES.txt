@@ -1,0 +1,77 @@
+Basalt — third-party notices
+============================
+
+Basalt is published by Refora Technologies under the GNU General Public
+License v3.0. It bundles and links to the components below. Each remains
+under its own licence, and nothing here overrides those terms.
+
+
+BUNDLED BINARIES (shipped inside the client installer)
+------------------------------------------------------
+
+libmpv  (mpv)                                   LGPL-2.1-or-later
+  https://mpv.io  ·  https://github.com/mpv-player/mpv
+  The media player that decodes and renders video in the client. Shipped as
+  `libmpv-2.dll`, built by the mpv-winbuild project against mpv's LGPL
+  configuration, and loaded dynamically — it is not statically linked, and it
+  can be replaced with another build of the same library.
+
+  libmpv itself links FFmpeg (LGPL-2.1-or-later), libass (ISC), and other
+  libraries; see the mpv project for its own complete attribution.
+
+libmpv-wrapper                                  MPL-2.0
+  https://github.com/nini22P/libmpv-wrapper
+  A small shim between the Tauri plugin and libmpv.
+
+
+RUST CRATES
+-----------
+
+tauri, wry, tao                                 MIT OR Apache-2.0
+tauri-plugin-libmpv                             MPL-2.0
+tokio, reqwest, serde, serde_json               MIT OR Apache-2.0
+rustls, tokio-rustls, rustls-pki-types          Apache-2.0 OR ISC OR MIT
+ring                                            ISC AND OpenSSL AND MIT
+blake3                                          CC0-1.0 OR Apache-2.0
+sha2, hex, thiserror, anyhow, clap              MIT OR Apache-2.0
+notify                                          CC0-1.0
+zstd, zstd-safe                                 MIT OR Apache-2.0
+rcgen                                           MIT OR Apache-2.0
+windows-sys                                     MIT OR Apache-2.0
+
+A complete, generated list of every transitive dependency and its licence can
+be produced from the repository with `cargo tree` or `cargo license`.
+
+
+JAVASCRIPT PACKAGES
+-------------------
+
+react, react-dom                                MIT
+framer-motion                                   MIT
+lucide-react                                    ISC
+tailwindcss                                     MIT
+vite, vitest, typescript                        MIT
+@tauri-apps/api and plugins                     MIT OR Apache-2.0
+tauri-plugin-libmpv-api                         MPL-2.0
+
+
+FONTS
+-----
+
+Plus Jakarta Sans                               SIL Open Font License 1.1
+Geist Mono                                      SIL Open Font License 1.1
+
+
+SERVICES
+--------
+
+Basalt contacts no network service unless you switch one on.
+
+The Movie Database (TMDb)  —  used only when "Download posters" is enabled.
+  Basalt is not endorsed or certified by TMDb.
+
+Free Movie DB (imdb.iamidiotareyoutoo.com)  —  the keyless poster source,
+  used only when "Download posters" is enabled. It answers from JustWatch's
+  catalogue.
+
+GitHub Releases  —  used to check for updates.

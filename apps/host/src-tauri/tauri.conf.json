@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Basalt Host",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "app.basalt.host",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -33,16 +33,27 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["icons/icon.ico"],
-    "shortDescription": "Shares one drive over your network.",
-    "longDescription": "Basalt Host shares a single drive with your own devices over the local network. Pick a drive, and paired devices find it themselves — no addresses to type.",
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "shortDescription": "Share one drive with your own devices.",
+    "longDescription": "Basalt Host shares a single drive with your own devices over the local network. Pick a drive, and paired devices find it themselves \u2014 no addresses to type.",
     "windows": {
-      "webviewInstallMode": { "type": "downloadBootstrapper" },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
       "nsis": {
         "installMode": "currentUser",
         "displayLanguageSelector": false
       }
-    }
+    },
+    "publisher": "Refora Technologies",
+    "copyright": "\u00a9 2026 Refora Technologies",
+    "category": "Utility",
+    "homepage": "https://github.com/Dushmantha-Amarasinghe/basalt",
+    "licenseFile": "../../../LICENSE"
   }
 }

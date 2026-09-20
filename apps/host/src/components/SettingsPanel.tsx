@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Check, Image as ImageIcon, Pencil, RefreshCw } from 'lucide-react'
 import type { HostStatus } from '@/lib/api'
+import { About } from './About'
 import { Switch } from './ui/Switch'
 import { formatAgo } from '@/lib/utils'
 
@@ -194,6 +195,8 @@ export function SettingsPanel({
           </button>
         </div>
       </div>
+
+      <About product="Basalt Host" />
     </div>
   )
 }

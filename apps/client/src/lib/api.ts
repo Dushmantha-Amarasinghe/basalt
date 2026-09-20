@@ -231,7 +231,29 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 // Connecting
 // ---------------------------------------------------------------------------
 
+/** A release newer than the one running. Mirrors `basalt_update::Release`. */
+export interface Release {
+  version: string
+  /** The release notes, as written on GitHub. */
+  notes: string
+  pageUrl: string
+  installerName: string
+  installerUrl: string
+  installerBytes: number
+  checksumUrl: string | null
+}
+
 export const api = {
+  /** Which version this is, as the release tags spell it. */
+  appVersion: (): Promise<string> => call<string>('app_version'),
+  /** A newer release, or null when this is the newest. */
+  checkUpdate: (): Promise<Release | null> => call<Release | null>('check_update'),
+  /** Fetches and verifies an installer, returning where it landed. */
+  downloadUpdate: (release: Release): Promise<string> =>
+    call<string>('download_update', { release }),
+  /** Runs the installer and closes this app so it can be replaced. */
+  installUpdate: (path: string): Promise<void> => call<void>('install_update', { path }),
+
   status: () => call<Status>('status'),
   /** Every host answering on this network. Takes about a second. */
   discover: () => call<DiscoveredHost[]>('discover'),

@@ -542,6 +542,83 @@ fn cancel_transfer(state: State<'_, AppState>, id: String) -> bool {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+// ---------------------------------------------------------------------------
+// Updates
+// ---------------------------------------------------------------------------
+
+/// Which app this is, for picking the right installer out of a release.
+///
+/// Both apps are published from one repository, so a release carries two
+/// installers and each has to recognise its own.
+const PRODUCT: basalt_update::Product = basalt_update::Product::Client;
+
+/// What is running now, as the release tags spell it.
+#[tauri::command]
+async fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// Whether a newer release exists. `None` means this is the newest.
+///
+/// A failure to reach GitHub is an error rather than "no update": the two
+/// mean different things to somebody who just pressed the button, and
+/// reporting the first as the second is how an app quietly stops updating.
+#[tauri::command]
+async fn check_update() -> Answer<Option<basalt_update::Release>> {
+    basalt_update::check(PRODUCT, env!("CARGO_PKG_VERSION"))
+        .await
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: e.to_string(),
+        })
+}
+
+/// Downloads an offered release, reporting progress, and returns its path.
+///
+/// The file is verified against the checksum published beside it before this
+/// returns; an installer that fails is deleted rather than handed back.
+#[tauri::command]
+async fn download_update(
+    app: tauri::AppHandle,
+    release: basalt_update::Release,
+) -> Answer<String> {
+    let into = std::env::temp_dir().join("Basalt Updates");
+    let emitter = app.clone();
+    let path = basalt_update::fetch(&release, &into, move |had, total| {
+        let _ = emitter.emit("basalt://update-progress", (had, total));
+    })
+    .await
+    .map_err(|e| UiError {
+        kind: "error".into(),
+        message: e.to_string(),
+    })?;
+
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Starts the installer and stands aside.
+///
+/// The app has to go: an installer cannot replace files that are open, and
+/// NSIS will silently skip the executable of a running program — which is
+/// exactly how somebody ends up "updating" and finding the same version.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
+    std::process::Command::new(&path)
+        .spawn()
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("could not start the installer: {e}"),
+        })?;
+
+    // A moment for the installer to be up before this window disappears,
+    // so the screen is never empty with nothing apparently happening.
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        app.exit(0);
+    });
+    Ok(())
+}
+
 pub fn run() {
     // WebView2 refuses to start playback with sound unless the page has a
     // recent user gesture. Clicking a file in the list *is* one, but the
@@ -641,6 +718,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            app_version,
+            check_update,
+            download_update,
+            install_update,
             status,
             discover,
             begin_pairing,

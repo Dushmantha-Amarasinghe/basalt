@@ -1,6 +1,6 @@
 [package]
 name = "basalt-client-shell"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "Basalt desktop shell"
 rust-version = "1.82"
@@ -19,6 +19,7 @@ tauri-build = { version = "2", features = [] }
 # few minutes.
 basalt-client = { path = "../../../crates/basalt-client" }
 basalt-proto = { path = "../../../crates/basalt-proto" }
+basalt-update = { path = "../../../crates/basalt-update" }
 
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
