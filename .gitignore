@@ -28,3 +28,8 @@ Thumbs.db
 # Tauri shell build output (kept out of the workspace target dir)
 /target-tauri/
 /target-probe/
+
+# Tauri shells: build output, generated schemas, and the libmpv drop
+apps/*/src-tauri/target/
+apps/*/src-tauri/gen/schemas/
+apps/*/src-tauri/lib/
