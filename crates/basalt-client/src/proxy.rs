@@ -32,11 +32,11 @@ use tokio::net::{TcpListener, TcpStream};
 use crate::client::Basalt;
 use crate::{ClientError, Result};
 
-/// Bytes served per read when the player does not ask for a bounded range.
+/// Bytes read from the host per iteration while streaming a response.
 ///
-/// A player that opens with `Range: bytes=0-` wants the whole file, but
-/// answering literally would mean buffering it. Serving a window at a time
-/// keeps memory flat and the player simply asks again.
+/// A window on the *reads*, not on the answer. The whole requested range is
+/// served on one connection; this only bounds how much is held in memory at
+/// once, so a four-gigabyte film costs four megabytes of buffer.
 const WINDOW_BYTES: u64 = 4 * 1024 * 1024;
 
 pub struct MediaProxy {
@@ -316,9 +316,18 @@ fn parse_range(header: &str, total: u64) -> Option<(u64, u64)> {
         return None;
     }
     let end = if to.is_empty() {
-        // An open range. Answering with a window rather than the rest of the
-        // file keeps memory flat; the player asks again for the next piece.
-        (start + WINDOW_BYTES - 1).min(total - 1)
+        // An open range means "from here to the end", and that is what it
+        // gets. Memory stays flat regardless, because the body is streamed
+        // `WINDOW_BYTES` at a time — the cap that used to be here bought
+        // nothing and broke playback outright.
+        //
+        // It answered `bytes=0-` with four megabytes and closed. A browser
+        // and VLC both ask again for the next piece, so this looked fine for
+        // a year. FFmpeg — and therefore mpv — reads a short body as the end
+        // of the stream, stops dead, and will not resume, because as far as
+        // it is concerned the file is over. Every film played for the same
+        // handful of seconds and froze.
+        total - 1
     } else {
         to.parse::<u64>().ok()?.min(total - 1)
     };
@@ -414,13 +423,30 @@ mod tests {
         assert_eq!(parse_range("bytes=900-9999", 1000), Some((900, 999)));
     }
 
+    /// An open range means the rest of the file, and must be answered as one.
+    ///
+    /// This test used to assert the opposite — that `bytes=0-` was answered
+    /// with a four-megabyte window — and the app shipped that way because a
+    /// browser and VLC both quietly ask again for the next piece. FFmpeg does
+    /// not: a short body is the end of the stream, so every film played for
+    /// the same few seconds and froze with no way to resume. Memory is bounded
+    /// by the read loop, not by lying about the length.
     #[test]
-    fn an_open_range_is_answered_with_a_window() {
-        // What a player sends when it opens a file: "give me everything".
-        // Answering literally would mean buffering the whole film.
-        let (start, end) = parse_range("bytes=0-", 10 * 1024 * 1024).unwrap();
+    fn an_open_range_runs_to_the_end_of_the_file() {
+        let big = 4_000_000_000u64;
+        assert_eq!(parse_range("bytes=0-", big), Some((0, big - 1)));
+        // And from a seek, not only from the start.
+        assert_eq!(parse_range("bytes=1500-", big), Some((1500, big - 1)));
+    }
+
+    /// The window is a read size now, and has to stay well under the file it
+    /// is reading, or the loop would be pointless.
+    #[test]
+    fn the_read_window_bounds_memory_not_the_answer() {
+        let (start, end) = parse_range("bytes=0-", 10 * WINDOW_BYTES).unwrap();
         assert_eq!(start, 0);
-        assert_eq!(end, WINDOW_BYTES - 1);
+        assert_eq!(end, 10 * WINDOW_BYTES - 1, "the answer is the whole file");
+        assert!(WINDOW_BYTES < end, "but it is read in pieces");
     }
 
     #[test]
