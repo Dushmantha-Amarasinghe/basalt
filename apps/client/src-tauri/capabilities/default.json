@@ -19,6 +19,8 @@
     "dialog:allow-save",
     "opener:allow-open-path",
     "opener:allow-open-url",
-    "libmpv:default"
+    "libmpv:default",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-is-fullscreen"
   ]
 }

@@ -26,6 +26,17 @@ export async function pickFolder(): Promise<string | null> {
   return typeof chosen === 'string' ? chosen : null
 }
 
+/** A subtitle file on this machine, to load over what is playing. */
+export async function pickSubtitleFile(): Promise<string | null> {
+  if (!inTauri()) return null
+  const { open } = await import('@tauri-apps/plugin-dialog')
+  const chosen = await open({
+    multiple: false,
+    filters: [{ name: 'Subtitles', extensions: ['srt', 'ass', 'ssa', 'vtt', 'sub', 'sup'] }],
+  })
+  return typeof chosen === 'string' ? chosen : null
+}
+
 /** Files to upload. */
 export async function pickFiles(): Promise<string[]> {
   if (!inTauri()) return []

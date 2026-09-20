@@ -48,14 +48,14 @@ import { PropertiesPanel } from '@/components/PropertiesPanel'
 import { useContextMenu, type MenuAction } from '@/components/ui/ContextMenu'
 import { PromptDialog, type PromptRequest } from '@/components/ui/PromptDialog'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
-import { api, joinPath, parentOf } from '@/lib/api'
+import { api, isFinished, joinPath, parentOf, type SubtitleTrack } from '@/lib/api'
 import { useVault } from '@/lib/useVault'
 import { filterKind, recentOf, useLibraryScan } from '@/lib/useLibrary'
 import { transferId, useTransfers } from '@/lib/useTransfers'
 import { nameOf, useFileActions } from '@/lib/useFileActions'
 import { useAsyncSubscription, useLatest } from '@/lib/useAsyncSubscription'
 import { useStars } from '@/lib/useStars'
-import { entriesToMedia, isMediaFile, isPlayable } from '@/lib/media'
+import { entriesToMedia, isMediaFile, nextEpisodes } from '@/lib/media'
 import type { MediaItem } from '@/lib/mockMedia'
 import {
   baseName,
@@ -138,29 +138,62 @@ export function App(): React.JSX.Element {
    * the first of season two, and stopping at a season boundary is exactly the
    * point at which autoplay is most wanted.
    */
-  const episodeOrder = useMemo(() => {
-    const order: { path: string; label: string }[] = []
+  /**
+   * What follows each episode, for autoplay.
+   *
+   * Built per series — see `nextEpisodes`. It used to be one flat list over
+   * every series in the library, which meant finishing a show started an
+   * unrelated one.
+   */
+  const nextByPath = useMemo(() => nextEpisodes(media.series), [media.series])
+
+  /**
+   * The subtitle files the host found beside a given video.
+   *
+   * Built from the index rather than asked for, because the index is already
+   * here and a per-file question would be a round trip at the moment somebody
+   * pressed play.
+   */
+  const subtitlesByPath = useMemo(() => {
+    const map = new Map<string, SubtitleTrack[]>()
+    for (const film of media.films) {
+      if (film.path && film.subtitles?.length) map.set(film.path, film.subtitles)
+    }
     for (const series of media.series) {
       for (const season of series.seasons) {
         for (const episode of season.episodes) {
-          order.push({
-            path: episode.path,
-            label: `${series.title} · S${String(season.number).padStart(2, '0')}E${String(
-              episode.number,
-            ).padStart(2, '0')}`,
-          })
+          if (episode.subtitles?.length) map.set(episode.path, episode.subtitles)
         }
       }
     }
-    return order
-  }, [media.series])
+    return map
+  }, [media.films, media.series])
+
+  const subtitlesFor = useCallback(
+    (path: string): SubtitleTrack[] => subtitlesByPath.get(path) ?? [],
+    [subtitlesByPath],
+  )
+
+  /**
+   * Where to start a file, which is not simply where it was left.
+   *
+   * Something already watched starts again. Dropping straight into the last
+   * ten seconds of a film somebody finished is not resuming, it is showing
+   * them the credits — and it is exactly what happens when a stray progress
+   * record says the position is the duration.
+   */
+  const resumeFor = useCallback(
+    (path: string): number => {
+      const entry = watchedByPath.get(path)
+      if (!entry) return 0
+      return isFinished(entry) ? 0 : entry.position
+    },
+    [watchedByPath],
+  )
 
   const nextAfter = useCallback(
-    (path: string): { path: string; label: string } | null => {
-      const at = episodeOrder.findIndex((e) => e.path === path)
-      return at >= 0 ? (episodeOrder[at + 1] ?? null) : null
-    },
-    [episodeOrder],
+    (path: string): { path: string; label: string } | null => nextByPath.get(path) ?? null,
+    [nextByPath],
   )
 
   // The drive is the truth: whatever changes it, the folder on screen reloads
@@ -391,7 +424,7 @@ export function App(): React.JSX.Element {
         return
       }
       const media = entriesToMedia([entry])[0]
-      if (isPlayable(entry.name)) setPlaying(media ?? null)
+      if (isMediaFile(entry.name)) setPlaying(media ?? null)
       else void downloadOne(entry)
     },
     [vault, downloadOne],
@@ -498,10 +531,10 @@ export function App(): React.JSX.Element {
 
       const items: MenuAction[] = []
 
-      // Only when opening means something other than downloading. For a file
-      // the window cannot play, "Open" and "Download…" would be the same
+      // Only when opening means something other than downloading. For a
+      // file that is not media, "Open" and "Download…" would be the same
       // action listed twice.
-      const canOpen = entry.kind === 'dir' || isPlayable(entry.name)
+      const canOpen = entry.kind === 'dir' || isMediaFile(entry.name)
       if (canOpen && !many) {
         items.push({
           id: 'open',
@@ -863,6 +896,24 @@ export function App(): React.JSX.Element {
 
   return (
     <div className="relative flex h-full flex-col">
+      {/*
+        Everything behind the player stops drawing while it is up.
+
+        mpv renders into the native window *behind* this page, so the page has
+        to be genuinely transparent for the picture to reach the screen — and
+        a transparent `body` is not enough while the app's own sidebar, grid
+        and backdrop are still painting over the top of it. The first build
+        showed exactly that: the controls worked, the clock ran, and what you
+        saw where the film should be was the library.
+
+        `visibility: hidden` rather than unmounting: the view underneath keeps
+        its scroll position and its state, so closing the player puts you back
+        where you were.
+      */}
+      <div
+        className="contents"
+        style={{ visibility: playing ? 'hidden' : 'visible' }}
+      >
       <div className="backdrop" />
       <TitleBar vaultName={vault.status.vault ?? 'Vault'} connected={connected} />
 
@@ -1099,6 +1150,8 @@ export function App(): React.JSX.Element {
         onOpenEntry={openEntry}
       />
 
+      </div>
+
       <PlayerOverlay
         item={playing}
         onClose={() => {
@@ -1109,10 +1162,11 @@ export function App(): React.JSX.Element {
           setTimeout(watched.refresh, 300)
         }}
         onOpenExternally={(path) => void openExternally(path)}
-        resumeAt={playing ? (watchedByPath.get(playing.id)?.position ?? 0) : 0}
+        resumeAt={playing ? resumeFor(playing.id) : 0}
         onProgress={watched.report}
         nextUp={playing ? nextAfter(playing.id) : null}
         onPlayNext={(path) => void playPath(path)}
+        subtitles={playing ? subtitlesFor(playing.id) : []}
       />
 
       <ImageViewer

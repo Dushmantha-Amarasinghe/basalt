@@ -2,42 +2,38 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   AlertCircle,
+  ChevronLeft,
+  ChevronRight,
   ExternalLink,
   Maximize2,
   Pause,
   Play,
+  Plus,
   SkipBack,
   SkipForward,
+  Subtitles,
   Volume2,
   VolumeX,
   X,
 } from 'lucide-react'
 import type { MediaItem } from '@/lib/mockMedia'
 import { formatDuration } from '@/lib/mockMedia'
-import { api } from '@/lib/api'
-import {
-  judgeSound,
-  playabilityOf,
-  readCounters,
-  silenceMessage,
-  unplayableMessage,
-  type SoundState,
-} from '@/lib/playback'
+import { api, type SubtitleTrack } from '@/lib/api'
+import { pickSubtitleFile } from '@/lib/dialogs'
+import { useMpv, type Mpv } from '@/lib/useMpv'
 import { cn } from '@/lib/utils'
 
 /**
  * The player.
  *
- * The file is not downloaded first. The source is a URL from the local media
- * proxy, and dragging the scrubber makes the browser issue a range request,
- * which becomes a ranged read on the host, which becomes a seek on the drive.
- * That chain is the whole reason `Read` takes an offset.
+ * Nothing is downloaded. The source is a URL from the local media proxy, and
+ * seeking becomes a range request, which becomes a ranged read on the host,
+ * which becomes a seek on the drive. That chain is why `Read` takes an offset.
  *
- * WebView2 is Chromium, so it plays what Chromium plays: H.264/AAC in MP4,
- * WebM, MP3, FLAC. MKV, HEVC and AC3 are common in a real library and it
- * cannot decode them — so rather than showing a black rectangle and letting
- * the user guess, that case is named explicitly. The mpv sidecar that fixes it
- * will take the same URL.
+ * The picture is **mpv**, drawn into the native window behind this page — see
+ * [`useMpv`] for why a `<video>` element could not do the job. Everything
+ * here is ordinary HTML composited over the top of it, which is why the area
+ * where the video belongs is deliberately left transparent.
  */
 export function PlayerOverlay({
   item,
@@ -47,6 +43,7 @@ export function PlayerOverlay({
   onProgress,
   nextUp,
   onPlayNext,
+  subtitles = [],
 }: {
   item: MediaItem | null
   onClose: () => void
@@ -59,25 +56,24 @@ export function PlayerOverlay({
   /** The episode after this one, when there is one. */
   nextUp?: { path: string; label: string } | null
   onPlayNext?: (path: string) => void
+  /** Subtitle files the host found beside this file. */
+  subtitles?: SubtitleTrack[]
 }): React.JSX.Element {
-  const mediaRef = useRef<HTMLVideoElement | null>(null)
-  const [url, setUrl] = useState<string | null>(null)
-  const [playing, setPlaying] = useState(false)
-  const [position, setPosition] = useState(0)
-  const [duration, setDuration] = useState(0)
-  const [muted, setMuted] = useState(false)
-  const [volume, setVolume] = useState(1)
-  const [failed, setFailed] = useState(false)
-  const [sound, setSound] = useState<SoundState>('unknown')
+  const mpv = useMpv()
+  const [failed, setFailed] = useState<string | null>(null)
+  const [menu, setMenu] = useState(false)
 
-  /** True once this file has been seeked to its resume point. */
-  const resumed = useRef(false)
   const latest = useRef({ path: '', position: 0, duration: 0 })
   const report = useRef(onProgress)
   report.current = onProgress
+  latest.current = {
+    path: item?.id ?? '',
+    position: mpv.position,
+    duration: mpv.duration,
+  }
 
-  // Reported on a timer rather than on every `timeupdate`, which fires about
-  // four times a second and would be four network calls a second.
+  // Reported on a timer rather than on every tick, which would be several
+  // network calls a second.
   useEffect(() => {
     if (!item) return
     const timer = setInterval(() => {
@@ -87,103 +83,127 @@ export function PlayerOverlay({
 
     return () => {
       clearInterval(timer)
-      // One last report on the way out. This is the important one: it is the
+      // One last report on the way out, and the important one: it is the
       // position somebody actually stopped at.
       const { path, position, duration } = latest.current
       if (path && duration > 0) report.current?.(path, position, duration)
     }
   }, [item])
 
-  useEffect(() => {
-    resumed.current = false
-    latest.current = { path: item?.id ?? '', position: 0, duration: 0 }
-  }, [item])
-
-  const isAudio = item ? looksLikeAudio(item.id) : false
-  // A container the window half-understands: it will open and may show a
-  // picture, but any audio that is not Opus or Vorbis is quietly dropped.
-  const partial = item ? playabilityOf(item.id) === 'partial' : false
-
-  // Resolve the proxy URL whenever a new item opens.
+  // Open the file whenever a new one is chosen, and stop when the player closes.
+  const load = mpv.load
+  const stop = mpv.stop
   useEffect(() => {
     if (!item) {
-      setUrl(null)
+      void stop()
       return
     }
     let cancelled = false
-    setUrl(null)
-    setFailed(false)
-    setSound('unknown')
-    setPosition(0)
-    setDuration(0)
+    setFailed(null)
+    setMenu(false)
     void api
       .mediaUrl(item.id)
-      .then((resolved) => {
-        if (!cancelled) setUrl(resolved || null)
+      .then(async (url) => {
+        if (cancelled) return
+        if (!url) {
+          setFailed('This file could not be opened for streaming.')
+          return
+        }
+        // Never right at the end: that drops somebody into the credits of
+        // something they had just finished.
+        await load(url, resumeAt > 0 ? resumeAt : 0)
       })
-      .catch(() => {
-        if (!cancelled) setFailed(true)
+      .catch((e: unknown) => {
+        if (!cancelled) setFailed(String(e))
       })
     return () => {
       cancelled = true
     }
-  }, [item])
+    // `resumeAt` deliberately absent: it changes as the position is reported
+    // back, and depending on it would reload the file mid-playback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item, load, stop])
 
-  // Chromium plays a file it can only partly decode without saying so: the
-  // picture runs and there is no sound and no error. Watching the decoded-byte
-  // counters is the only way to notice, so the app can say what happened
-  // instead of leaving the user to wonder whether it is their volume.
+  // Finished: mark it watched so it leaves Continue watching rather than
+  // sitting at 99%, then go on to the next episode if there is one.
+  const advance = useRef({ nextUp, onPlayNext })
+  advance.current = { nextUp, onPlayNext }
   useEffect(() => {
-    if (!url || failed || !item) return undefined
-    const started = Date.now()
-    const timer = setInterval(() => {
-      const media = mediaRef.current
-      if (!media || media.paused) return
-      const { audio, video } = readCounters(media)
-      const verdict = judgeSound(audio, video, (Date.now() - started) / 1000)
-      if (verdict !== 'unknown') {
-        setSound(verdict)
-        clearInterval(timer)
-      }
-    }, 500)
-    return () => clearInterval(timer)
-  }, [url, failed, item])
+    if (!mpv.ended || !item) return
+    const { duration } = latest.current
+    if (duration > 0) report.current?.(item.id, duration, duration)
+    const { nextUp: next, onPlayNext: play } = advance.current
+    if (next && play) play(next.path)
+  }, [mpv.ended, item])
 
-  const toggle = useCallback(() => {
-    const media = mediaRef.current
-    if (!media) return
-    if (media.paused) void media.play().catch(() => setFailed(true))
-    else media.pause()
-  }, [])
-
-  const seekTo = useCallback((fraction: number) => {
-    const media = mediaRef.current
-    if (!media || !Number.isFinite(media.duration)) return
-    media.currentTime = Math.max(0, Math.min(1, fraction)) * media.duration
-  }, [])
-
-  const skip = useCallback((seconds: number) => {
-    const media = mediaRef.current
-    if (!media) return
-    media.currentTime = Math.max(0, media.currentTime + seconds)
+  const fullscreen = useCallback(async () => {
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window')
+      const window = getCurrentWindow()
+      await window.setFullscreen(!(await window.isFullscreen()))
+    } catch {
+      // Not in the shell, or the window refused; neither is worth an error.
+    }
   }, [])
 
   useEffect(() => {
     if (!item) return undefined
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose()
-      if (e.key === ' ') {
-        e.preventDefault()
-        toggle()
+      // Typing in the subtitle-offset box is not a player shortcut.
+      const target = e.target as HTMLElement | null
+      if (target?.closest('input, textarea, [contenteditable="true"]')) return
+
+      switch (e.key) {
+        case 'Escape':
+          onClose()
+          break
+        case ' ':
+        case 'k':
+          e.preventDefault()
+          void mpv.togglePause()
+          break
+        case 'ArrowRight':
+          e.preventDefault()
+          void mpv.seekBy(e.shiftKey ? 60 : 5)
+          break
+        case 'ArrowLeft':
+          e.preventDefault()
+          void mpv.seekBy(e.shiftKey ? -60 : -5)
+          break
+        case 'ArrowUp':
+          e.preventDefault()
+          void mpv.setVolume(Math.min(130, mpv.volume + 5))
+          break
+        case 'ArrowDown':
+          e.preventDefault()
+          void mpv.setVolume(Math.max(0, mpv.volume - 5))
+          break
+        // mpv's own keys for this, because anyone who wants frame stepping
+        // already knows them.
+        case '.':
+          e.preventDefault()
+          void mpv.stepFrame(1)
+          break
+        case ',':
+          e.preventDefault()
+          void mpv.stepFrame(-1)
+          break
+        case 'm':
+          void mpv.toggleMute()
+          break
+        case 'f':
+          void fullscreen()
+          break
+        default:
+          break
       }
-      if (e.key === 'ArrowRight') skip(10)
-      if (e.key === 'ArrowLeft') skip(-10)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [item, onClose, toggle, skip])
+  }, [item, onClose, mpv, fullscreen])
 
-  const percent = duration > 0 ? (position / duration) * 100 : 0
+  const percent = mpv.duration > 0 ? (mpv.position / mpv.duration) * 100 : 0
+  const problem = failed ?? mpv.problem
 
   return (
     <AnimatePresence>
@@ -193,134 +213,78 @@ export function PlayerOverlay({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
-          className="fixed inset-0 z-40 flex flex-col bg-black"
+          className="fixed inset-0 z-40 flex flex-col"
         >
+          {/*
+            Transparent, and that is not a style choice: mpv is drawing behind
+            this page, and anything painted here would cover the film. Only
+            the bars above and below are opaque.
+          */}
           <div
-            className="relative flex min-h-0 flex-1 items-center justify-center"
-            style={{
-              background: `radial-gradient(120% 90% at 50% 40%, ${item.tone[1]} 0%, #050506 70%)`,
-            }}
+            onClick={() => void mpv.togglePause()}
+            onDoubleClick={() => void fullscreen()}
+            className="relative min-h-0 flex-1 cursor-pointer"
           >
-            {url && !failed ? (
-              <video
-                ref={mediaRef}
-                src={url}
-                autoPlay
-                // Audio keeps the poster backdrop visible rather than a strip
-                // of black where a picture would be.
-                className={cn(
-                  'max-h-full max-w-full',
-                  isAudio && 'pointer-events-none h-0 w-0 opacity-0',
-                )}
-                onPlay={() => setPlaying(true)}
-                onPause={() => setPlaying(false)}
-                onTimeUpdate={(e) => {
-                  const at = e.currentTarget.currentTime
-                  setPosition(at)
-                  latest.current = {
-                    path: item?.id ?? '',
-                    position: at,
-                    duration: e.currentTarget.duration || 0,
-                  }
-                }}
-                onDurationChange={(e) => {
-                  const value = e.currentTarget.duration
-                  const total = Number.isFinite(value) ? value : 0
-                  setDuration(total)
-
-                  // Seek once, and only once the duration is known — before
-                  // that the element refuses to move. Never right at the end,
-                  // which would drop someone into the credits of something
-                  // they had just finished.
-                  if (!resumed.current && total > 0 && resumeAt > 0 && resumeAt < total - 10) {
-                    resumed.current = true
-                    e.currentTarget.currentTime = resumeAt
-                  }
-                }}
-                onEnded={() => {
-                  // Mark it finished before moving on, so it leaves Continue
-                  // watching rather than sitting there at 99%.
-                  if (item && latest.current.duration > 0) {
-                    report.current?.(
-                      item.id,
-                      latest.current.duration,
-                      latest.current.duration,
-                    )
-                  }
-                  if (nextUp && onPlayNext) onPlayNext(nextUp.path)
-                }}
-                onError={() => setFailed(true)}
-              />
-            ) : null}
-
-            {(isAudio || !url || failed) && (
-              <motion.div
-                initial={{ scale: 0.96, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-                className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center"
-              >
-                {failed ? (
-                  <>
-                    <AlertCircle size={22} className="text-danger" />
-                    <div className="mt-4 max-w-[400px] px-6 text-[13px] leading-relaxed text-text">
-                      {unplayableMessage(item.id)}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="font-mono text-[11px] uppercase tracking-[0.24em] text-textFaint">
-                      {url ? 'now playing' : 'opening'}
-                    </div>
-                    <div className="mt-3 px-8 text-2xl font-semibold tracking-tight text-text">
-                      {item.title}
-                    </div>
-                    <div className="mt-1 text-sm text-textDim">{item.subtitle}</div>
-                    <div className="mt-6 font-mono text-[11px] text-textFaint">
-                      streaming from the vault · nothing downloaded
-                    </div>
-                  </>
-                )}
-              </motion.div>
+            {problem && (
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center bg-black text-center">
+                <AlertCircle size={22} className="text-danger" />
+                <div className="mt-4 max-w-[420px] px-6 text-[13px] leading-relaxed text-text">
+                  {problem}
+                </div>
+              </div>
             )}
 
-            {/*
-              The picture is running and nothing is coming out. Chromium gives
-              no error for this, so without saying it here the user is left
-              checking their own volume.
-            */}
+            {/* Only while nothing has started, so it is never over a picture. */}
+            {!problem && mpv.duration === 0 && (
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center bg-black text-center">
+                <div className="font-mono text-[11px] uppercase tracking-[0.24em] text-textFaint">
+                  opening
+                </div>
+                <div className="mt-3 px-8 text-2xl font-semibold tracking-tight text-text">
+                  {item.title}
+                </div>
+                <div className="mt-1 text-sm text-textDim">{item.subtitle}</div>
+                <div className="mt-6 font-mono text-[11px] text-textFaint">
+                  streaming from the vault · nothing downloaded
+                </div>
+              </div>
+            )}
+
+            {/* A paused film shows nothing else; this says it is paused. */}
             <AnimatePresence>
-              {sound === 'silent' && (
+              {mpv.paused && mpv.duration > 0 && (
                 <motion.div
-                  initial={{ opacity: 0, y: -8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  className="absolute inset-x-0 top-0 flex justify-center px-16 pt-4"
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  transition={{ duration: 0.14 }}
+                  className="pointer-events-none absolute inset-0 flex items-center justify-center"
                 >
-                  <div className="flex max-w-[520px] items-start gap-2.5 rounded-md border border-danger/25 bg-dangerBg/95 px-3.5 py-2.5 backdrop-blur">
-                    <AlertCircle size={14} className="mt-px shrink-0 text-danger" />
-                    <p className="text-[12px] leading-relaxed text-danger">
-                      {silenceMessage(item.id)}
-                    </p>
-                  </div>
+                  <span className="flex h-16 w-16 items-center justify-center rounded-full bg-black/55 backdrop-blur">
+                    <Pause size={24} className="fill-text text-text" />
+                  </span>
                 </motion.div>
               )}
             </AnimatePresence>
 
-            {onOpenExternally && (sound === 'silent' || failed || partial) && (
-              <motion.button
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                onClick={() => onOpenExternally(item.id)}
+            {onOpenExternally && problem && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onOpenExternally(item.id)
+                }}
                 className="absolute bottom-6 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-md border border-white/[0.16] bg-panel2/95 px-3.5 py-2 text-[12px] text-text backdrop-blur transition-colors hover:bg-white/[0.08]"
               >
                 <ExternalLink size={13} />
                 Play in your player
-              </motion.button>
+              </button>
             )}
 
             <button
-              onClick={onClose}
+              onClick={(e) => {
+                e.stopPropagation()
+                onClose()
+              }}
               aria-label="Close player"
               className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-black/40 text-textDim backdrop-blur transition-colors hover:bg-black/60 hover:text-text"
             >
@@ -332,47 +296,95 @@ export function PlayerOverlay({
             initial={{ y: 20, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             transition={{ delay: 0.1, duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-            className="shrink-0 border-t border-white/[0.06] bg-ink/95 px-5 py-4 backdrop-blur"
+            className="relative shrink-0 border-t border-white/[0.06] bg-ink/95 px-5 py-4 backdrop-blur"
           >
-            <Scrubber percent={percent} onSeek={seekTo} disabled={duration === 0} />
+            <AnimatePresence>
+              {menu && (
+                <SubtitleMenu
+                  mpv={mpv}
+                  fromDrive={subtitles}
+                  onClose={() => setMenu(false)}
+                />
+              )}
+            </AnimatePresence>
+
+            <Scrubber
+              percent={percent}
+              onSeek={(fraction) => void mpv.seekTo(fraction * mpv.duration)}
+              disabled={mpv.duration === 0}
+            />
 
             <div className="mt-3 flex items-center gap-4">
-              <ControlButton icon={SkipBack} label="Back 10s" onClick={() => skip(-10)} />
+              <ControlButton
+                icon={SkipBack}
+                label="Back 10s"
+                onClick={() => void mpv.seekBy(-10)}
+              />
               <button
-                onClick={toggle}
-                disabled={!url || failed}
-                aria-label={playing ? 'Pause' : 'Play'}
+                onClick={() => void mpv.togglePause()}
+                disabled={mpv.duration === 0}
+                aria-label={mpv.paused ? 'Play' : 'Pause'}
                 className="flex h-10 w-10 items-center justify-center rounded-full bg-basalt text-ink transition-transform hover:scale-105 disabled:opacity-30 disabled:hover:scale-100"
               >
-                {playing ? (
-                  <Pause size={17} className="fill-ink" />
-                ) : (
+                {mpv.paused ? (
                   <Play size={17} className="ml-0.5 fill-ink" />
+                ) : (
+                  <Pause size={17} className="fill-ink" />
                 )}
               </button>
               <ControlButton
                 icon={SkipForward}
                 label="Forward 10s"
-                onClick={() => skip(10)}
+                onClick={() => void mpv.seekBy(10)}
               />
 
-              <span className="tnum ml-2 font-mono text-[11px] text-textDim">
-                {formatDuration(position)}
-                <span className="text-textFaint"> / {formatDuration(duration)}</span>
+              {/* Frame stepping, which is the thing a `<video>` element could
+                  only ever approximate by nudging `currentTime`. */}
+              <div className="ml-1 flex items-center">
+                <ControlButton
+                  icon={ChevronLeft}
+                  label="Previous frame (,)"
+                  onClick={() => void mpv.stepFrame(-1)}
+                />
+                <ControlButton
+                  icon={ChevronRight}
+                  label="Next frame (.)"
+                  onClick={() => void mpv.stepFrame(1)}
+                />
+              </div>
+
+              <span className="tnum ml-1 font-mono text-[11px] text-textDim">
+                {formatDuration(mpv.position)}
+                <span className="text-textFaint"> / {formatDuration(mpv.duration)}</span>
               </span>
 
               <div className="flex-1" />
 
+              <button
+                onClick={() => setMenu((open) => !open)}
+                aria-label="Subtitles"
+                title="Subtitles"
+                className={cn(
+                  'flex h-8 items-center gap-1.5 rounded-md px-2 text-[11px] transition-colors',
+                  mpv.subtitleId !== null
+                    ? 'bg-white/[0.08] text-text'
+                    : 'text-textDim hover:bg-white/[0.06] hover:text-text',
+                )}
+              >
+                <Subtitles size={16} />
+                {mpv.subtitleDelay !== 0 && (
+                  <span className="tnum font-mono text-[10px]">
+                    {mpv.subtitleDelay > 0 ? '+' : ''}
+                    {mpv.subtitleDelay.toFixed(1)}s
+                  </span>
+                )}
+              </button>
+
               <div className="group/vol flex items-center gap-1.5">
                 <ControlButton
-                  icon={muted || volume === 0 ? VolumeX : Volume2}
-                  label={muted ? 'Unmute' : 'Mute'}
-                  onClick={() => {
-                    const media = mediaRef.current
-                    if (!media) return
-                    media.muted = !media.muted
-                    setMuted(media.muted)
-                  }}
+                  icon={mpv.muted || mpv.volume === 0 ? VolumeX : Volume2}
+                  label={mpv.muted ? 'Unmute' : 'Mute'}
+                  onClick={() => void mpv.toggleMute()}
                 />
                 {/*
                   A real slider rather than a mute toggle alone: when someone
@@ -382,33 +394,180 @@ export function PlayerOverlay({
                 <input
                   type="range"
                   min={0}
-                  max={1}
-                  step={0.02}
-                  value={muted ? 0 : volume}
+                  max={130}
+                  step={1}
+                  value={mpv.muted ? 0 : mpv.volume}
                   aria-label="Volume"
-                  onChange={(e) => {
-                    const next = Number(e.target.value)
-                    const media = mediaRef.current
-                    setVolume(next)
-                    setMuted(next === 0)
-                    if (media) {
-                      media.volume = next
-                      media.muted = next === 0
-                    }
-                  }}
+                  onChange={(e) => void mpv.setVolume(Number(e.target.value))}
                   className="h-1 w-0 cursor-pointer appearance-none rounded-full bg-white/[0.14] opacity-0 transition-all duration-200 accent-basalt group-hover/vol:w-20 group-hover/vol:opacity-100"
                 />
               </div>
-              <ControlButton
-                icon={Maximize2}
-                label="Fullscreen"
-                onClick={() => void mediaRef.current?.requestFullscreen?.()}
-              />
+              <ControlButton icon={Maximize2} label="Fullscreen (f)" onClick={fullscreen} />
             </div>
           </motion.div>
         </motion.div>
       )}
     </AnimatePresence>
+  )
+}
+
+/**
+ * Which subtitles, and whether they are in time with the sound.
+ *
+ * The offset is here rather than buried in a settings screen because it is
+ * needed *while watching* — a subtitle file from one release against a video
+ * from another drifts, and the only way to correct it is to watch and nudge.
+ */
+function SubtitleMenu({
+  mpv,
+  fromDrive,
+  onClose,
+}: {
+  mpv: Mpv
+  fromDrive: SubtitleTrack[]
+  onClose: () => void
+}): React.JSX.Element {
+  const inFile = mpv.tracks.filter((t) => t.kind === 'sub')
+
+  const addFromDrive = async (track: SubtitleTrack): Promise<void> => {
+    // Through the proxy: mpv reaches the host the same way the video does.
+    const url = await api.mediaUrl(track.path)
+    if (url) await mpv.addSubtitle(url)
+  }
+
+  const addFromDisk = async (): Promise<void> => {
+    const path = await pickSubtitleFile()
+    if (path) await mpv.addSubtitle(path)
+  }
+
+  const nudge = (by: number): void => {
+    void mpv.setSubtitleDelay(Math.round((mpv.subtitleDelay + by) * 100) / 100)
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 8 }}
+      transition={{ duration: 0.14 }}
+      className="absolute bottom-full right-4 mb-2 w-[300px] overflow-hidden rounded-lg border border-white/10 bg-panel2/98 shadow-lift backdrop-blur"
+    >
+      <div className="max-h-[260px] overflow-y-auto py-1.5">
+        <Choice
+          label="Off"
+          active={mpv.subtitleId === null}
+          onClick={() => void mpv.selectSubtitle(null)}
+        />
+        {inFile.map((track) => (
+          <Choice
+            key={track.id}
+            label={track.label}
+            hint={track.external ? 'file' : undefined}
+            active={mpv.subtitleId === track.id}
+            onClick={() => void mpv.selectSubtitle(track.id)}
+          />
+        ))}
+
+        {/* Files the host found beside the video. Loaded on demand rather
+            than all at once: a season folder can hold a dozen languages and
+            handing every one of them to mpv before anybody asks is work
+            nobody wanted. */}
+        {fromDrive.length > 0 && (
+          <>
+            <div className="mt-1 px-3 py-1 font-mono text-[9.5px] uppercase tracking-[0.14em] text-textFaint">
+              on the drive
+            </div>
+            {fromDrive.map((track) => (
+              <Choice
+                key={track.path}
+                label={track.label}
+                hint="load"
+                active={false}
+                onClick={() => void addFromDrive(track)}
+              />
+            ))}
+          </>
+        )}
+      </div>
+
+      <div className="border-t border-white/[0.07] px-3 py-2.5">
+        <button
+          onClick={() => void addFromDisk()}
+          className="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left text-[12px] text-textDim transition-colors hover:text-text"
+        >
+          <Plus size={13} />
+          Add a subtitle file…
+        </button>
+
+        <div className="mt-2.5 flex items-center justify-between">
+          <span className="text-[11px] text-textFaint">Sync</span>
+          <div className="flex items-center gap-1">
+            <Nudge label="−0.5s" onClick={() => nudge(-0.5)} />
+            <Nudge label="−0.1s" onClick={() => nudge(-0.1)} />
+            <span className="tnum w-[52px] text-center font-mono text-[11px] text-text">
+              {mpv.subtitleDelay > 0 ? '+' : ''}
+              {mpv.subtitleDelay.toFixed(1)}s
+            </span>
+            <Nudge label="+0.1s" onClick={() => nudge(0.1)} />
+            <Nudge label="+0.5s" onClick={() => nudge(0.5)} />
+          </div>
+        </div>
+        <p className="mt-1.5 text-[10.5px] leading-relaxed text-textFaint">
+          {/* Which way is which is genuinely hard to remember, so it says. */}
+          Plus if the subtitles are early, minus if they are late.
+        </p>
+      </div>
+
+      <button
+        onClick={onClose}
+        aria-label="Close subtitle menu"
+        className="absolute right-1.5 top-1.5 rounded p-1 text-textFaint transition-colors hover:text-text"
+      >
+        <X size={12} />
+      </button>
+    </motion.div>
+  )
+}
+
+function Choice({
+  label,
+  hint,
+  active,
+  onClick,
+}: {
+  label: string
+  hint?: string
+  active: boolean
+  onClick: () => void
+}): React.JSX.Element {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        'flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-[12px] transition-colors',
+        active ? 'bg-white/[0.07] text-text' : 'text-textDim hover:bg-white/[0.04]',
+      )}
+    >
+      <span className="min-w-0 truncate">{label}</span>
+      {hint && <span className="shrink-0 font-mono text-[9.5px] text-textFaint">{hint}</span>}
+    </button>
+  )
+}
+
+function Nudge({
+  label,
+  onClick,
+}: {
+  label: string
+  onClick: () => void
+}): React.JSX.Element {
+  return (
+    <button
+      onClick={onClick}
+      className="rounded px-1.5 py-1 font-mono text-[10.5px] text-textDim transition-colors hover:bg-white/[0.07] hover:text-text"
+    >
+      {label}
+    </button>
   )
 }
 
@@ -433,7 +592,7 @@ function Scrubber({
       onClick={(e) => {
         if (disabled) return
         const box = e.currentTarget.getBoundingClientRect()
-        onSeek((e.clientX - box.left) / box.width)
+        onSeek(Math.max(0, Math.min(1, (e.clientX - box.left) / box.width)))
       }}
       className={cn(
         'group relative h-1 rounded-full bg-white/[0.1]',
@@ -476,10 +635,4 @@ function ControlButton({
       <Icon size={16} />
     </button>
   )
-}
-
-function looksLikeAudio(path: string): boolean {
-  const dot = path.lastIndexOf('.')
-  const ext = dot > 0 ? path.slice(dot + 1).toLowerCase() : ''
-  return ['mp3', 'flac', 'm4a', 'wav', 'ogg', 'opus', 'aac', 'wma'].includes(ext)
 }
