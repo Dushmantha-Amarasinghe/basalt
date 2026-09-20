@@ -123,8 +123,8 @@ struct FreeMovieDbResult {
 /// A title reduced to what is worth comparing.
 ///
 /// Case, punctuation and spacing all differ between a release name and a
-/// catalogue entry without meaning anything: `Alien Earth` and `Alien: Earth`
-/// are the same programme.
+/// catalogue entry without meaning anything: `Northwind Fall` and
+/// `Northwind: Fall` are the same programme.
 fn normalise(title: &str) -> String {
     title
         .chars()
@@ -405,8 +405,8 @@ mod tests {
         }
     }
 
-    /// Every one of these is a real answer the service gave to a real filename
-    /// off a real drive. Accepting any of them hangs a film's poster on
+    /// Every one of these is an answer the service really gave to a filename
+    /// that was not a film. Accepting any of them hangs a film's poster on
     /// somebody's screen recording, which looks far more broken than no poster.
     #[test]
     fn a_plausible_wrong_answer_is_refused() {
@@ -430,8 +430,11 @@ mod tests {
     /// title says.
     #[test]
     fn the_wrong_kind_is_refused() {
-        let asked = film("f1", "Outlander");
-        assert!(!matches(&result("Outlander", Some(2014), "SHOW"), &asked));
+        let asked = film("f1", "The Quiet Coast");
+        assert!(!matches(
+            &result("The Quiet Coast", Some(2014), "SHOW"),
+            &asked
+        ));
     }
 
     /// The same title, a different decade: a real risk for remakes, and the
@@ -448,22 +451,23 @@ mod tests {
         assert!(matches(&result("Nosferatu", Some(1923), "MOVIE"), &asked));
     }
 
-    /// And the ones that should be accepted, taken from the same drive.
+    /// And the ones that should be accepted, differing only in how they were
+    /// written down.
     #[test]
     fn the_right_answer_is_taken_through_punctuation_and_case() {
-        // `Alien Earth` off the filename, `Alien: Earth` in the catalogue.
+        // `Northwind Fall` off the filename, `Northwind: Fall` in the catalogue.
         assert!(matches(
-            &result("Alien: Earth", Some(2025), "SHOW"),
-            &series("Alien Earth", None)
+            &result("Northwind: Fall", Some(2025), "SHOW"),
+            &series("Northwind Fall", None)
         ));
         assert!(matches(
-            &result("FROM", Some(2022), "SHOW"),
-            &series("From", None)
+            &result("SALT", Some(2022), "SHOW"),
+            &series("Salt", None)
         ));
         // No year on our side is not a mismatch, just less to go on.
         assert!(matches(
-            &result("Outlander", Some(2014), "SHOW"),
-            &series("Outlander", None)
+            &result("The Quiet Coast", Some(2014), "SHOW"),
+            &series("The Quiet Coast", None)
         ));
     }
 

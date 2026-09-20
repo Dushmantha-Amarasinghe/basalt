@@ -93,15 +93,15 @@ describe('nextEpisodes', () => {
   })
 
   it('plays the next episode of the same series', () => {
-    const next = nextEpisodes([show('Alice', ['a1.mkv', 'a2.mkv'])])
+    const next = nextEpisodes([show('Northwind', ['a1.mkv', 'a2.mkv'])])
     expect(next.get('a1.mkv')?.path).toBe('a2.mkv')
-    expect(next.get('a1.mkv')?.label).toBe('Alice · S01E02')
+    expect(next.get('a1.mkv')?.label).toBe('Northwind · S01E02')
   })
 
   it('stops at the end of a series instead of starting another', () => {
-    // The bug: one flat list over every series meant finishing Alice in
-    // Borderland started Alien Earth, which it did ten seconds in.
-    const next = nextEpisodes([show('Alice', ['a1.mkv']), show('Alien Earth', ['b1.mkv'])])
+    // The bug: one flat list over every series meant finishing the last
+    // episode of one show started an unrelated one, ten seconds in.
+    const next = nextEpisodes([show('Northwind', ['a1.mkv']), show('The Quiet Coast', ['b1.mkv'])])
     expect(next.get('a1.mkv')).toBeUndefined()
     expect(next.get('b1.mkv')).toBeUndefined()
   })

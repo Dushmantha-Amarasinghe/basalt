@@ -513,10 +513,10 @@ mod tests {
         let dir = temp_dir();
         put(
             &dir.0,
-            "Shows/Outlander/Season 01/Outlander S01E09 The Reckoning.mkv",
+            "Shows/Northwind/Season 01/Northwind S01E09 The Reckoning.mkv",
         );
         // A second copy elsewhere, and deliberately the larger of the two.
-        let spare = dir.0.join("Spare/Outlander S01E09 The Reckoning.mkv");
+        let spare = dir.0.join("Spare/Northwind S01E09 The Reckoning.mkv");
         std::fs::create_dir_all(spare.parent().unwrap()).unwrap();
         std::fs::File::create(&spare)
             .unwrap()
@@ -566,10 +566,10 @@ mod tests {
 ",
         );
 
-        put(&dir.0, "Shows/Outlander/Season 01/Outlander S01E01.mkv");
+        put(&dir.0, "Shows/Northwind/Season 01/Northwind S01E01.mkv");
         put_small(
             &dir.0,
-            "Shows/Outlander/Season 01/Subs/Outlander.S01E01.eng.srt",
+            "Shows/Northwind/Season 01/Subs/Northwind.S01E01.eng.srt",
             b"1
 ",
         );
@@ -589,7 +589,7 @@ mod tests {
 
         let show = items
             .iter()
-            .find(|i| i.title == "Outlander")
+            .find(|i| i.title == "Northwind")
             .expect("the series");
         let episode = &show.seasons[0].episodes[0];
         assert_eq!(episode.subtitles.len(), 1, "got {:?}", episode.subtitles);

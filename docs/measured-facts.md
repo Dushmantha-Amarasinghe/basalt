@@ -275,4 +275,4 @@ Two traps, both hit:
 - **Laptop B's Wi-Fi radio type and link rate.** `basalt-bench env` returned
   `"wifi": null` on B — the `netsh wlan show interfaces` parser failed there,
   even though B is definitely on Wi-Fi (`Get-NetConnectionProfile` shows
-  `InterfaceAlias: WiFi`, `Name: FST-5G`). Parser bug, still open.
+  `InterfaceAlias: WiFi`, `Name: (redacted)`). Parser bug, still open.

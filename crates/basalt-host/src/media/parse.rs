@@ -705,7 +705,7 @@ mod tests {
         assert_eq!(year_in("AIEngineer Day 19 [2026-05-02]"), None);
     }
 
-    /// `GMT20260910-140358_Recording_1920x1080.mp4` was filed as a 1920 release.
+    /// `MEET20260910-140358_Recording_1920x1080.mp4` was filed as a 1920 release.
     #[test]
     fn a_resolution_is_not_a_release_year() {
         assert_eq!(year_in("Recording_1920x1080"), None);
@@ -735,13 +735,10 @@ mod tests {
         assert_eq!(parse("Capcut/video 7.mp4"), None);
         assert_eq!(parse("ABDownloader/Videos/MOV_1308.mp4"), None);
         assert_eq!(
-            parse("ABDownloader/Videos/GMT20260910-140358_Recording_1920x1080.mp4"),
+            parse("ABDownloader/Videos/MEET20260910-140358_Recording_1920x1080.mp4"),
             None
         );
-        assert_eq!(
-            parse("Downloads/2K Wallpapers/Juliano julianofantone_ Instagram reel.mp4"),
-            None
-        );
+        assert_eq!(parse("Downloads/Saved/somebody_ Instagram reel.mp4"), None);
     }
 
     /// The other half: saying no to junk must not say no to the library.
@@ -758,9 +755,10 @@ mod tests {
         assert_eq!(placed.title, "Inception");
 
         // Episodes never needed a year: the numbering is its own signal.
-        assert!(parse("Quick Shared/FROM/Season 1/From_1080P_S01_E01.mp4").is_some());
+        assert!(parse("Quick Shared/SALT/Season 1/Salt_1080P_S01_E01.mp4").is_some());
         assert!(
-            parse("Games/Outlander Season 1 [2160p x265]/Outlander S01E01 Sassenach.mkv").is_some()
+            parse("Games/Quiet Coast Season 1 [2160p x265]/Quiet Coast S01E01 Low Tide.mkv")
+                .is_some()
         );
     }
 
