@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react'
 import type { Entry } from '@/components/FileList'
+import type { ConfirmRequest } from '@/components/ui/ConfirmDialog'
 import { ApiError, api, joinPath, parentOf } from './api'
-import { confirmAction } from './dialogs'
 
 /**
  * Every operation the file browser can perform on the vault, in one place.
@@ -80,10 +80,19 @@ export function uniqueName(name: string, taken: Set<string>): string {
 export function useFileActions({
   onChanged,
   onError,
+  confirm,
 }: {
   /** Called after anything that changes the drive, to refresh the listing. */
   onChanged: () => void
   onError: (message: string) => void
+  /**
+   * Asks the user a yes/no question.
+   *
+   * Passed in rather than imported so this hook has no opinion about how the
+   * question is drawn — and so the platform dialog, which could be missing a
+   * permission grant and fail silently, is no longer reachable from here.
+   */
+  confirm: (request: ConfirmRequest) => Promise<boolean>
 }): FileActions {
   const [clipboard, setClipboard] = useState<Clipboard | null>(null)
   const [busy, setBusy] = useState(false)
@@ -211,12 +220,15 @@ export function useFileActions({
       const folders = entries.filter((e) => e.kind === 'dir').length
       let ok = false
       try {
-        ok = await confirmAction(
-          entries.length === 1
-            ? `Delete ${entries[0]!.name}?${folders ? ' Everything inside it goes too.' : ''}`
-            : `Delete ${entries.length} items?${folders ? ` ${folders} are folders, and everything inside them goes too.` : ''}`,
-          'This cannot be undone',
-        )
+        ok = await confirm({
+          title: 'This cannot be undone',
+          message:
+            entries.length === 1
+              ? `Delete ${entries[0]!.name}?${folders ? ' Everything inside it goes too.' : ''}`
+              : `Delete ${entries.length} items?${folders ? ` ${folders} are folders, and everything inside them goes too.` : ''}`,
+          confirmLabel: 'Delete',
+          danger: true,
+        })
       } catch (e) {
         // A confirmation that could not be asked for is not a yes, and it is
         // not silence either — say so rather than leaving a dead menu item.
@@ -239,7 +251,7 @@ export function useFileActions({
         setBusy(false)
       }
     },
-    [busy, onChanged, fail],
+    [busy, onChanged, fail, confirm],
   )
 
   const newFolder = useCallback(
