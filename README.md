@@ -8,8 +8,8 @@
     <img src="https://img.shields.io/github/downloads/Dushmantha-Amarasinghe/basalt/total?style=flat-square" alt="Downloads" />
   </p>
   <p>
-    <a href="https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest">⬇️ Download</a> &nbsp;·&nbsp;
-    <a href="https://reforatech.com">🌐 Refora Technologies</a>
+    <a href="https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest">Download</a> &nbsp;·&nbsp;
+    <a href="https://reforatech.com">Refora Technologies</a>
   </p>
 </div>
 

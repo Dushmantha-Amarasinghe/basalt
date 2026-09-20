@@ -439,10 +439,43 @@ const MOCK_STATUS: Status = {
  * part of the app rather than the most.
  */
 function previewIsUnpaired(): boolean {
+  return previewFlag('unpaired')
+}
+
+function previewFlag(name: string): boolean {
   return (
     typeof window !== 'undefined' &&
-    new URLSearchParams(window.location.search).has('unpaired')
+    new URLSearchParams(window.location.search).has(name)
   )
+}
+
+/** The version the preview claims to be. */
+const MOCK_VERSION = '1.0.0'
+
+/**
+ * `?update` in the preview offers one, for the same reason as `?unpaired`.
+ *
+ * An update offer is by definition something the app shows on a day nobody
+ * chose, so without this the panel could only ever be reviewed by publishing
+ * a release — which is a poor moment to discover the notes do not fit.
+ */
+const MOCK_RELEASE: Release = {
+  version: '1.1.0',
+  notes: [
+    '## New',
+    '',
+    '* **Subtitle search** — find a line of dialogue and jump to it.',
+    '* **Two drives at once**, if the host has two.',
+    '',
+    '## Fixed',
+    '',
+    '* Seeking in a file still being written no longer stalls the player.',
+  ].join('\n'),
+  pageUrl: 'https://example.test/releases/v1.1.0',
+  installerName: 'Basalt-Client-1.1.0-setup.exe',
+  installerUrl: 'https://example.test/Basalt-Client-1.1.0-setup.exe',
+  installerBytes: 35_600_000,
+  checksumUrl: 'https://example.test/Basalt-Client-1.1.0-setup.exe.sha256',
 }
 
 /**
@@ -606,6 +639,30 @@ let mockEntries: Entry[] | null = null
 
 async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   switch (cmd) {
+    case 'app_version':
+      return MOCK_VERSION as T
+    case 'check_update':
+      // Slow on purpose, like `discover`: the panel has a "Checking…" state
+      // and an instant answer would hide it.
+      await new Promise((resolve) => setTimeout(resolve, 700))
+      return (previewFlag('update') ? MOCK_RELEASE : null) as T
+    case 'download_update': {
+      // Progress arrives as an event in the app, so the preview emits the
+      // same event rather than resolving straight to a finished download.
+      const release = args?.release as Release
+      const total = release.installerBytes
+      for (let had = 0; had < total; had += Math.ceil(total / 12)) {
+        await new Promise((resolve) => setTimeout(resolve, 160))
+        window.dispatchEvent(
+          new CustomEvent('basalt://update-progress', {
+            detail: [Math.min(had, total), total],
+          }),
+        )
+      }
+      return `C:\\Users\\preview\\Downloads\\${release.installerName}` as T
+    }
+    case 'install_update':
+      return undefined as T
     case 'status':
       return (
         previewIsUnpaired()

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AlertCircle, ArrowUpCircle, Check, ExternalLink, Github, Loader2 } from 'lucide-react'
 import { api, inTauri, type Release } from '@/lib/api'
+import { parseNotes } from '@/lib/notes'
 import { cn, formatBytes } from '@/lib/utils'
 
 export const WEBSITE = 'https://reforatech.com'
@@ -49,16 +50,25 @@ export function About({ product }: { product: string }): React.JSX.Element {
 
   // Progress arrives from the shell as the bytes land.
   useEffect(() => {
-    if (!inTauri()) return undefined
+    const onProgress = ([had, total]: [number, number]): void => {
+      setState((s) => (s.kind === 'downloading' ? { ...s, had, total } : s))
+    }
+
+    // In a browser preview the same payload arrives as a window event, so the
+    // bar can be reviewed without a release to download.
+    if (!inTauri()) {
+      const relay = (event: Event): void =>
+        onProgress((event as CustomEvent<[number, number]>).detail)
+      window.addEventListener('basalt://update-progress', relay)
+      return () => window.removeEventListener('basalt://update-progress', relay)
+    }
+
     let stop: (() => void) | undefined
     void (async () => {
       const { listen } = await import('@tauri-apps/api/event')
-      stop = await listen<[number, number]>('basalt://update-progress', (event) => {
-        const [had, total] = event.payload
-        setState((s) =>
-          s.kind === 'downloading' ? { ...s, had, total } : s,
-        )
-      })
+      stop = await listen<[number, number]>('basalt://update-progress', (event) =>
+        onProgress(event.payload),
+      )
     })()
     progress.current = () => stop?.()
     return () => stop?.()
@@ -224,11 +234,59 @@ function Offer({
           what it does" is not enough to decide on. */}
       {release.notes && (
         <div className="mt-3 max-h-[180px] overflow-y-auto border-t border-white/[0.07] pt-2.5">
-          <pre className="whitespace-pre-wrap break-words font-sans text-[11.5px] leading-relaxed text-textDim">
-            {release.notes}
-          </pre>
+          <Notes notes={release.notes} />
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * The release notes as written on GitHub, rendered rather than shown raw.
+ *
+ * Headings, bullets and bold are all release notes use, and all this draws.
+ * See `lib/notes` for why there is no Markdown dependency behind this.
+ */
+function Notes({ notes }: { notes: string }): React.JSX.Element {
+  return (
+    <div className="space-y-1.5 text-[11.5px] leading-relaxed text-textDim">
+      {parseNotes(notes).map((block, at) => {
+        const runs = block.spans.map((span, i) => (
+          <span
+            key={i}
+            className={cn(
+              span.bold && 'font-semibold text-text',
+              span.code && 'rounded bg-white/[0.07] px-1 font-mono text-[10.5px]',
+            )}
+          >
+            {span.text}
+          </span>
+        ))
+
+        if (block.kind === 'heading') {
+          return (
+            <div
+              key={at}
+              className="pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-textFaint first:pt-0"
+            >
+              {runs}
+            </div>
+          )
+        }
+        if (block.kind === 'bullet') {
+          return (
+            <div key={at} className="flex gap-1.5">
+              <span className="shrink-0 text-textFaint">·</span>
+              <span className="min-w-0">{runs}</span>
+            </div>
+          )
+        }
+        return (
+          <p key={at} className="break-words">
+            {runs}
+          </p>
+        )
+      })}
     </div>
   )
 }

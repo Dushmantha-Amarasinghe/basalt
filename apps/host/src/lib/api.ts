@@ -276,6 +276,14 @@ const sample: {
 }
 
 function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  // The one command that does not resolve at once in the app either: it
+  // resolves when the download has finished, having reported progress along
+  // the way. Handled here rather than in `answer` so the preview keeps that
+  // shape, because a bar that never fills is not a bar anybody can review.
+  if (command === 'download_update') {
+    return mockDownload(args?.release as Release) as Promise<T>
+  }
+
   const answer = (): unknown => {
     switch (command) {
       case 'status':
@@ -369,6 +377,12 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return sample.status
       case 'build_info':
         return 'preview · not a real build'
+      case 'app_version':
+        return MOCK_VERSION
+      case 'check_update':
+        return previewFlag('update') ? MOCK_RELEASE : null
+      case 'install_update':
+        return undefined
       case 'open_log_folder':
         return undefined
       case 'open_vault_folder':
@@ -388,4 +402,55 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   return new Promise((resolve) =>
     setTimeout(() => resolve(structuredClone(answer()) as T), 60),
   )
+}
+
+/** The version the preview claims to be. */
+const MOCK_VERSION = '1.0.0'
+
+/**
+ * `?update` in the preview offers one.
+ *
+ * An update offer is by definition something the app shows on a day nobody
+ * chose, so without this the panel could only ever be reviewed by publishing
+ * a release — which is a poor moment to discover the notes do not fit.
+ */
+const MOCK_RELEASE: Release = {
+  version: '1.1.0',
+  notes: [
+    '## New',
+    '',
+    '* **Two drives at once**, shared as one.',
+    '* **Per-device access**, so a device can be given read-only.',
+    '',
+    '## Fixed',
+    '',
+    '* A scan no longer stalls on a folder the drive refuses to list.',
+  ].join('\n'),
+  pageUrl: 'https://example.test/releases/v1.1.0',
+  installerName: 'Basalt-Host-1.1.0-setup.exe',
+  installerUrl: 'https://example.test/Basalt-Host-1.1.0-setup.exe',
+  installerBytes: 5_200_000,
+  checksumUrl: 'https://example.test/Basalt-Host-1.1.0-setup.exe.sha256',
+}
+
+function previewFlag(name: string): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).has(name)
+  )
+}
+
+/** Fills the bar over a couple of seconds, then resolves like the real one. */
+async function mockDownload(release: Release): Promise<string> {
+  const total = release.installerBytes
+  const steps = 12
+  for (let tick = 1; tick <= steps; tick += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 160))
+    window.dispatchEvent(
+      new CustomEvent('basalt://update-progress', {
+        detail: [Math.min(Math.ceil((total / steps) * tick), total), total],
+      }),
+    )
+  }
+  return `C:\Users\preview\Downloads\${release.installerName}`
 }
