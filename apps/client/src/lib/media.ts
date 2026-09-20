@@ -55,4 +55,4 @@ export function entriesToMedia(entries: Entry[]): MediaItem[] {
   return entries.map(entryToMedia)
 }
 
-export { isPlayable } from './playback'
+export { isMediaFile, isPlayable } from './playback'
