@@ -24,6 +24,13 @@ import { pickSubtitleFile } from '@/lib/dialogs'
 import { useMpv, type Mpv } from '@/lib/useMpv'
 import { cn } from '@/lib/utils'
 
+/** Motionless for this long and the controls step aside. */
+const CONTROLS_IDLE = 2600
+
+/** Where mpv draws subtitles with the controls up, and without. */
+const SUBTITLES_ABOVE_CONTROLS = 96
+const SUBTITLES_AT_REST = 22
+
 /**
  * The player.
  *
@@ -63,6 +70,44 @@ export function PlayerOverlay({
   const mpv = useMpv()
   const [failed, setFailed] = useState<string | null>(null)
   const [menu, setMenu] = useState(false)
+
+  /**
+   * Whether the controls are on screen.
+   *
+   * They sit over the picture, and the bottom of the picture is where the
+   * subtitles are — so leaving them up permanently costs exactly the part of
+   * the frame you are reading. They come back on any movement and go away
+   * again after a pause in it, which is what every player does.
+   *
+   * Never hidden while paused, while the subtitle menu is open, or while the
+   * pointer is resting on the bar itself: each of those means somebody is
+   * looking at the controls rather than the film.
+   */
+  const [showControls, setShowControls] = useState(true)
+  const [overBar, setOverBar] = useState(false)
+  const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const keepControls = useCallback(() => {
+    setShowControls(true)
+    if (idleTimer.current) clearTimeout(idleTimer.current)
+    idleTimer.current = setTimeout(() => setShowControls(false), CONTROLS_IDLE)
+  }, [])
+
+  const pinned = mpv.paused || menu || overBar || !mpv.picture
+  const controlsUp = showControls || pinned
+
+  // Any movement anywhere brings them back, including over the controls.
+  useEffect(() => {
+    if (!item) return undefined
+    keepControls()
+    window.addEventListener('mousemove', keepControls)
+    window.addEventListener('keydown', keepControls)
+    return () => {
+      window.removeEventListener('mousemove', keepControls)
+      window.removeEventListener('keydown', keepControls)
+      if (idleTimer.current) clearTimeout(idleTimer.current)
+    }
+  }, [item, keepControls])
 
   const latest = useRef({ path: '', position: 0, duration: 0 })
   const report = useRef(onProgress)
@@ -197,6 +242,19 @@ export function PlayerOverlay({
     }
   }, [])
 
+  /**
+   * Subtitles step up out of the way of the controls.
+   *
+   * mpv draws them a little above the bottom edge, which is exactly where
+   * the control bar sits — so bringing the controls up covered the line
+   * somebody was reading. They drop back down as soon as the bar does.
+   */
+  const lift = mpv.setSubtitleMargin
+  useEffect(() => {
+    if (!item) return
+    void lift(controlsUp ? SUBTITLES_ABOVE_CONTROLS : SUBTITLES_AT_REST)
+  }, [item, controlsUp, lift])
+
   const fullscreenRef = useRef(fullscreen)
   fullscreenRef.current = fullscreen
 
@@ -296,7 +354,7 @@ export function PlayerOverlay({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
-          className="fixed inset-0 z-40 flex flex-col"
+          className="fixed inset-0 z-40"
         >
           {/*
             Transparent, and that is not a style choice: mpv is drawing behind
@@ -316,8 +374,11 @@ export function PlayerOverlay({
             onClick={onSingleClick}
             onDoubleClick={onDoubleClick}
             className={cn(
-              'relative min-h-0 flex-1 cursor-pointer',
+              'absolute inset-0',
               !mpv.picture && 'bg-black',
+              // The cursor goes with the controls: a pointer resting over a
+              // film is as much of an intrusion as the bar underneath it.
+              controlsUp ? 'cursor-pointer' : 'cursor-none',
             )}
           >
             {problem && (
@@ -393,7 +454,11 @@ export function PlayerOverlay({
               </button>
             )}
 
-            <button
+            <motion.button
+              initial={false}
+              animate={{ opacity: controlsUp ? 1 : 0 }}
+              transition={{ duration: 0.22 }}
+              style={{ pointerEvents: controlsUp ? 'auto' : 'none' }}
               onClick={(e) => {
                 e.stopPropagation()
                 void leave()
@@ -402,14 +467,20 @@ export function PlayerOverlay({
               className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-black/40 text-textDim backdrop-blur transition-colors hover:bg-black/60 hover:text-text"
             >
               <X size={16} />
-            </button>
+            </motion.button>
           </div>
 
           <motion.div
-            initial={{ y: 20, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            transition={{ delay: 0.1, duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-            className="relative shrink-0 border-t border-white/[0.06] bg-ink/95 px-5 py-4 backdrop-blur"
+            initial={false}
+            animate={{ y: controlsUp ? 0 : 28, opacity: controlsUp ? 1 : 0 }}
+            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+            onMouseEnter={() => setOverBar(true)}
+            onMouseLeave={() => setOverBar(false)}
+            style={{ pointerEvents: controlsUp ? 'auto' : 'none' }}
+            // Over the picture rather than beside it. As a row in a column it
+            // took a strip of the window permanently, so a film was letterboxed
+            // above its own controls whether or not anyone wanted them.
+            className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-ink via-ink/92 to-transparent px-5 pb-4 pt-10"
           >
             <AnimatePresence>
               {menu && (
@@ -418,7 +489,7 @@ export function PlayerOverlay({
                       menu does and what anyone will try first. Behind the
                       menu itself, so the menu still takes its own clicks. */}
                   <div
-                    className="fixed inset-0 z-0"
+                    className="fixed inset-0 z-[5]"
                     onClick={() => setMenu(false)}
                   />
                   <SubtitleMenu
@@ -573,7 +644,11 @@ function SubtitleMenu({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 8 }}
       transition={{ duration: 0.14 }}
-      className="absolute bottom-full right-4 z-10 mb-2 w-[300px] overflow-hidden rounded-lg border border-white/10 bg-panel2/98 shadow-lift backdrop-blur"
+      // Opaque, not translucent. Over a bright frame the old `/98` plus a
+      // blur washed out to the point where the labels and the offset could
+      // not be read at all — and this is a menu you use *while* watching,
+      // which means it is always over a picture.
+      className="absolute bottom-full right-4 z-10 mb-2 w-[300px] overflow-hidden rounded-lg border border-white/15 bg-[#151517] shadow-lift"
     >
       <div className="max-h-[260px] overflow-y-auto py-1.5">
         <Choice
