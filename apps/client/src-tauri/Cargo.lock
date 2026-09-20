@@ -378,6 +378,7 @@ dependencies = [
 name = "basalt-update"
 version = "1.0.0"
 dependencies = [
+ "basalt-net",
  "futures-util",
  "reqwest",
  "serde",
