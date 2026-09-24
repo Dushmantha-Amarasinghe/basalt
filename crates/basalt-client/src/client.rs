@@ -784,7 +784,7 @@ impl Basalt {
                         return Err(ClientError::Protocol("cancelled".into()));
                     }
                     let want = (CHUNK_BYTES.min(total - sent)) as usize;
-                    let n = file.read(&mut buf[..want]).await?;
+                    let n = read_full(&mut file, &mut buf[..want]).await?;
                     if n == 0 {
                         return Err(ClientError::Protocol(format!(
                             "{} is shorter than it said it was",
@@ -840,6 +840,23 @@ impl Basalt {
         lease.check(result)?;
         Ok(total)
     }
+}
+
+/// Reads until `buf` is full or the file ends, and says how much it got.
+///
+/// A single read of a file hands back at most two megabytes, whatever was
+/// asked for, so every "four-megabyte" chunk used to go out as two — twice
+/// the round trips the chunk size was chosen to avoid.
+async fn read_full(file: &mut tokio::fs::File, buf: &mut [u8]) -> Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        let n = file.read(&mut buf[filled..]).await?;
+        if n == 0 {
+            break;
+        }
+        filled += n;
+    }
+    Ok(filled)
 }
 
 /// BLAKE3 of a whole file, read in blocks so a film never lands in memory.
