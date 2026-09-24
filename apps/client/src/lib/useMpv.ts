@@ -17,8 +17,8 @@ import { inTauri } from './api'
  *
  * **How it gets on screen.** mpv draws into the native window *behind* the
  * webview, so the page has to get out of the way: the window is transparent,
- * `body` is normally opaque, and the player makes it see-through while it is
- * open. The controls are ordinary HTML over the top.
+ * `body` is normally opaque, and the player makes it see-through once there
+ * is a `picture` to see. The controls are ordinary HTML over the top.
  *
  * **One instance for the life of the app.** `init` is expensive and there is
  * one window; opening a second file is a `loadfile`, not a second player.
@@ -74,6 +74,24 @@ export async function audioDevices(): Promise<AudioDevice[]> {
   return devices
 }
 
+/**
+ * One property, or null when mpv has no value for it right now.
+ *
+ * Never with `node`, for the reason above. Unavailable properties — the
+ * clock before a file opens, the video size of a file with no video — are an
+ * ordinary answer here, not an error.
+ */
+async function readProperty(
+  name: string,
+  format: 'string' | 'flag' | 'int64' | 'double',
+): Promise<unknown> {
+  try {
+    return await mpv.getProperty(name, format)
+  } catch {
+    return null
+  }
+}
+
 /** Switches output, and remembers it for next time. */
 export async function setAudioDevice(name: string): Promise<void> {
   try {
@@ -104,14 +122,24 @@ export interface MpvState {
    */
   buffering: boolean
   /**
-   * Whether mpv has a frame on screen yet.
+   * Whether the file has started playing: opened, and its clock moving.
+   *
+   * Until then the player shows what it is opening, on black.
+   */
+  started: boolean
+  /**
+   * Whether mpv has video on screen, which is when the page may go
+   * see-through.
    *
    * The player area is transparent so the video behind it shows through, and
-   * before the first frame there is nothing behind it — so it has to stay
-   * black until this turns true, or there is a second or two where the
-   * controls float over the desktop and it reads as two windows.
+   * before the first frame there is nothing behind it — so it stays black
+   * until this turns true, or the controls float over the desktop and it
+   * reads as two windows. False for the whole of a file with no video in it,
+   * which is music: there is never anything behind the page to show.
    */
   picture: boolean
+  /** Set when the file itself could not be opened. */
+  loadFailed: string | null
   /** Subtitle and audio tracks inside the file, as mpv reports them. */
   tracks: MpvTrack[]
   /** The selected subtitle track id, or null for none. */
@@ -137,7 +165,6 @@ const OBSERVED = [
   ['volume', 'double', 'none'],
   ['mute', 'flag'],
   ['eof-reached', 'flag', 'none'],
-  ['dwidth', 'int64', 'none'],
   ['paused-for-cache', 'flag', 'none'],
   ['track-list/count', 'int64', 'none'],
   ['sid', 'int64', 'none'],
@@ -166,6 +193,83 @@ export function hasEnded(flag: unknown, position: number, duration: number): boo
 /** How close to the duration still counts as the end. */
 const END_SLACK = 2
 
+/** One look at mpv while a file is opening. */
+export interface OpeningProbe {
+  /** What mpv has open, or null while it has nothing. */
+  path: string | null
+  /** The playback clock, or null before there is one. */
+  position: number | null
+  /** Width of the video on screen; zero for a file with no video. */
+  width: number
+  paused: boolean
+  /** True while mpv has no file at all. */
+  idle: boolean
+}
+
+/** What has been seen so far of the file being opened. */
+export interface OpeningWatch {
+  /** The clock when it was first readable for this file. */
+  first: number | null
+  /** When that was, in milliseconds. */
+  since: number
+  /** Since when mpv has sat idle instead of opening anything. */
+  idleSince: number | null
+}
+
+export const OPENING: OpeningWatch = { first: null, since: 0, idleSince: null }
+
+/**
+ * Whether the file being opened is on screen yet.
+ *
+ * The page goes see-through when this says `video`, so the one thing it must
+ * never do is say so early: that is the moment the window shows whatever is
+ * behind it. So neither of the obvious signals is used on its own. `dwidth`
+ * is set when the output is configured, which is before a frame is drawn, and
+ * as a property observer it does not fire at all when the next episode has
+ * the same size as the last. A readable clock does not mean a frame either —
+ * and straight after `loadfile` the clock still belongs to the file being
+ * replaced.
+ *
+ * What does mean it: this file, by path, with its clock having moved on from
+ * where it first stood. By then frames have been going to the screen for a
+ * while. A file paused as it opens never moves, so being held for a moment
+ * with a readable clock counts too — mpv shows the first frame of a paused
+ * file.
+ *
+ * `sound` is a file that plays with nothing to show, and `failed` is mpv
+ * having gone idle instead of opening it.
+ */
+export function judgeOpening(
+  watch: OpeningWatch,
+  probe: OpeningProbe,
+  now: number,
+  url: string,
+): { watch: OpeningWatch; verdict: 'waiting' | 'video' | 'sound' | 'failed' } {
+  if (probe.path !== url) {
+    const idleSince = probe.idle ? (watch.idleSince ?? now) : null
+    const failed = idleSince !== null && now - idleSince >= OPEN_FAILED_AFTER_MS
+    return { watch: { ...OPENING, idleSince }, verdict: failed ? 'failed' : 'waiting' }
+  }
+  if (probe.position === null) return { watch: { ...watch, idleSince: null }, verdict: 'waiting' }
+  if (watch.first === null) {
+    return { watch: { first: probe.position, since: now, idleSince: null }, verdict: 'waiting' }
+  }
+
+  const moved = Math.abs(probe.position - watch.first) >= OPEN_MOVED_S
+  const held = probe.paused && now - watch.since >= OPEN_HELD_MS
+  if (!moved && !held) return { watch, verdict: 'waiting' }
+  return { watch, verdict: probe.width > 0 ? 'video' : 'sound' }
+}
+
+/** How far the clock has to move before the picture is trusted. */
+const OPEN_MOVED_S = 0.15
+/** How long a paused file has to sit with a clock before it is. */
+const OPEN_HELD_MS = 400
+/** How long mpv may sit idle after `loadfile` before the file has failed. */
+const OPEN_FAILED_AFTER_MS = 3000
+/** How often an opening file is looked at. */
+const PROBE_MS = 80
+
 const EMPTY: MpvState = {
   ready: false,
   problem: null,
@@ -176,7 +280,9 @@ const EMPTY: MpvState = {
   muted: false,
   ended: false,
   buffering: false,
+  started: false,
   picture: false,
+  loadFailed: null,
   tracks: [],
   subtitleId: null,
   audioId: null,
@@ -211,6 +317,8 @@ export function useMpv(): Mpv {
   const [state, setState] = useState<MpvState>(EMPTY)
   const started = useRef(false)
   const loaded = useRef(false)
+  /** mpv's own end-of-file flag, as last reported. */
+  const eof = useRef<unknown>(false)
 
   /**
    * Every write goes through `set`, never `setProperty`.
@@ -286,17 +394,13 @@ export function useMpv(): Mpv {
               case 'pause':
                 return { ...s, paused: Boolean(data) }
               case 'time-pos': {
+                // The end is judged again as the clock moves, not only when
+                // mpv flags it. Skipping past the end sets the flag before the
+                // clock catches up, so judged then it was never the end, and
+                // the flag does not change again — the episode sat finished
+                // at 3:00 of 3:00 and the next one never started.
                 const position = Number(data) || 0
-                // Also the signal that there is a picture.
-                //
-                // `dwidth` alone was not enough: an observed property only
-                // reports *changes*, and the next episode of a series is the
-                // same resolution as the one before it. So nothing fired, and
-                // the "opening" card sat on top of a film that was already
-                // playing behind it — but only ever on autoplay, which is
-                // what made it look like a different bug.
-                const picture = s.picture || (position > 0 && s.duration > 0)
-                return { ...s, position, picture }
+                return { ...s, position, ended: hasEnded(eof.current, position, s.duration) }
               }
               case 'duration':
                 return { ...s, duration: Number(data) || 0 }
@@ -305,14 +409,10 @@ export function useMpv(): Mpv {
               case 'mute':
                 return { ...s, muted: Boolean(data) }
               case 'eof-reached':
+                eof.current = data
                 return { ...s, ended: hasEnded(data, s.position, s.duration) }
               case 'paused-for-cache':
                 return { ...s, buffering: data === true }
-              case 'dwidth':
-                // Non-null once a frame has actually been decoded and the
-                // output is configured. Until then the window behind this
-                // page is empty, and anything transparent shows the desktop.
-                return { ...s, picture: Number(data) > 0 }
               case 'sid':
                 return { ...s, subtitleId: data === null ? null : Number(data) }
               case 'aid':
@@ -335,29 +435,92 @@ export function useMpv(): Mpv {
     return () => stop?.()
   }, [readTracks])
 
+  /**
+   * Which `load` is current. Each one watches its own file open, and stops
+   * watching the moment another load or a stop replaces it.
+   */
+  const generation = useRef(0)
+
+  /** Looks at mpv until the file is on screen, has failed, or is replaced. */
+  const watchOpening = useCallback(async (url: string, mine: number) => {
+    let watch = OPENING
+    while (generation.current === mine) {
+      await new Promise((resolve) => setTimeout(resolve, PROBE_MS))
+      if (generation.current !== mine) return
+
+      const [path, position, width, paused, idle] = await Promise.all([
+        readProperty('path', 'string'),
+        readProperty('time-pos', 'double'),
+        readProperty('dwidth', 'int64'),
+        readProperty('pause', 'flag'),
+        readProperty('idle-active', 'flag'),
+      ])
+      const probe: OpeningProbe = {
+        path: typeof path === 'string' && path ? path : null,
+        position: typeof position === 'number' ? position : null,
+        width: Number(width) || 0,
+        paused: paused === true,
+        idle: idle === true,
+      }
+      const next = judgeOpening(watch, probe, performance.now(), url)
+      watch = next.watch
+      if (next.verdict === 'waiting') continue
+      if (generation.current !== mine) return
+
+      if (next.verdict === 'failed') {
+        setState((s) => ({ ...s, loadFailed: 'This file could not be opened.' }))
+      } else {
+        setState((s) => ({ ...s, started: true, picture: next.verdict === 'video' }))
+      }
+      return
+    }
+  }, [])
+
   const load = useCallback(
     async (url: string, startAt: number) => {
       if (!inTauri()) return
-      // Transparent only while something is playing. The rest of the app is
-      // opaque graphite and has no business showing the desktop through it.
-      document.body.style.background = 'transparent'
+      const mine = ++generation.current
+      eof.current = false
       setState((s) => ({
-      ...s,
-      ended: false,
-      picture: false,
-      tracks: [],
-      position: startAt,
-      duration: 0,
-    }))
-      const options = startAt > 1 ? `start=${startAt.toFixed(3)}` : ''
-      await mpv.command('loadfile', options ? [url, 'replace', '0', options] : [url])
-      loaded.current = true
+        ...s,
+        ended: false,
+        started: false,
+        picture: false,
+        loadFailed: null,
+        tracks: [],
+        position: startAt,
+        duration: 0,
+      }))
+      try {
+        // A file that is chosen is a file somebody wants to watch. Pause
+        // survives `loadfile`, so without this the next episode after a
+        // paused one opened paused, looking like it had not loaded.
+        await set('pause', 'no')
+        const options = startAt > 1 ? `start=${startAt.toFixed(3)}` : ''
+        await mpv.command('loadfile', options ? [url, 'replace', '0', options] : [url])
+        loaded.current = true
+      } catch (e) {
+        if (generation.current === mine) setState((s) => ({ ...s, loadFailed: String(e) }))
+        return
+      }
+      void watchOpening(url, mine)
     },
-    [],
+    [set, watchOpening],
   )
 
   const stop = useCallback(async () => {
-    document.body.style.background = ''
+    generation.current++
+    eof.current = false
+    setState((s) => ({
+      ...s,
+      position: 0,
+      duration: 0,
+      ended: false,
+      started: false,
+      picture: false,
+      loadFailed: null,
+      tracks: [],
+    }))
     if (!inTauri() || !loaded.current) return
     loaded.current = false
     try {
@@ -365,14 +528,6 @@ export function useMpv(): Mpv {
     } catch {
       // Closing a player that already stopped is not a failure.
     }
-    setState((s) => ({
-      ...s,
-      position: 0,
-      duration: 0,
-      ended: false,
-      picture: false,
-      tracks: [],
-    }))
   }, [])
 
   const setPaused = useCallback(

@@ -170,6 +170,31 @@ export function App(): React.JSX.Element {
     return map
   }, [media.films, media.series])
 
+  /**
+   * What the player calls a file the library knows: the film's own name, or
+   * the show and the episode — not the release name off the file, which is
+   * what the opening card used to show.
+   */
+  const namesByPath = useMemo(() => {
+    const map = new Map<string, { title: string; subtitle: string }>()
+    for (const film of media.films) {
+      if (!film.path) continue
+      map.set(film.path, { title: film.title, subtitle: film.year ? String(film.year) : '' })
+    }
+    for (const series of media.series) {
+      for (const season of series.seasons) {
+        for (const episode of season.episodes) {
+          const code = `S${pad2(season.number)}E${pad2(episode.number)}`
+          map.set(episode.path, {
+            title: series.title,
+            subtitle: episode.title ? `${code} · ${episode.title}` : code,
+          })
+        }
+      }
+    }
+    return map
+  }, [media.films, media.series])
+
   const subtitlesFor = useCallback(
     (path: string): SubtitleTrack[] => subtitlesByPath.get(path) ?? [],
     [subtitlesByPath],
@@ -451,13 +476,13 @@ export function App(): React.JSX.Element {
             modified: entry.mtime * 1000,
           },
         ])[0]
-        if (item) setPlaying(item)
+        if (item) setPlaying({ ...item, ...namesByPath.get(path) })
       } catch {
         setNotice(`${nameOf(path)} is not on the drive any more.`)
         media.refresh()
       }
     },
-    [media],
+    [media, namesByPath],
   )
 
   // --- prompts -------------------------------------------------------------
@@ -693,6 +718,11 @@ export function App(): React.JSX.Element {
   // --- keyboard ------------------------------------------------------------
 
   useEffect(() => {
+    // The player and the photo viewer have the keyboard to themselves. These
+    // stayed live behind them, so Delete while watching deleted the files
+    // still selected in the folder underneath, Enter reopened one, and
+    // Backspace walked the hidden list up a folder.
+    if (playing || viewingIndex !== null) return undefined
     const onKey = (e: KeyboardEvent): void => {
       const target = e.target as HTMLElement | null
       // Never steal a shortcut from a field the user is typing in.
@@ -766,7 +796,18 @@ export function App(): React.JSX.Element {
     prompt,
     askRename,
     openEntry,
+    playing,
+    viewingIndex,
   ])
+
+  // Anything floating over the app is put away when a film starts, rather
+  // than left open behind it to be found again afterwards.
+  const closeMenu = menu.close
+  useEffect(() => {
+    if (!playing) return
+    setPaletteOpen(false)
+    closeMenu()
+  }, [playing, closeMenu])
 
   // --- files dragged in from Explorer --------------------------------------
 
@@ -911,9 +952,15 @@ export function App(): React.JSX.Element {
         its scroll position and its state, so closing the player puts you back
         where you were.
       */}
+      {/*
+        And inert: nothing behind the player can be focused, clicked or typed
+        into. The file a film was opened from used to keep focus, so keys
+        meant for the player reached the list as well.
+      */}
       <div
         className="contents"
         style={{ visibility: playing ? 'hidden' : 'visible' }}
+        inert={playing !== null}
       >
       <div className="backdrop" />
       <TitleBar vaultName={vault.status.vault ?? 'Vault'} connected={connected} />
@@ -1339,6 +1386,10 @@ function ConnectionBanner({
 
 function capitalise(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0')
 }
 
 function ToolButton({
