@@ -7,6 +7,7 @@ import {
   ExternalLink,
   Loader2,
   Maximize2,
+  Music,
   Pause,
   Play,
   Plus,
@@ -109,19 +110,44 @@ export function PlayerOverlay({
 
   const pinned = mpv.paused || menu || overBar || !mpv.picture
   const controlsUp = showControls || pinned
+  const open = item !== null
 
-  // Any movement anywhere brings them back, including over the controls.
+  // Any movement anywhere brings them back, including over the controls. A
+  // key does too, but from the key handler itself — see there for why.
   useEffect(() => {
-    if (!item) return undefined
+    if (!open) return undefined
     keepControls()
     window.addEventListener('mousemove', keepControls)
-    window.addEventListener('keydown', keepControls)
     return () => {
       window.removeEventListener('mousemove', keepControls)
-      window.removeEventListener('keydown', keepControls)
       if (idleTimer.current) clearTimeout(idleTimer.current)
     }
-  }, [item, keepControls])
+  }, [open, keepControls])
+
+  /**
+   * Everything behind the player goes, not just the app's own view.
+   *
+   * Hiding the app's wrapper was not enough: the file list sets `visibility`
+   * on each of its rows, which beats an inherited `hidden`, so the rows of the
+   * folder a film was opened from were drawn across the film. Menus and
+   * dialogs are outside the wrapper altogether. The rule this switches on
+   * hides every element on the page but the player's own, and nothing can
+   * override it.
+   *
+   * The page stays opaque black until there is a picture to show through it.
+   * See-through any earlier is see-through onto nothing: the desktop, or the
+   * app, behind the controls while the film is still opening.
+   */
+  useEffect(() => {
+    if (!open) return undefined
+    document.body.classList.add('player-open')
+    return () => document.body.classList.remove('player-open')
+  }, [open])
+  useEffect(() => {
+    if (!open || !mpv.picture) return undefined
+    document.body.classList.add('player-live')
+    return () => document.body.classList.remove('player-live')
+  }, [open, mpv.picture])
 
   const latest = useRef({ path: '', position: 0, duration: 0 })
   const report = useRef(onProgress)
@@ -325,90 +351,116 @@ export function PlayerOverlay({
     onClose()
   }, [onClose])
 
-  useEffect(() => {
-    if (!item) return undefined
-    const onKey = (e: KeyboardEvent): void => {
-      // Typing in the subtitle-offset box is not a player shortcut.
-      const target = e.target as HTMLElement | null
-      if (target?.closest('input, textarea, [contenteditable="true"]')) return
+  /**
+   * The keys, and the one listener that hears them.
+   *
+   * Every key acts on its first press, controls up or not, and brings the
+   * controls up as well. It used to take two presses whenever the controls
+   * were hidden, and there were two separate reasons:
+   *
+   * - Showing the controls and acting on the key were two listeners, and the
+   *   acting one was re-attached whenever the player re-rendered. The first
+   *   listener showing the controls *was* a re-render — React runs it between
+   *   the two listeners — so the second was detached before its turn came,
+   *   and the key only brought the controls up. Now there is one listener,
+   *   attached once, reading the current handler from a ref.
+   * - Keys aimed at an input were left alone, so a text field could be typed
+   *   in, and the volume slider is an input. After using the slider it kept
+   *   focus, so Space did nothing and the arrows nudged the slider by a single
+   *   step instead of the volume by five.
+   */
+  const onKey = useRef<(e: KeyboardEvent) => void>(() => {})
+  onKey.current = (e: KeyboardEvent): void => {
+    const target = e.target as HTMLElement | null
+    const typing = target?.closest(
+      'textarea, [contenteditable="true"], input:not([type="range"])',
+    )
+    if (typing) return
 
-      switch (e.key) {
-        case 'Escape':
-          void escape()
-          break
-        case ' ':
-        case 'k':
-          e.preventDefault()
-          void mpv.togglePause()
-          break
-        case 'ArrowRight':
-          e.preventDefault()
-          void mpv.seekBy(e.shiftKey ? 60 : 5)
-          break
-        case 'ArrowLeft':
-          e.preventDefault()
-          void mpv.seekBy(e.shiftKey ? -60 : -5)
-          break
-        case 'ArrowUp':
-          e.preventDefault()
-          void mpv.nudgeVolume(5)
-          flashVolume()
-          break
-        case 'ArrowDown':
-          e.preventDefault()
-          void mpv.nudgeVolume(-5)
-          flashVolume()
-          break
-        // mpv's own keys for this, because anyone who wants frame stepping
-        // already knows them.
-        case '.':
-          e.preventDefault()
-          void mpv.stepFrame(1)
-          break
-        case ',':
-          e.preventDefault()
-          void mpv.stepFrame(-1)
-          break
-        case 'm':
-          void mpv.toggleMute()
-          break
-        case 'f':
-          void fullscreen()
-          break
-        default:
-          break
-      }
+    let handled = true
+    switch (e.key) {
+      case 'Escape':
+        // The menu first, if it is open: Escape putting away the thing in
+        // front of you is universal, and ending the film instead is not.
+        if (menu) setMenu(false)
+        else void escape()
+        break
+      case ' ':
+      case 'k':
+        void mpv.togglePause()
+        break
+      case 'ArrowRight':
+        void mpv.seekBy(e.shiftKey ? 60 : 5)
+        break
+      case 'ArrowLeft':
+        void mpv.seekBy(e.shiftKey ? -60 : -5)
+        break
+      case 'ArrowUp':
+        void mpv.nudgeVolume(5)
+        flashVolume()
+        break
+      case 'ArrowDown':
+        void mpv.nudgeVolume(-5)
+        flashVolume()
+        break
+      // mpv's own keys for this, because anyone who wants frame stepping
+      // already knows them.
+      case '.':
+        void mpv.stepFrame(1)
+        break
+      case ',':
+        void mpv.stepFrame(-1)
+        break
+      case 'm':
+        void mpv.toggleMute()
+        break
+      case 'f':
+        void fullscreen()
+        break
+      default:
+        handled = false
+        break
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [item, escape, mpv, fullscreen, flashVolume])
+    // A player key, and only that. Without this a focused control would act
+    // on it too — Space on the last button pressed, the arrows on the slider
+    // — so one press did two things.
+    if (handled) e.preventDefault()
+    keepControls()
+  }
+
+  useEffect(() => {
+    if (!open) return undefined
+    const listener = (e: KeyboardEvent): void => onKey.current(e)
+    window.addEventListener('keydown', listener)
+    return () => window.removeEventListener('keydown', listener)
+  }, [open])
 
   const percent = mpv.duration > 0 ? (mpv.position / mpv.duration) * 100 : 0
-  const problem = failed ?? mpv.problem
+  const problem = failed ?? mpv.problem ?? mpv.loadFailed
 
   return (
     <AnimatePresence>
       {item && (
         <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
+          // Solid from its first frame. It used to fade in, and for those
+          // frames the half-hidden app and the desktop showed through it.
+          initial={false}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
-          className="fixed inset-0 z-40"
+          data-player=""
+          className={cn('fixed inset-0 z-40', !mpv.picture && 'bg-black')}
         >
           {/*
-            Transparent, and that is not a style choice: mpv is drawing behind
-            this page, and anything painted here would cover the film. Only
-            the bars above and below are opaque.
-          */}
-          {/*
-            Black until there is a frame behind it.
+            The stage: black, until there is a picture behind it.
 
-            This area is transparent so mpv, which draws behind the page, can
-            show through — but for the second or two before the first frame
-            there is nothing back there, and a transparent hole over a hidden
-            app shows the desktop. On screen that read as two windows: the
-            controls in one, whatever was behind them in the other.
+            Once there is, this area is transparent, and that is not a style
+            choice — mpv is drawing behind this page, and anything painted
+            here would cover the film. Until then there is nothing back there,
+            and a transparent hole shows whatever is behind the window. On
+            screen that read as two windows: the controls in one, the app or
+            the desktop in the other. So the player is built on black and
+            only opens up once frames are reaching the screen — which
+            `picture` is careful to wait for.
           */}
           <div
             onClick={onSingleClick}
@@ -430,10 +482,11 @@ export function PlayerOverlay({
               </div>
             )}
 
-            {/* Only until the first frame, so it is never over a picture. */}
-            {!problem && !mpv.picture && (
+            {/* Until the film is playing, so it is never over a picture. */}
+            {!problem && !mpv.started && (
               <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center bg-black text-center">
-                <div className="font-mono text-[11px] uppercase tracking-[0.24em] text-textFaint">
+                <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.24em] text-textFaint">
+                  <Loader2 size={12} className="animate-spin" />
                   opening
                 </div>
                 <div className="mt-3 px-8 text-2xl font-semibold tracking-tight text-text">
@@ -443,6 +496,20 @@ export function PlayerOverlay({
                 <div className="mt-6 font-mono text-[11px] text-textFaint">
                   streaming from the vault · nothing downloaded
                 </div>
+              </div>
+            )}
+
+            {/* Playing, with nothing to show: music. Still the black stage,
+                never a see-through window with a clock running in it. */}
+            {!problem && mpv.started && !mpv.picture && (
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center bg-black text-center">
+                <span className="flex h-16 w-16 items-center justify-center rounded-full bg-white/[0.06]">
+                  <Music size={24} className="text-textDim" />
+                </span>
+                <div className="mt-5 px-8 text-2xl font-semibold tracking-tight text-text">
+                  {item.title}
+                </div>
+                <div className="mt-1 text-sm text-textDim">{item.subtitle}</div>
               </div>
             )}
 

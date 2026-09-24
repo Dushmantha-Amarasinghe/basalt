@@ -326,7 +326,7 @@ function SeriesSheet({
               {item.title}
             </h2>
             <div className="tnum mt-1 font-mono text-[11px] text-textFaint">
-              {[item.year, `${item.seasons.length} seasons`, formatBytes(item.size)]
+              {[item.year, `${item.seasons.length} ${item.seasons.length === 1 ? 'season' : 'seasons'}`, formatBytes(item.size)]
                 .filter(Boolean)
                 .join(' · ')}
             </div>

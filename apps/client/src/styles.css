@@ -37,6 +37,26 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* ---- The player ----
+   While it is open nothing else on the page is drawn — including the file
+   list's rows, which set their own `visibility` and so ignored the app being
+   hidden around them, and menus and dialogs, which live outside the app.
+   The page is black until the player has a picture, and only then
+   see-through, so mpv behind it shows. */
+body.player-open {
+  background: #000;
+}
+body.player-open.player-live {
+  background: transparent;
+}
+body.player-open * {
+  visibility: hidden !important;
+}
+body.player-open [data-player],
+body.player-open [data-player] * {
+  visibility: visible !important;
+}
+
 /* Digits that sit in columns must not jitter as they change. */
 .tnum {
   font-variant-numeric: tabular-nums;
