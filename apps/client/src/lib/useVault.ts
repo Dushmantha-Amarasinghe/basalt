@@ -21,6 +21,8 @@ import { useAsyncSubscription } from './useAsyncSubscription'
 
 const RETRY_MIN_MS = 2_000
 const RETRY_MAX_MS = 30_000
+/** Checking for a drive to come back is cheap, so it never waits long. */
+const DRIVE_RETRY_MAX_MS = 8_000
 
 /** Attempts before the interface admits, in words, that nothing is answering. */
 export const STARTUP_ATTEMPTS_BEFORE_COMPLAINING = 4
@@ -230,19 +232,29 @@ export function useVault(): Vault {
   // Retry while offline, backing off. Anything that is not a transport
   // problem — a missing folder, a denied path — is the user's to resolve and
   // retrying it would just fail the same way.
+  //
+  // A host whose drive is unplugged is the exception: nothing is wrong with
+  // the connection, and the drive coming back is something to notice rather
+  // than wait for somebody to press refresh. The listing is simply asked for
+  // again, more often, until it answers.
   useEffect(() => {
     const offline = error?.kind === 'offline' || error?.kind === 'unpaired'
-    if (!offline) return undefined
+    const waiting = error?.kind === 'unavailable'
+    if (!offline && !waiting) return undefined
 
     retryTimer.current = setTimeout(() => {
-      retryDelay.current = Math.min(retryDelay.current * 2, RETRY_MAX_MS)
-      void reconnect()
+      retryDelay.current = Math.min(
+        retryDelay.current * 2,
+        waiting ? DRIVE_RETRY_MAX_MS : RETRY_MAX_MS,
+      )
+      if (waiting) refresh()
+      else void reconnect()
     }, retryDelay.current)
 
     return () => {
       if (retryTimer.current) clearTimeout(retryTimer.current)
     }
-  }, [error, reconnect])
+  }, [error, reconnect, refresh])
 
   return {
     status,
