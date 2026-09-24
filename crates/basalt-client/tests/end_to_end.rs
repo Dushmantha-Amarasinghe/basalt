@@ -1067,3 +1067,69 @@ async fn the_host_survives_a_client_that_disappears_mid_request() {
     // The host must still be serving.
     assert!(client.list("").await.is_ok());
 }
+
+// ---------------------------------------------------------------------------
+// Knowing a device
+// ---------------------------------------------------------------------------
+
+/// Every device used to be listed on the host under the host's own name,
+/// because that is what the client sent as its name when pairing finished.
+#[tokio::test]
+async fn a_device_is_listed_under_its_own_name() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+    let devices = fixture.host.devices();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].name, client.device_name());
+    assert_ne!(devices[0].name, "test-host");
+    assert_eq!(devices[0].device_id, client.device_id());
+}
+
+/// The same machine pairing again is the same device, not a new row.
+#[tokio::test]
+async fn pairing_again_does_not_list_the_device_twice() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+    client.disconnect().await;
+
+    // The app reopened on the same machine, pairing afresh.
+    let again = fixture.client();
+    fixture.pair(&again).await.expect("pairs again");
+    assert_eq!(fixture.host.devices().len(), 1);
+    assert!(again.list("").await.is_ok(), "and the new pairing works");
+}
+
+#[tokio::test]
+async fn two_devices_are_two_rows() {
+    let fixture = start_host().await;
+    fixture.paired_client().await;
+
+    let other_store = unique("other-store").with_extension("json");
+    let other = Arc::new(Basalt::open(other_store.clone()).unwrap());
+    fixture.pair(&other).await.expect("a second device pairs");
+    assert_eq!(fixture.host.devices().len(), 2);
+    let _ = std::fs::remove_file(other_store);
+}
+
+/// Forgetting a host used to happen on the device alone, and the host kept a
+/// record that would never connect again.
+#[tokio::test]
+async fn forgetting_the_host_removes_this_device_from_it() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+    let host_id = client.status().unwrap().host_id;
+
+    client.forget(&host_id).await.expect("forgets");
+    assert!(fixture.host.devices().is_empty());
+    assert!(client.known_hosts().is_empty());
+}
+
+#[tokio::test]
+async fn a_device_keeps_its_id_across_the_app_reopening() {
+    let fixture = start_host().await;
+    let first = fixture.client();
+    let id = first.device_id().to_string();
+    assert_eq!(id.len(), 32);
+    assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_eq!(fixture.client().device_id(), id);
+}

@@ -251,6 +251,8 @@ mod tests {
             paired_at: 1_700_000_000,
             last_seen: 1_700_000_500,
             writable: true,
+            device_id: String::new(),
+            named_by_host: false,
         }
     }
 
@@ -415,6 +417,7 @@ mod tests {
         let request = PairingRequest {
             id: "r1".into(),
             device_name: "Laptop A".into(),
+            device_id: String::new(),
             pin: Some("169241".into()),
             opened: Instant::now(),
             attempts: 0,
@@ -536,6 +539,7 @@ mod tests {
         let request = PairingRequest {
             id: "r1".into(),
             device_name: "Laptop A".into(),
+            device_id: String::new(),
             pin: Some("169241".into()),
             opened,
             attempts: 0,
@@ -557,6 +561,7 @@ mod tests {
         let request = PairingRequest {
             id: "r1".into(),
             device_name: "Laptop A".into(),
+            device_id: String::new(),
             pin: None,
             opened: Instant::now(),
             attempts: 0,

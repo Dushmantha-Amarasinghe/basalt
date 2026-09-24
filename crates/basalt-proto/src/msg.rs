@@ -33,7 +33,18 @@ pub const PROTOCOL_VERSION: u16 = 3;
 pub struct HelloRequest {
     pub protocol: u16,
     /// Human name for the connecting machine, shown on the host's device list.
+    ///
+    /// Sent on every connection, so a renamed machine is shown under its new
+    /// name the next time it connects.
     pub device_name: String,
+    /// A random id the device made for itself once and keeps.
+    ///
+    /// What lets the host recognise a device that pairs again as the same
+    /// device, rather than adding it to the list a second time — and what a
+    /// per-device watch history is kept under. Empty from a client older than
+    /// this field.
+    #[serde(default)]
+    pub device_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +67,9 @@ pub struct PairBeginRequest {
     /// which machine is asking.
     #[serde(default)]
     pub device_name: String,
+    /// See [`HelloRequest::device_id`].
+    #[serde(default)]
+    pub device_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +93,10 @@ pub struct PairFinishRequest {
     /// Absent when the host said no PIN was required.
     #[serde(default)]
     pub proof: Option<String>,
+    /// Ignored by current hosts, which record the name the device gave when
+    /// it asked — the one shown beside the PIN. Clients once sent the *host's*
+    /// name here, and every device was listed under it.
+    #[serde(default)]
     pub device_name: String,
 }
 

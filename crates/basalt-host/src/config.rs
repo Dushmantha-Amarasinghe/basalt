@@ -257,6 +257,8 @@ mod tests {
             paired_at: 1_700_000_000,
             last_seen: 1_700_000_500,
             writable: false,
+            device_id: "0123456789abcdef0123456789abcdef".into(),
+            named_by_host: true,
         });
         config.save(&path).unwrap();
 
@@ -266,6 +268,11 @@ mod tests {
         assert_eq!(back.devices.len(), 1);
         assert_eq!(back.devices[0].name, "Laptop A");
         assert!(!back.devices[0].writable);
+        assert_eq!(
+            back.devices[0].device_id,
+            "0123456789abcdef0123456789abcdef"
+        );
+        assert!(back.devices[0].named_by_host);
     }
 
     #[test]

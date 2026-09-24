@@ -14,7 +14,7 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use crate::session::Session;
+use crate::session::{Me, Session};
 use crate::{ClientError, Result};
 
 const MAX_IDLE: usize = 4;
@@ -23,7 +23,7 @@ struct Inner {
     addr: SocketAddr,
     host_id: String,
     token: String,
-    device_name: String,
+    me: Me,
     idle: Mutex<Vec<Session>>,
 }
 
@@ -34,13 +34,13 @@ pub struct Pool {
 }
 
 impl Pool {
-    pub fn new(addr: SocketAddr, host_id: &str, token: &str, device_name: &str) -> Self {
+    pub fn new(addr: SocketAddr, host_id: &str, token: &str, me: &Me) -> Self {
         Self {
             inner: Arc::new(Inner {
                 addr,
                 host_id: host_id.to_string(),
                 token: token.to_string(),
-                device_name: device_name.to_string(),
+                me: me.clone(),
                 idle: Mutex::new(Vec::new()),
             }),
         }
@@ -51,10 +51,10 @@ impl Pool {
         addr: SocketAddr,
         host_id: &str,
         token: &str,
-        device_name: &str,
+        me: &Me,
         session: Session,
     ) -> Self {
-        let pool = Self::new(addr, host_id, token, device_name);
+        let pool = Self::new(addr, host_id, token, me);
         pool.inner.idle.lock().expect("idle lock").push(session);
         pool
     }
@@ -85,7 +85,7 @@ impl Pool {
                     self.inner.addr,
                     &self.inner.host_id,
                     &self.inner.token,
-                    &self.inner.device_name,
+                    &self.inner.me,
                 )
                 .await?
             }
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn a_new_pool_holds_nothing() {
-        let pool = Pool::new(addr(), "aa", "token", "Laptop A");
+        let pool = Pool::new(addr(), "aa", "token", &Me::new("Laptop A", ""));
         assert_eq!(pool.idle_count(), 0);
         assert_eq!(pool.host_id(), "aa");
         assert_eq!(pool.address(), addr());
@@ -198,7 +198,7 @@ mod tests {
     #[tokio::test]
     async fn acquiring_against_a_dead_host_fails_rather_than_hanging() {
         // Port 1 has nothing on it, so this is a connection refusal.
-        let pool = Pool::new(addr(), "aa", "token", "Laptop A");
+        let pool = Pool::new(addr(), "aa", "token", &Me::new("Laptop A", ""));
         let Err(err) = pool.acquire().await else {
             panic!("nothing is listening on port 1");
         };
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn clearing_empties_the_pool() {
-        let pool = Pool::new(addr(), "aa", "token", "Laptop A");
+        let pool = Pool::new(addr(), "aa", "token", &Me::new("Laptop A", ""));
         pool.clear();
         assert_eq!(pool.idle_count(), 0);
     }

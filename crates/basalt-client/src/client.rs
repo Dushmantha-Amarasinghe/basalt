@@ -17,7 +17,7 @@ use basalt_proto::msg::{
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::pool::Pool;
-use crate::session::{PairChallenge, Session, SessionInfo};
+use crate::session::{Me, PairChallenge, Session, SessionInfo};
 use crate::store::{ClientStore, KnownHost};
 use crate::{ClientError, Result};
 
@@ -70,7 +70,8 @@ pub struct Basalt {
     store: std::sync::Mutex<ClientStore>,
     pool: tokio::sync::RwLock<Option<Pool>>,
     info: std::sync::Mutex<Option<SessionInfo>>,
-    device_name: String,
+    /// This device's name and id, as every host sees it.
+    me: Me,
     /// A pairing in progress, held open between the two steps.
     ///
     /// The host generated its PIN when the first step arrived and is showing
@@ -88,24 +89,40 @@ pub struct Basalt {
 
 impl Basalt {
     pub fn open(store_path: PathBuf) -> Result<Self> {
-        let store = ClientStore::load(&store_path)?;
+        let mut store = ClientStore::load(&store_path)?;
         let device_name = store
             .device_name
             .clone()
             .unwrap_or_else(crate::store::device_name);
+        // Made once and kept for good. Saved straight away, so that a first
+        // connection and the pairing after it cannot end up with two ids.
+        let device_id = match store.device_id.clone() {
+            Some(id) => id,
+            None => {
+                let id = crate::store::new_device_id()?;
+                store.device_id = Some(id.clone());
+                store.save(&store_path)?;
+                id
+            }
+        };
         Ok(Self {
             store_path,
             store: std::sync::Mutex::new(store),
             pool: tokio::sync::RwLock::new(None),
             info: std::sync::Mutex::new(None),
-            device_name,
+            me: Me::new(device_name, device_id),
             pending: tokio::sync::Mutex::new(None),
             bytes_moved: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
     pub fn device_name(&self) -> &str {
-        &self.device_name
+        &self.me.name
+    }
+
+    /// The id this device made for itself.
+    pub fn device_id(&self) -> &str {
+        &self.me.id
     }
 
     /// Total payload bytes moved since startup. Monotonic; callers take deltas.
@@ -146,7 +163,7 @@ impl Basalt {
     /// anything listening at this address" when something is wrong.
     pub async fn probe(&self, address: &str) -> Result<HelloResponse> {
         let addr = basalt_net::socket::resolve(address, basalt_net::DEFAULT_PORT).await?;
-        Session::probe(addr, &self.device_name).await
+        Session::probe(addr, &self.me).await
     }
 
     /// Pairs with a host at a known address, for the command line.
@@ -201,7 +218,7 @@ impl Basalt {
     /// name against the number to read across — so the interface can show a PIN
     /// field knowing one is on screen at the other end.
     pub async fn begin_pairing(&self, address: SocketAddr) -> Result<bool> {
-        let (session, challenge) = Session::begin_pair(address, &self.device_name).await?;
+        let (session, challenge) = Session::begin_pair(address, &self.me).await?;
         let requires_pin = challenge.requires_pin;
         *self.pending.lock().await = Some((session, challenge));
         Ok(requires_pin)
@@ -244,13 +261,13 @@ impl Basalt {
                 last_address: Some(addr.to_string()),
                 paired_at: unix_now(),
             });
-            store.device_name = Some(self.device_name.clone());
+            store.device_name = Some(self.me.name.clone());
         }
         self.save_store()?;
 
         // The connection pairing opened is already authenticated, so it goes
         // straight into the pool rather than being thrown away and redialled.
-        let pool = Pool::with_session(addr, &info.host_id, &token, &self.device_name, session);
+        let pool = Pool::with_session(addr, &info.host_id, &token, &self.me, session);
         *self.pool.write().await = Some(pool);
         *self.info.lock().expect("info lock") = Some(info.clone());
         Ok(info)
@@ -294,7 +311,7 @@ impl Basalt {
 
         let mut session = None;
         if let Some(addr) = hint {
-            match Session::connect(addr, &known.host_id, &known.token, &self.device_name).await {
+            match Session::connect(addr, &known.host_id, &known.token, &self.me).await {
                 Ok(open) => session = Some(open),
                 // Only a transport failure is worth looking elsewhere for. A
                 // host that answered and said no — a revoked token, a key that
@@ -319,13 +336,7 @@ impl Basalt {
                 .await?
                 .ok_or(ClientError::HostNotFound)?;
 
-                Session::connect(
-                    found.address,
-                    &known.host_id,
-                    &known.token,
-                    &self.device_name,
-                )
-                .await?
+                Session::connect(found.address, &known.host_id, &known.token, &self.me).await?
             }
         };
         let addr = session.info().address;
@@ -339,13 +350,7 @@ impl Basalt {
         // it is an optimisation, and the client works without it.
         let _ = self.save_store();
 
-        let pool = Pool::with_session(
-            addr,
-            &known.host_id,
-            &known.token,
-            &self.device_name,
-            session,
-        );
+        let pool = Pool::with_session(addr, &known.host_id, &known.token, &self.me, session);
         *self.pool.write().await = Some(pool);
         *self.info.lock().expect("info lock") = Some(info.clone());
         Ok(info)
@@ -370,11 +375,25 @@ impl Basalt {
         *self.info.lock().expect("info lock") = None;
     }
 
-    /// Unpairs from a host on this side. The host keeps its record until it is
-    /// revoked there too.
+    /// Unpairs from a host, on this side and — when it can be reached — on the
+    /// host's too.
+    ///
+    /// It used to be this side only, and the host kept a record that would
+    /// never connect again: every time a device was forgotten and paired
+    /// afresh, the host's device list grew by one stale row. Telling the host
+    /// is best effort. One that is switched off, or too old to understand the
+    /// request, keeps the record, and lets go of it by itself in time.
     pub async fn forget(&self, host_id: &str) -> Result<()> {
         let current = self.status().map(|i| i.host_id);
         if current.as_deref() == Some(host_id) {
+            if let Ok(pool) = self.pool().await
+                && let Ok(mut lease) = pool.acquire().await
+            {
+                let _ = lease.unpair().await;
+                // Never back into the pool: the host has just revoked the
+                // token this connection authenticated with.
+                lease.discard();
+            }
             self.disconnect().await;
         }
         self.store.lock().expect("store lock").forget(host_id);
@@ -526,7 +545,7 @@ impl Basalt {
             (pool.address(), known.host_id, known.token)
         };
 
-        let mut session = Session::connect(addr, &host_id, &token, &self.device_name).await?;
+        let mut session = Session::connect(addr, &host_id, &token, &self.me).await?;
         session.watch_begin().await?;
 
         loop {

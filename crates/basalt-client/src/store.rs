@@ -35,6 +35,10 @@ pub struct ClientStore {
     /// What this device calls itself on the host's device list.
     #[serde(default)]
     pub device_name: Option<String>,
+    /// The id this device made for itself, so hosts know it when it comes
+    /// back. Made the first time the app opens and never changed.
+    #[serde(default)]
+    pub device_id: Option<String>,
 }
 
 impl ClientStore {
@@ -106,6 +110,13 @@ pub fn default_path() -> PathBuf {
         .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
     base.join("Basalt").join("client.json")
+}
+
+/// A fresh device id: sixteen random bytes, as hex.
+pub fn new_device_id() -> Result<String> {
+    basalt_net::pairing::random_nonce()
+        .map(|nonce| nonce[..32].to_string())
+        .map_err(|e| ClientError::Protocol(format!("no randomness available: {e}")))
 }
 
 /// This device's name, as it will appear on the host.
