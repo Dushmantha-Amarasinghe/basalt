@@ -309,10 +309,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "basalt-catalog"
+version = "1.0.0"
+dependencies = [
+ "blake3",
+ "thiserror 2.0.20",
+ "unicode-normalization",
+ "zstd",
+]
+
+[[package]]
 name = "basalt-host"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "basalt-catalog",
  "basalt-net",
  "basalt-proto",
  "blake3",
@@ -5079,6 +5090,15 @@ name = "unicode-ident"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-segmentation"

@@ -55,6 +55,8 @@ pub struct HostStatus {
     pub device_count: usize,
     /// The media index, always present so the switch can be drawn.
     pub library: LibraryStatus,
+    /// Whether each device keeps its own watch history.
+    pub progress_per_device: bool,
     /// Whether the serving loop is actually accepting connections.
     pub serving: bool,
     /// Why it is not, when it is not.
@@ -282,6 +284,7 @@ mod tests {
                 has_key: false,
                 scanned_at: 0,
             },
+            progress_per_device: false,
             serving: true,
             problem: None,
         };
@@ -295,6 +298,7 @@ mod tests {
                 "library",
                 "port",
                 "problem",
+                "progressPerDevice",
                 "requirePin",
                 "serving",
                 "startWithWindows",

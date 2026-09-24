@@ -73,6 +73,13 @@ pub struct HostConfig {
     #[serde(default)]
     pub tmdb_key: String,
 
+    /// Whether each device sees its own watch history rather than the one
+    /// they all share. Off by default: one history is what lets a film started
+    /// on one screen be finished on another, which is the point of keeping it
+    /// on the host at all.
+    #[serde(default)]
+    pub progress_per_device: bool,
+
     #[serde(default)]
     pub devices: Vec<Device>,
 }
@@ -94,6 +101,7 @@ impl HostConfig {
             library_enabled: false,
             posters: false,
             tmdb_key: String::new(),
+            progress_per_device: false,
             devices: Vec::new(),
         })
     }

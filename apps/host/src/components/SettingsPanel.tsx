@@ -7,7 +7,7 @@ import { Switch } from './ui/Switch'
 import { formatAgo } from '@/lib/utils'
 
 /**
- * The four settings this app has.
+ * The settings this app has.
  *
  * Everything else a network share usually asks for — addresses, share names,
  * user accounts, firewall rules, permissions — is either decided by the
@@ -26,6 +26,7 @@ export function SettingsPanel({
   onRescan,
   onPosters,
   onTmdbKey,
+  onProgressPerDevice,
   onRename,
   build,
   onOpenLog,
@@ -37,6 +38,7 @@ export function SettingsPanel({
   onRescan: () => void
   onPosters: (enabled: boolean) => void
   onTmdbKey: (key: string) => void
+  onProgressPerDevice: (enabled: boolean) => void
   onRename: (name: string) => void
   /** Which build this is, for telling one install from another. */
   build: string
@@ -99,6 +101,22 @@ export function SettingsPanel({
               <Artwork status={status} onPosters={onPosters} onSave={onTmdbKey} />
             </>
           ) : null
+        }
+      />
+
+      <Row
+        title="Separate watch history for each device"
+        detail={
+          status.progressPerDevice
+            ? 'Each device keeps its own place and its own Continue watching. The shared history is kept too, and comes back if you turn this off.'
+            : 'Every device shares one history, so something started on one can be finished on another.'
+        }
+        control={
+          <Switch
+            checked={status.progressPerDevice}
+            onChange={onProgressPerDevice}
+            label="Separate watch history for each device"
+          />
         }
       />
 
