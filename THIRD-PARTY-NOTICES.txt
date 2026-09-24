@@ -55,6 +55,18 @@ vite, vitest, typescript                        MIT
 tauri-plugin-libmpv-api                         MPL-2.0
 
 
+DATA
+----
+
+Wikidata                                        CC0 1.0 (public domain)
+  https://www.wikidata.org
+  The film and series titles the host uses to tell a real film from a home
+  video are taken from Wikidata and shipped inside the host, so recognising a
+  film never needs the network. Extracted through QLever
+  (https://qlever.dev), the University of Freiburg's SPARQL engine. No
+  attribution is required by CC0; it is given here anyway.
+
+
 FONTS
 -----
 
