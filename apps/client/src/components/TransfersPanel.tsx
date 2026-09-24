@@ -39,9 +39,13 @@ export function TransfersPanel({
     (t) => t.status === 'failed' || t.status === 'cancelled',
   )
 
+  // The speed as it is now — the same window the title bar measures, so the
+  // two agree — while the time left is planned on a steadier rate, so it does
+  // not lurch about with every hiccup the speed beside it shows.
   const totalRate = active.reduce((sum, t) => sum + t.rate, 0)
+  const planningRate = active.reduce((sum, t) => sum + (t.etaRate || t.rate), 0)
   const remaining = active.reduce((sum, t) => sum + (t.total - t.transferred), 0)
-  const etaSeconds = totalRate > 0 ? remaining / totalRate : 0
+  const etaSeconds = planningRate > 0 ? remaining / planningRate : 0
 
   return (
     <div className="shrink-0 border-t border-line bg-ink2/80 backdrop-blur-sm">

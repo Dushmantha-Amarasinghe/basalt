@@ -5,6 +5,7 @@ import {
   SAMPLE_COUNT,
   getCurrent,
   getCurrentMbps,
+  getReadoutRate,
   getSamples,
   recordWindow,
   resetThroughput,
@@ -166,5 +167,57 @@ describe('throughput store', () => {
     expect(getCurrent()).toBeGreaterThan(0)
     resetThroughput()
     for (const value of getSamples()) expect(value).toBe(0)
+  })
+})
+
+describe('the readout', () => {
+  /** Reports arriving the way the backend sends them: every eighth second. */
+  function feed(bytesPerSecond: number, seconds: number): void {
+    for (let i = 0; i < seconds * 8; i += 1) {
+      vi.advanceTimersByTime(125)
+      recordWindow(bytesPerSecond / 8, 125)
+    }
+  }
+
+  it('reads the speed over the last two seconds', () => {
+    vi.useFakeTimers()
+    feed(20_000_000, 5)
+    expect(getReadoutRate() / 1e6).toBeCloseTo(20, 0)
+  })
+
+  /** The panel and the title bar used to disagree because this was the last
+   *  single report; it now moves with the link over a couple of seconds. */
+  it('follows a change within the window rather than on the next report', () => {
+    vi.useFakeTimers()
+    feed(20_000_000, 5)
+    feed(30_000_000, 3)
+    expect(getReadoutRate() / 1e6).toBeCloseTo(30, 0)
+  })
+
+  it('counts a stall between reports as slowness', () => {
+    vi.useFakeTimers()
+    feed(20_000_000, 3)
+    vi.advanceTimersByTime(1000)
+    expect(getReadoutRate() / 1e6).toBeLessThan(15)
+  })
+
+  it('reads nothing once nothing has moved for the whole window', () => {
+    vi.useFakeTimers()
+    feed(20_000_000, 2)
+    vi.advanceTimersByTime(2500)
+    expect(getReadoutRate()).toBe(0)
+  })
+
+  it('measures a transfer younger than the window over its own life', () => {
+    vi.useFakeTimers()
+    feed(20_000_000, 0.5)
+    expect(getReadoutRate() / 1e6).toBeCloseTo(20, 0)
+  })
+
+  it('is cleared with everything else', () => {
+    vi.useFakeTimers()
+    feed(20_000_000, 1)
+    resetThroughput()
+    expect(getReadoutRate()).toBe(0)
   })
 })

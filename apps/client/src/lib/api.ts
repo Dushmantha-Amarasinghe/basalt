@@ -63,8 +63,10 @@ export interface TransferEvent {
   transferred: number
   total: number
   status: 'active' | 'done' | 'failed'
-  /** Bytes per second, averaged over the transfer so far. */
+  /** Bytes per second now, over the last couple of seconds. */
   rate: number
+  /** Bytes per second over a longer window, for the time left. */
+  etaRate: number
 }
 
 /**

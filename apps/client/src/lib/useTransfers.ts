@@ -21,8 +21,10 @@ export interface Transfer {
   transferred: number
   total: number
   status: 'active' | 'done' | 'failed' | 'cancelled'
-  /** Bytes per second. */
+  /** Bytes per second now. */
   rate: number
+  /** Bytes per second to plan the time left on. */
+  etaRate: number
   error?: string
 }
 
@@ -34,7 +36,7 @@ export interface Transfers {
   active: Transfer[]
   /** Combined rate of everything in flight, in MB/s. */
   totalRate: number
-  start: (transfer: Omit<Transfer, 'transferred' | 'rate' | 'status'>) => void
+  start: (transfer: Omit<Transfer, 'transferred' | 'rate' | 'etaRate' | 'status'>) => void
   finish: (id: string, error?: string) => void
   cancel: (id: string) => void
   clearDone: () => void
@@ -71,6 +73,7 @@ export function useTransfers(): Transfers {
               total: event.total,
               status: event.status === 'done' ? 'done' : 'active',
               rate: event.rate,
+              etaRate: event.etaRate,
             }
             if (index === -1) return [next, ...prev]
             // Replace in place so the row does not jump to the top on every
@@ -85,9 +88,9 @@ export function useTransfers(): Transfers {
   )
 
   const start = useCallback(
-    (transfer: Omit<Transfer, 'transferred' | 'rate' | 'status'>) => {
+    (transfer: Omit<Transfer, 'transferred' | 'rate' | 'etaRate' | 'status'>) => {
       setTransfers((prev) => [
-        { ...transfer, transferred: 0, rate: 0, status: 'active' },
+        { ...transfer, transferred: 0, rate: 0, etaRate: 0, status: 'active' },
         ...prev,
       ])
     },

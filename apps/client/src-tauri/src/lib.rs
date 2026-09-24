@@ -352,20 +352,28 @@ fn progress_reporter(
     name: String,
     kind: &'static str,
 ) -> ProgressFn {
-    let started = std::time::Instant::now();
     let last = Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    let meter = Mutex::new(basalt_client::rate::Meter::new());
 
     Arc::new(move |p: basalt_client::Progress| {
+        let now = std::time::Instant::now();
+        // Every report goes into the meter, throttled or not: the rate is only
+        // as good as the samples behind it.
+        let (rate, eta_rate) = {
+            let mut meter = meter.lock().expect("meter lock");
+            meter.record(now, p.transferred);
+            (meter.current(now), meter.steady(now))
+        };
+
         let complete = p.transferred >= p.total;
         {
             let mut last = last.lock().expect("throttle lock");
             if !complete && last.elapsed() < std::time::Duration::from_millis(120) {
                 return;
             }
-            *last = std::time::Instant::now();
+            *last = now;
         }
 
-        let seconds = started.elapsed().as_secs_f64();
         let _ = app.emit(
             "basalt://transfer",
             TransferEvent {
@@ -376,11 +384,8 @@ fn progress_reporter(
                 transferred: p.transferred,
                 total: p.total,
                 status: if complete { "done" } else { "active" },
-                rate: if seconds > 0.0 {
-                    p.transferred as f64 / seconds
-                } else {
-                    0.0
-                },
+                rate,
+                eta_rate,
             },
         );
     })
