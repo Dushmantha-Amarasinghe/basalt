@@ -30,6 +30,12 @@ pub enum HostError {
     #[error("{0}")]
     PairingRefused(String),
 
+    /// The chosen drive is not connected. Sent as an I/O error, which every
+    /// client already shows with its message, rather than as a code older
+    /// clients would not know.
+    #[error("{0}")]
+    Unavailable(String),
+
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 
@@ -55,7 +61,7 @@ impl HostError {
             // request was well formed and refused on purpose.
             HostError::Proto(basalt_proto::ProtoError::UnsafePath(_)) => ErrorCode::Denied,
             HostError::Proto(_) | HostError::Net(_) => ErrorCode::BadRequest,
-            HostError::Io(_) => ErrorCode::Io,
+            HostError::Io(_) | HostError::Unavailable(_) => ErrorCode::Io,
         }
     }
 }
@@ -95,6 +101,16 @@ mod tests {
         assert_eq!(
             HostError::BadRequest("a".into()).code(),
             ErrorCode::BadRequest
+        );
+    }
+
+    #[test]
+    fn a_missing_drive_is_an_io_error_that_says_so_plainly() {
+        let err = HostError::Unavailable("Media is not connected to the host right now".into());
+        assert_eq!(err.code(), ErrorCode::Io);
+        assert_eq!(
+            err.to_string(),
+            "Media is not connected to the host right now"
         );
     }
 

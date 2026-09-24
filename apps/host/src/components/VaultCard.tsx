@@ -35,7 +35,7 @@ export function VaultCard({
             {!vault.available && (
               <span className="flex shrink-0 items-center gap-1 rounded-[4px] bg-dangerBg px-1.5 py-[2px] font-mono text-[9px] uppercase tracking-[0.1em] text-danger">
                 <AlertTriangle size={9} />
-                unplugged
+                not connected
               </span>
             )}
           </div>
@@ -50,7 +50,23 @@ export function VaultCard({
         </div>
       </div>
 
-      {vault.total > 0 ? (
+      {!vault.available ? (
+        // Missing, rather than empty: the host has not lost its choice, and it
+        // will pick the drive up again by itself the moment it is back. The
+        // choice to move on is offered, not forced.
+        <div className="mt-4 rounded-sm bg-dangerBg px-3.5 py-3">
+          <p className="text-[12px] leading-relaxed text-danger">
+            This drive is not connected. Devices can still find this machine, and the
+            drive will be shared again on its own as soon as it is plugged back in.
+          </p>
+          <button
+            onClick={onChange}
+            className="mt-2.5 rounded-md border border-danger/40 px-3 py-1.5 text-[11.5px] text-danger transition-colors hover:bg-danger/10"
+          >
+            Choose another drive
+          </button>
+        </div>
+      ) : vault.total > 0 ? (
         <>
           <div className="mt-5 h-[6px] w-full overflow-hidden rounded-full bg-ink2">
             <motion.div
@@ -70,13 +86,6 @@ export function VaultCard({
           {/* Some USB enclosures decline to report a size. Not worth an error —
               the share works regardless — but the gauge would be a lie. */}
           this volume does not report its size
-        </p>
-      )}
-
-      {!vault.available && (
-        <p className="mt-4 rounded-sm bg-dangerBg px-3 py-2 text-[12px] leading-relaxed text-danger">
-          This drive is not connected any more. Devices can still find this machine, but
-          nothing can be read until you plug it back in.
         </p>
       )}
     </div>

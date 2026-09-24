@@ -41,9 +41,22 @@ pub struct Host {
     traffic: Traffic,
     /// Watching the drive. Replaced whenever the vault is.
     watch: tokio::sync::RwLock<Option<Arc<crate::watch::Watch>>>,
+    /// Bumped each time the watcher is replaced, so anything following it can
+    /// move to the new one. See [`Host::keep_library_current`].
+    watch_generation: tokio::sync::watch::Sender<u64>,
+    /// Whether the chosen drive was missing the last time anyone looked.
+    drive_lost: std::sync::atomic::AtomicBool,
     /// The media index, and whether a scan is running.
     library: std::sync::Mutex<crate::media::Library>,
     scanning: std::sync::atomic::AtomicBool,
+    /// A scan was asked for while one was already running.
+    rescan_wanted: std::sync::atomic::AtomicBool,
+    /// Videos that arrived while a scan was walking the drive.
+    ///
+    /// A scan replaces the whole index when it finishes, and one that had
+    /// already passed a folder when a file landed in it would otherwise drop
+    /// that file again — filed on arrival, then gone until the scan after.
+    arrived_during_scan: std::sync::Mutex<Vec<String>>,
     /// When the last scan finished and how long it took, so the next one can
     /// be held off in proportion to what scanning this drive actually costs.
     last_scan: std::sync::Mutex<Option<(std::time::Instant, std::time::Duration)>>,
@@ -56,10 +69,26 @@ impl Host {
         let identity = config.identity()?;
         let registry = Registry::new(config.devices.clone(), config.require_pin);
 
+        // A drive that is not there is not a reason to refuse to start.
+        //
+        // This used to be `?`, and the app's startup turned the error into an
+        // exit — so a host whose USB drive was unplugged simply vanished on
+        // launch, with no window and nothing saying why. It now starts without
+        // the drive, says so, and picks the drive up again when it returns.
         let vault = match &config.vault_path {
-            Some(path) => Some(Arc::new(Vault::open(path, &config.vault_name)?)),
+            Some(path) => match Vault::open(path, &config.vault_name) {
+                Ok(vault) => Some(Arc::new(vault)),
+                Err(e) => {
+                    tracing::warn!(
+                        "{} is not available ({e}); waiting for it to come back",
+                        path.display()
+                    );
+                    None
+                }
+            },
             None => None,
         };
+        let drive_lost = config.vault_path.is_some() && vault.is_none();
 
         // Starting the watcher must not stop a host from serving: a drive that
         // will not report changes is still a drive you can read.
@@ -96,8 +125,12 @@ impl Host {
             uploads: Uploads::default(),
             traffic: Traffic::default(),
             watch: tokio::sync::RwLock::new(watch),
+            watch_generation: tokio::sync::watch::Sender::new(0),
+            drive_lost: std::sync::atomic::AtomicBool::new(drive_lost),
             library: std::sync::Mutex::new(library),
             scanning: std::sync::atomic::AtomicBool::new(false),
+            rescan_wanted: std::sync::atomic::AtomicBool::new(false),
+            arrived_during_scan: std::sync::Mutex::new(Vec::new()),
             last_scan: std::sync::Mutex::new(None),
             progress: std::sync::Mutex::new(progress),
         }))
@@ -105,6 +138,17 @@ impl Host {
 
     pub async fn watch(&self) -> Option<Arc<crate::watch::Watch>> {
         self.watch.read().await.clone()
+    }
+
+    /// Swaps the watcher, and tells anything following the old one to move.
+    ///
+    /// Dropping the old watcher is what stops it, so nothing may keep holding
+    /// it: the rescan loop once did, and went on watching the previous drive —
+    /// for ever — while the one actually being shared got no rescans at all.
+    async fn replace_watch(&self, watch: Option<Arc<crate::watch::Watch>>) {
+        *self.watch.write().await = watch;
+        self.watch_generation
+            .send_modify(|generation| *generation += 1);
     }
 
     /// Tells every connected client something changed.
@@ -153,13 +197,17 @@ impl Host {
     }
 
     fn library_path(&self) -> Option<std::path::PathBuf> {
-        let root = self.vault_path()?;
-        Some(crate::media::index::index_path(
-            self.config_path
-                .parent()
-                .unwrap_or(std::path::Path::new(".")),
-            &root,
-        ))
+        Some(self.library_path_for(&self.vault_path()?))
+    }
+
+    fn config_dir(&self) -> &std::path::Path {
+        self.config_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+    }
+
+    fn library_path_for(&self, root: &std::path::Path) -> std::path::PathBuf {
+        crate::media::index::index_path(self.config_dir(), root)
     }
 
     /// Where artwork for one item is cached.
@@ -182,12 +230,9 @@ impl Host {
     // -----------------------------------------------------------------------
 
     fn progress_path(&self) -> Option<std::path::PathBuf> {
-        let root = self.vault_path()?;
         Some(crate::media::Progress::path_for(
-            self.config_path
-                .parent()
-                .unwrap_or(std::path::Path::new(".")),
-            &root,
+            self.config_dir(),
+            &self.vault_path()?,
         ))
     }
 
@@ -290,82 +335,198 @@ impl Host {
         Ok(())
     }
 
-    /// Rescans whenever the drive changes, and once at startup.
+    /// Keeps the index in step with the drive, from startup until the host stops.
     ///
     /// The watcher keeps *listings* live; without this the index would not be,
     /// and a film copied in would sit in Files but never appear under Movies
     /// until somebody pressed a button.
     ///
-    /// Two limits, both learned the hard way. The drive is allowed to settle
-    /// for [`SETTLE`] before a scan starts, because copying a season produces a
-    /// change per episode. And no two scans may begin within [`MIN_GAP`] of
-    /// each other, because a scan of a whole drive is minutes of disk on the
-    /// kind of old laptop this runs on — and a drive that something else is
-    /// writing to continuously would otherwise mean scanning continuously,
-    /// which is indistinguishable from the machine having seized up.
+    /// **It follows the watcher, not a watcher.** It used to subscribe once, to
+    /// whichever watcher existed when the server started — and when the drive
+    /// was changed it kept holding the old one, so the old drive stayed watched
+    /// and the one being shared got no rescans until the host restarted. A host
+    /// set up for the first time had no watcher at startup at all, and its loop
+    /// ended before the drive was even chosen. Now it moves to each new watcher
+    /// as it appears, and waits when there is none.
+    ///
+    /// **Arrivals are filed at once; everything else waits for a scan.** A new
+    /// video is filed on its own the moment the drive goes quiet — see
+    /// [`crate::media::index::add`]. Removals, renames and new folders need the
+    /// full walk, and that walk is rationed: see [`REST_MULTIPLE`].
     ///
     /// Also covers the case a restart would otherwise lose: the index on disk
     /// says nothing about what happened while the host was off.
     pub fn keep_library_current(self: &Arc<Self>) {
-        /// Quiet time after the last change before rescanning.
+        use tokio::sync::broadcast::error::RecvError;
+
+        /// Quiet time after the last change before acting on any of them.
+        /// Copying a season is a change per episode; it is one event here.
         const SETTLE: std::time::Duration = std::time::Duration::from_secs(8);
-        /// How much of the time a drive may spend being scanned.
-        ///
-        /// The gap before the next scan is this multiple of how long the last
-        /// one took, so the limit tunes itself to the drive: a small library
-        /// scans in a blink and stays live, while a whole drive that takes
-        /// ninety seconds earns a quarter of an hour to itself. Nothing else
-        /// would work for both — a fixed gap is either too slow for a folder
-        /// of films or far too eager for a 4 TB disk on an old laptop.
-        const REST_MULTIPLE: u32 = 10;
-        /// However costly a scan was, it never earns more than this.
-        const MAX_GAP: std::time::Duration = std::time::Duration::from_secs(900);
 
         self.start_scan();
 
         let host = Arc::clone(self);
         tokio::spawn(async move {
-            let Some(watch) = host.watch().await else {
-                return;
-            };
-            let mut changes = watch.subscribe();
-
+            let mut generation = host.watch_generation.subscribe();
             loop {
-                // Wait for something to happen at all.
-                match changes.recv().await {
-                    Ok(change) if !worth_rescanning(&change) => continue,
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                }
+                // Whatever watcher is current, subscribed to and then let go
+                // of: holding it would keep the drive watched after the host
+                // itself has moved on.
+                let changes = host.watch().await.map(|watch| watch.subscribe());
+                let Some(mut changes) = changes else {
+                    if generation.changed().await.is_err() {
+                        return;
+                    }
+                    continue;
+                };
 
-                // Then let the drive settle before walking it.
-                loop {
-                    match tokio::time::timeout(SETTLE, changes.recv()).await {
-                        // Something else happened; wait again.
-                        Ok(Ok(_)) => continue,
-                        Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => return,
-                        Ok(Err(_)) => continue,
-                        Err(_) => break,
+                'following: loop {
+                    let first = tokio::select! {
+                        replaced = generation.changed() => {
+                            if replaced.is_err() {
+                                return;
+                            }
+                            break 'following;
+                        }
+                        change = changes.recv() => change,
+                    };
+
+                    let mut batch = Batch::default();
+                    match first {
+                        Ok(change) => batch.note(&change),
+                        Err(RecvError::Lagged(_)) => batch.needs_scan = true,
+                        Err(RecvError::Closed) => break 'following,
+                    }
+                    if batch.is_empty() {
+                        continue;
+                    }
+
+                    // Let the drive settle. Anything happening counts as not
+                    // settled, including writes that change nothing about the
+                    // library — a copy still in progress is exactly that.
+                    loop {
+                        match tokio::time::timeout(SETTLE, changes.recv()).await {
+                            Ok(Ok(change)) => batch.note(&change),
+                            Ok(Err(RecvError::Lagged(_))) => batch.needs_scan = true,
+                            Ok(Err(RecvError::Closed)) | Err(_) => break,
+                        }
+                    }
+
+                    if !batch.arrived.is_empty() {
+                        host.file_arrivals(batch.arrived).await;
+                    }
+                    if batch.needs_scan {
+                        // Waited out rather than skipped: the changes are real,
+                        // and dropping them would leave the index wrong until
+                        // something else happened to trigger a scan.
+                        let wait = host.rest_before_next_scan();
+                        if !wait.is_zero() {
+                            tracing::debug!("holding the next scan off for {wait:?}");
+                            tokio::time::sleep(wait).await;
+                        }
+                        host.start_scan();
                     }
                 }
-                // Wait the floor out rather than skipping the scan: the
-                // changes are real, and dropping them would leave the index
-                // wrong until something else happened to trigger one.
-                let wait = {
-                    let last = host.last_scan.lock().expect("scan clock");
-                    last.and_then(|(finished, took)| {
-                        let gap = (took * REST_MULTIPLE).min(MAX_GAP);
-                        gap.checked_sub(finished.elapsed())
-                    })
-                };
-                if let Some(wait) = wait {
-                    tracing::debug!("holding the next scan off for {wait:?}");
-                    tokio::time::sleep(wait).await;
-                }
-                host.start_scan();
             }
         });
+    }
+
+    /// How long until another full scan is allowed.
+    fn rest_before_next_scan(&self) -> std::time::Duration {
+        let last = *self.last_scan.lock().expect("scan clock");
+        last.and_then(|(finished, took)| {
+            let gap = (took * REST_MULTIPLE).min(MAX_REST);
+            gap.checked_sub(finished.elapsed())
+        })
+        .unwrap_or_default()
+    }
+
+    /// Files videos that just arrived, without walking the drive.
+    async fn file_arrivals(self: &Arc<Self>, paths: Vec<String>) {
+        if !self.library_enabled() {
+            return;
+        }
+        let Some(vault) = self.vault().await else {
+            return;
+        };
+        // Remembered for a scan already walking the drive, which would
+        // otherwise finish and replace the index without them.
+        if self.is_scanning() {
+            self.arrived_during_scan
+                .lock()
+                .expect("arrivals lock")
+                .extend(paths.iter().cloned());
+        }
+
+        // Tried against the index as it stands, and retried if a scan swapped
+        // it underneath — writing an index computed from a stale copy would
+        // undo whatever that scan found.
+        for _ in 0..3 {
+            let (revision, existing) = {
+                let library = self.library.lock().expect("library lock");
+                (library.revision, library.items.clone())
+            };
+            let (vault, paths) = (Arc::clone(&vault), paths.clone());
+            let added = tokio::task::spawn_blocking(move || {
+                crate::media::index::add(
+                    &existing,
+                    &vault,
+                    &paths,
+                    basalt_catalog::Catalog::bundled(),
+                )
+            })
+            .await
+            .ok()
+            .flatten();
+            let Some(mut items) = added else {
+                return;
+            };
+            self.dress(&mut items).await;
+
+            let snapshot = {
+                let mut library = self.library.lock().expect("library lock");
+                if library.revision != revision {
+                    continue;
+                }
+                let scanned_at = library.scanned_at;
+                library.replace(items, scanned_at);
+                library.clone()
+            };
+            self.save_library(&snapshot);
+            tracing::info!("filed new arrivals without a scan");
+            self.announce(basalt_proto::msg::Change::LibraryChanged)
+                .await;
+            return;
+        }
+    }
+
+    /// Fetches posters for anything missing one and marks which items have
+    /// one. Shared by a full scan and by arrivals, so a film added on its own
+    /// gets its poster the same way.
+    async fn dress(&self, items: &mut [basalt_proto::msg::LibraryItem]) {
+        // Best effort and never fatal: no key, no network, or a title nobody
+        // has a poster for each cost a poster and nothing more.
+        let config_dir = self.config_dir().to_path_buf();
+        let (posters, key) = {
+            let config = self.config.lock().expect("config lock");
+            (config.posters, config.tmdb_key.clone())
+        };
+        crate::media::art::enrich(&*items, posters, &key, &config_dir).await;
+
+        // Marked after fetching, so an item whose poster just arrived is
+        // already flagged in the index the client is about to be sent.
+        let have = crate::media::art::cached(&config_dir);
+        for item in items.iter_mut() {
+            item.has_art = have.contains(&item.id);
+        }
+    }
+
+    fn save_library(&self, snapshot: &crate::media::Library) {
+        if let Some(path) = self.library_path()
+            && let Err(e) = snapshot.save(&path)
+        {
+            tracing::warn!("could not save the library index: {e}");
+        }
     }
 
     /// Rebuilds the index in the background.
@@ -379,9 +540,11 @@ impl Host {
         if !self.library_enabled() {
             return;
         }
-        // One scan at a time. A second request while one runs is a no-op rather
-        // than a queue, because the one already running will see the same drive.
+        // One scan at a time. A request while one runs is remembered rather
+        // than dropped: the running scan may already have passed whatever
+        // changed, so another follows it, after the usual rest.
         if self.scanning.swap(true, Ordering::SeqCst) {
+            self.rescan_wanted.store(true, Ordering::SeqCst);
             return;
         }
 
@@ -397,6 +560,12 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => tracing::warn!("the library scan failed: {e}"),
             }
+
+            if host.rescan_wanted.swap(false, Ordering::SeqCst) {
+                let wait = host.rest_before_next_scan();
+                tokio::time::sleep(wait).await;
+                host.start_scan();
+            }
         });
     }
 
@@ -404,31 +573,37 @@ impl Host {
         let Some(vault) = self.vault().await else {
             return Ok(false);
         };
+        self.arrived_during_scan
+            .lock()
+            .expect("arrivals lock")
+            .clear();
         let began = std::time::Instant::now();
-        let mut items = tokio::task::spawn_blocking(move || crate::media::scan(&vault))
+        let walked = Arc::clone(&vault);
+        let mut items = tokio::task::spawn_blocking(move || crate::media::scan(&walked))
             .await
             .map_err(|e| HostError::BadRequest(format!("the scan panicked: {e}")))?;
 
-        // Posters, if the user has supplied a key. Best effort and never fatal:
-        // no key, no network, or a title TMDb has never heard of each cost a
-        // poster and nothing more.
-        let config_dir = self
-            .config_path
-            .parent()
-            .unwrap_or(std::path::Path::new("."))
-            .to_path_buf();
-        let (posters, key) = {
-            let config = self.config.lock().expect("config lock");
-            (config.posters, config.tmdb_key.clone())
-        };
-        crate::media::art::enrich(&items, posters, &key, &config_dir).await;
-
-        // Marked after fetching, so an item whose poster just arrived is
-        // already flagged in the index the client is about to be sent.
-        let have = crate::media::art::cached(&config_dir);
-        for item in &mut items {
-            item.has_art = have.contains(&item.id);
+        // Anything that landed while the walk was under way, filed on top.
+        let arrived = std::mem::take(&mut *self.arrived_during_scan.lock().expect("arrivals lock"));
+        if !arrived.is_empty() {
+            let base = items.clone();
+            if let Some(with) = tokio::task::spawn_blocking(move || {
+                crate::media::index::add(
+                    &base,
+                    &vault,
+                    &arrived,
+                    basalt_catalog::Catalog::bundled(),
+                )
+            })
+            .await
+            .ok()
+            .flatten()
+            {
+                items = with;
+            }
         }
+
+        self.dress(&mut items).await;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -440,12 +615,7 @@ impl Host {
             let changed = library.replace(items, now);
             (changed, library.clone())
         };
-
-        if let Some(path) = self.library_path()
-            && let Err(e) = snapshot.save(&path)
-        {
-            tracing::warn!("could not save the library index: {e}");
-        }
+        self.save_library(&snapshot);
 
         *self.last_scan.lock().expect("scan clock") =
             Some((std::time::Instant::now(), began.elapsed()));
@@ -470,38 +640,112 @@ impl Host {
 
     /// Locks in a drive, replacing whatever was being served.
     pub async fn set_vault(self: &Arc<Self>, path: &std::path::Path, name: &str) -> Result<()> {
-        let vault = Arc::new(Vault::open(path, name)?);
-        *self.vault.write().await = Some(vault);
+        // Opened before anything is written, so choosing a drive that cannot
+        // be read leaves the host exactly as it was.
+        let vault = Vault::open(path, name)?;
         {
             let mut config = self.config.lock().expect("config lock");
             config.vault_path = Some(path.to_path_buf());
             config.vault_name = name.to_string();
         }
         self.persist()?;
+        self.attach(vault).await;
+        Ok(())
+    }
 
-        // Point the watcher at the new drive. Dropping the old one stops it,
-        // which closes every watch connection — and a client that reconnects
-        // gets changes for the drive actually being served now.
-        *self.watch.write().await = crate::watch::Watch::start(path)
+    /// Starts serving an opened drive: watcher, library and history.
+    ///
+    /// Shared by choosing a drive and by a drive coming back, so a USB drive
+    /// plugged back in gets exactly what choosing it did.
+    async fn attach(self: &Arc<Self>, vault: Vault) {
+        use std::sync::atomic::Ordering;
+
+        let vault = Arc::new(vault);
+        *self.vault.write().await = Some(Arc::clone(&vault));
+        self.drive_lost.store(false, Ordering::SeqCst);
+
+        // A new watcher, and the old one dropped. That closes every watch
+        // connection, and a client that reconnects gets changes for the drive
+        // actually being served now.
+        let watch = crate::watch::Watch::start(vault.root())
             .inspect_err(|e| tracing::warn!("changes will not be live: {e}"))
             .ok();
+        self.replace_watch(watch).await;
 
-        // A different drive is a different library. Load whatever was indexed
-        // for it before, then rescan.
-        {
-            let mut library = self.library.lock().expect("library lock");
-            *library = match self.library_enabled() {
-                true => self
-                    .library_path()
-                    .map(|p| crate::media::index::Library::load(&p))
-                    .unwrap_or_default(),
-                false => crate::media::index::Library::default(),
-            };
-        }
+        // A different drive is a different library, and a different history.
+        //
+        // The history used to stay behind: switching drives kept the previous
+        // drive's resume points in memory and saved them under the new one's
+        // name, so neither drive's file was right afterwards.
+        let root = self
+            .vault_path()
+            .unwrap_or_else(|| vault.root().to_path_buf());
+        let library = match self.library_enabled() {
+            true => crate::media::index::Library::load(&self.library_path_for(&root)),
+            false => crate::media::index::Library::default(),
+        };
+        *self.library.lock().expect("library lock") = library;
+        *self.progress.lock().expect("progress lock") = crate::media::Progress::load(
+            &crate::media::Progress::path_for(self.config_dir(), &root),
+        );
+
         self.start_scan();
         self.announce(basalt_proto::msg::Change::Resynchronise)
             .await;
-        Ok(())
+    }
+
+    /// Notices the chosen drive going away and coming back.
+    ///
+    /// A host whose drive is unplugged keeps running and keeps being found —
+    /// devices see it, and its window says what happened — and the moment the
+    /// drive is back it is served again, with nobody having to do anything.
+    pub fn keep_drive_attached(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+
+        /// Often enough that plugging a drive back in feels immediate.
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(3);
+
+        let host = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(EVERY).await;
+                let (path, name) = {
+                    let config = host.config.lock().expect("config lock");
+                    match &config.vault_path {
+                        Some(path) => (path.clone(), config.vault_name.clone()),
+                        None => continue,
+                    }
+                };
+
+                // Off the runtime: asking about a disconnected network drive
+                // can take Windows a long time to answer.
+                let probe = path.clone();
+                let present =
+                    tokio::task::spawn_blocking(move || crate::drives::is_available(&probe))
+                        .await
+                        .unwrap_or(false);
+                let lost = host.drive_lost.load(Ordering::SeqCst);
+
+                if !present && !lost {
+                    tracing::warn!("{} has gone; waiting for it to come back", path.display());
+                    host.drive_lost.store(true, Ordering::SeqCst);
+                    // Let go of it entirely: requests then say the drive is
+                    // missing rather than failing with a path error, and the
+                    // watcher stops holding a handle on a device Windows
+                    // wants to release.
+                    *host.vault.write().await = None;
+                    host.replace_watch(None).await;
+                } else if present && lost {
+                    match Vault::open(&path, &name) {
+                        Ok(vault) => {
+                            tracing::info!("{} is back", path.display());
+                            host.attach(vault).await;
+                        }
+                        Err(e) => tracing::debug!("{} is not readable yet: {e}", path.display()),
+                    }
+                }
+            }
+        });
     }
 
     /// Where the served drive lives, if one has been chosen.
@@ -549,7 +793,7 @@ impl Host {
             Some(vault) => tokio::task::spawn_blocking(move || {
                 let (free, total) = vault.space();
                 crate::ui::VaultView {
-                    path: vault.root().to_string_lossy().into_owned(),
+                    path: crate::drives::display(vault.root()),
                     name: vault.name().to_string(),
                     free,
                     total,
@@ -558,7 +802,19 @@ impl Host {
             })
             .await
             .ok(),
-            None => None,
+            // Chosen, but not there. Shown as the drive it is, marked missing,
+            // rather than as no drive at all — which would drop the window
+            // back to setup as if the choice had never been made.
+            None => {
+                let config = self.config.lock().expect("config lock");
+                config.vault_path.as_ref().map(|path| crate::ui::VaultView {
+                    path: crate::drives::display(path),
+                    name: config.vault_name.clone(),
+                    free: 0,
+                    total: 0,
+                    available: false,
+                })
+            }
         };
 
         let (host_name, port, require_pin) = {
@@ -763,35 +1019,87 @@ impl Host {
     }
 
     async fn require_vault(&self) -> Result<Arc<Vault>> {
-        self.vault().await.ok_or_else(|| {
-            HostError::Denied("this host has not been given a drive to share yet".into())
+        if let Some(vault) = self.vault().await {
+            return Ok(vault);
+        }
+        let config = self.config.lock().expect("config lock");
+        Err(match config.vault_path {
+            Some(_) => HostError::Unavailable(format!(
+                "{} is not connected to the host right now",
+                config.vault_name
+            )),
+            None => HostError::Denied("this host has not been given a drive to share yet".into()),
         })
     }
 }
 
-/// Whether a change could have altered what the library contains.
+/// How much of the time a drive may spend being scanned.
 ///
-/// A file being written to does not change which films exist, and a scan walks
-/// the whole drive — so `Modified` is deliberately ignored. `Resynchronise`
-/// means the host lost track, which is exactly when a rescan is warranted.
-fn worth_rescanning(change: &basalt_proto::msg::Change) -> bool {
-    use crate::media::parse::{is_system, is_video};
-    use basalt_proto::msg::Change;
+/// The rest before the next full scan is this multiple of how long the last
+/// one took, so the limit tunes itself to the drive: a small library scans in a
+/// blink and stays live, while a whole drive that takes ninety seconds earns a
+/// quarter of an hour to itself. Nothing else works for both — a fixed gap is
+/// either too slow for a folder of films or far too eager for a 4 TB disk on an
+/// old laptop, where a drive something else writes to continuously would
+/// otherwise mean scanning continuously.
+const REST_MULTIPLE: u32 = 10;
 
-    // Windows writes to its own folders constantly. A drive root shared whole
-    // would otherwise be permanently "just changed", and the index would scan
-    // for ever on a machine that is doing nothing a person would recognise.
-    let interesting = |path: &String| !is_system(path);
+/// However costly a scan was, it never earns more rest than this.
+const MAX_REST: std::time::Duration = std::time::Duration::from_secs(900);
 
-    match change {
-        Change::Created { path } | Change::Removed { path } => {
-            interesting(path) && (is_video(path) || !path.contains('.'))
+/// What one settled burst of changes asks of the library.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Batch {
+    /// Videos that appeared, to be filed on their own.
+    arrived: Vec<String>,
+    /// Something only a full walk can account for: a removal, a new folder,
+    /// or the watcher losing track.
+    needs_scan: bool,
+}
+
+impl Batch {
+    fn is_empty(&self) -> bool {
+        self.arrived.is_empty() && !self.needs_scan
+    }
+
+    fn note(&mut self, change: &basalt_proto::msg::Change) {
+        use crate::media::parse::{is_system, is_video};
+        use basalt_proto::msg::Change;
+
+        // Windows writes to its own folders constantly. A drive root shared
+        // whole would otherwise be permanently "just changed", and the index
+        // would scan for ever on a machine doing nothing a person would notice.
+        let interesting = |path: &String| !is_system(path);
+        // A path with no extension is most likely a folder, and a folder that
+        // appears or goes may hold any number of videos.
+        let folder = |path: &String| !path.rsplit('/').next().unwrap_or(path).contains('.');
+
+        match change {
+            Change::Created { path } if interesting(path) && is_video(path) => {
+                if !self.arrived.contains(path) {
+                    self.arrived.push(path.clone());
+                }
+            }
+            Change::Created { path } if interesting(path) && folder(path) => {
+                self.needs_scan = true;
+            }
+            Change::Removed { path } if interesting(path) && (is_video(path) || folder(path)) => {
+                self.needs_scan = true;
+            }
+            Change::Renamed { from, to } => {
+                if interesting(to) && is_video(to) && !self.arrived.contains(to) {
+                    self.arrived.push(to.clone());
+                }
+                if interesting(from) && (is_video(from) || folder(from)) {
+                    self.needs_scan = true;
+                }
+            }
+            Change::Resynchronise => self.needs_scan = true,
+            Change::Created { .. }
+            | Change::Removed { .. }
+            | Change::Modified { .. }
+            | Change::LibraryChanged => {}
         }
-        Change::Renamed { from, to } => {
-            (interesting(from) && is_video(from)) || (interesting(to) && is_video(to))
-        }
-        Change::Resynchronise => true,
-        Change::Modified { .. } | Change::LibraryChanged => false,
     }
 }
 
@@ -843,6 +1151,8 @@ pub async fn serve(server: BoundServer) -> Result<()> {
     // Keep the media index in step with the drive, from now until the host
     // stops. Does nothing at all when the library is switched off.
     host.keep_library_current();
+    // And keep serving the drive through it being unplugged and plugged back.
+    host.keep_drive_attached();
 
     // Announce on the local network for as long as this host is serving, so
     // clients never have to be told an address. A failure here is not fatal —
