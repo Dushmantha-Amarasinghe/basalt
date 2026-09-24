@@ -14,7 +14,7 @@ use std::time::Duration;
 use basalt_proto::msg::{
     Change, DirEntry, HelloResponse, LibraryResponse, ProgressRequest, Watched,
 };
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::pool::Pool;
 use crate::session::{Me, PairChallenge, Session, SessionInfo};
@@ -29,6 +29,18 @@ use crate::{ClientError, Result};
 /// write size barely mattered — about 12% across the whole range — so this is
 /// chosen for memory rather than for speed.
 pub const CHUNK_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Chunks allowed on the wire before waiting for the first to be answered.
+///
+/// A transfer used to send one chunk and wait for the host's answer before
+/// reading the next, so the link sat idle while this machine read from its
+/// disk, while the host wrote to its own, and while the answer came back.
+/// Starting a second file filled those gaps, which is why two transfers went
+/// faster together than one did alone. The host answers a connection's
+/// requests in order, so several can be sent ahead with no change to the
+/// protocol; three keeps the link busy through every one of those waits
+/// without asking either end to hold much.
+pub const IN_FLIGHT: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -643,34 +655,62 @@ impl Basalt {
         let mut lease = pool.acquire().await?;
         let mut file = tokio::fs::File::create(&temp).await?;
 
-        let mut done = 0u64;
-        while done < total {
-            if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+        let outcome: Result<u64> = async {
+            // Ranges asked for and not yet read back, oldest first.
+            let mut asked: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
+            let mut requested = 0u64;
+            let mut done = 0u64;
+
+            while done < total {
+                while asked.len() < IN_FLIGHT && requested < total {
+                    let want = CHUNK_BYTES.min(total - requested);
+                    lease.send_read(remote, requested, want).await?;
+                    asked.push_back(want);
+                    requested += want;
+                }
+                if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+                    return Err(ClientError::Protocol("cancelled".into()));
+                }
+
+                let expected = asked.pop_front().expect("a range is always in flight here");
+                let got = lease.receive_read_into(&mut file).await?;
+                self.count(got);
+                // The ranges after this one were asked for assuming this one
+                // was whole. A short answer means the file changed underneath
+                // the download, and carrying on would stitch two versions of
+                // it together.
+                if got != expected {
+                    return Err(ClientError::Protocol(format!(
+                        "{remote} changed while it was downloading ({done} of {total} bytes)"
+                    )));
+                }
+                done += got;
+
+                if let Some(report) = &progress {
+                    report(Progress {
+                        kind: TransferKind::Download,
+                        path: remote.to_string(),
+                        transferred: done,
+                        total,
+                    });
+                }
+            }
+            Ok(done)
+        }
+        .await;
+
+        let done = match outcome {
+            Ok(done) => done,
+            Err(e) => {
+                // Answers may still be on their way down this connection, and
+                // nothing can tell them apart from the next request's. It
+                // cannot be used again.
+                lease.discard();
                 drop(file);
                 tokio::fs::remove_file(&temp).await.ok();
-                return Err(ClientError::Protocol("cancelled".into()));
+                return Err(e);
             }
-
-            let want = CHUNK_BYTES.min(total - done);
-            let result = lease.read_range_into(remote, done, want, &mut file).await;
-            let got = lease.check(result)?;
-            self.count(got);
-            if got == 0 {
-                return Err(ClientError::Protocol(format!(
-                    "the host stopped sending {remote} at {done} of {total} bytes"
-                )));
-            }
-            done += got;
-
-            if let Some(report) = &progress {
-                report(Progress {
-                    kind: TransferKind::Download,
-                    path: remote.to_string(),
-                    transferred: done,
-                    total,
-                });
-            }
-        }
+        };
 
         file.flush().await?;
         drop(file);
@@ -684,6 +724,10 @@ impl Basalt {
     }
 
     /// Uploads a file, resuming if the host already holds part of it.
+    ///
+    /// Hashed as it is read for sending, rather than in a pass of its own
+    /// before the first byte goes: that pass read the whole file once more
+    /// and held the transfer back while it did.
     pub async fn upload(
         &self,
         local: &Path,
@@ -700,13 +744,6 @@ impl Basalt {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64);
 
-        // Hashed up front, off the runtime, so the host can verify the whole
-        // file at commit rather than trusting a length.
-        let path_for_hash = local.to_path_buf();
-        let digest = tokio::task::spawn_blocking(move || hash_file(&path_for_hash))
-            .await
-            .map_err(|e| ClientError::Protocol(format!("hashing failed: {e}")))??;
-
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
 
@@ -716,43 +753,89 @@ impl Basalt {
         };
 
         let mut file = tokio::fs::File::open(local).await?;
-        let mut sent = begin.offset;
-        if sent > 0 {
-            file.seek(std::io::SeekFrom::Start(sent)).await?;
-        }
-
         let mut buf = vec![0u8; CHUNK_BYTES as usize];
-        while sent < total {
-            if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
-                let _ = lease.write_abort(&begin.upload).await;
-                return Err(ClientError::Protocol("cancelled".into()));
-            }
+        let mut hasher = blake3::Hasher::new();
 
-            let want = (CHUNK_BYTES.min(total - sent)) as usize;
+        // The digest covers the whole file, so a part the host already holds
+        // is read through the hash here, without being sent again.
+        let mut sent = 0u64;
+        while sent < begin.offset {
+            let want = (CHUNK_BYTES.min(begin.offset - sent)) as usize;
             let n = file.read(&mut buf[..want]).await?;
             if n == 0 {
-                let _ = lease.write_abort(&begin.upload).await;
                 return Err(ClientError::Protocol(format!(
-                    "{} is shorter than it said it was",
+                    "{} is shorter than the part already uploaded",
                     local.display()
                 )));
             }
-
-            let result = lease.write_chunk(&begin.upload, sent, &buf[..n]).await;
-            lease.check(result)?;
-            self.count(n as u64);
+            hasher.update(&buf[..n]);
             sent += n as u64;
-
-            if let Some(report) = &progress {
-                report(Progress {
-                    kind: TransferKind::Upload,
-                    path: remote.to_string(),
-                    transferred: sent,
-                    total,
-                });
-            }
         }
 
+        let outcome: Result<()> = async {
+            // Chunks sent and not yet confirmed written, oldest first.
+            let mut unconfirmed: std::collections::VecDeque<u64> =
+                std::collections::VecDeque::new();
+            let mut confirmed = sent;
+
+            while confirmed < total {
+                while unconfirmed.len() < IN_FLIGHT && sent < total {
+                    if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+                        return Err(ClientError::Protocol("cancelled".into()));
+                    }
+                    let want = (CHUNK_BYTES.min(total - sent)) as usize;
+                    let n = file.read(&mut buf[..want]).await?;
+                    if n == 0 {
+                        return Err(ClientError::Protocol(format!(
+                            "{} is shorter than it said it was",
+                            local.display()
+                        )));
+                    }
+                    hasher.update(&buf[..n]);
+                    lease.send_chunk(&begin.upload, sent, &buf[..n]).await?;
+                    unconfirmed.push_back(n as u64);
+                    sent += n as u64;
+                }
+
+                lease.confirm_chunk().await?;
+                let n = unconfirmed
+                    .pop_front()
+                    .expect("a chunk is always in flight here");
+                self.count(n);
+                confirmed += n;
+
+                // Progress is what the host has confirmed writing, not what
+                // has merely left this machine.
+                if let Some(report) = &progress {
+                    report(Progress {
+                        kind: TransferKind::Upload,
+                        path: remote.to_string(),
+                        transferred: confirmed,
+                        total,
+                    });
+                }
+            }
+            Ok(())
+        }
+        .await;
+
+        if let Err(e) = outcome {
+            // Confirmations may still be on their way back, and would be read
+            // as the answer to whatever this connection is asked next.
+            lease.discard();
+            drop(lease);
+            // Cancelling, or a file that was not what it claimed, ends the
+            // upload. Anything else — the link dropping — leaves the partial
+            // file on the host, so trying again carries on rather than
+            // starting over.
+            let deliberate = matches!(&e, ClientError::Protocol(_));
+            if deliberate && let Ok(mut other) = pool.acquire().await {
+                let _ = other.write_abort(&begin.upload).await;
+            }
+            return Err(e);
+        }
+
+        let digest = hasher.finalize().to_hex().to_string();
         let result = lease.write_commit(&begin.upload, &digest, mtime).await;
         lease.check(result)?;
         Ok(total)
@@ -760,6 +843,9 @@ impl Basalt {
 }
 
 /// BLAKE3 of a whole file, read in blocks so a film never lands in memory.
+///
+/// What an upload's streamed hash has to agree with.
+#[cfg(test)]
 fn hash_file(path: &Path) -> Result<String> {
     use std::io::Read;
 

@@ -392,6 +392,18 @@ impl Session {
     where
         W: tokio::io::AsyncWrite + Unpin,
     {
+        self.send_read(path, offset, length).await?;
+        self.receive_read_into(out).await
+    }
+
+    /// Asks for a byte range without waiting for it.
+    ///
+    /// Half of a pipelined read: the host answers requests on a connection in
+    /// the order they arrived, so several can be asked for before the first
+    /// answer is read. That is what keeps the link busy while the host reads
+    /// the next piece off its disk. Each one must be matched by exactly one
+    /// [`Session::receive_read_into`], in order.
+    pub async fn send_read(&mut self, path: &str, offset: u64, length: u64) -> Result<()> {
         let body = serde_json::to_vec(&ReadRequest {
             path: path.to_string(),
             offset,
@@ -399,7 +411,14 @@ impl Session {
         })
         .map_err(|e| ClientError::Protocol(format!("could not encode the read: {e}")))?;
         write_request(&mut self.stream, Op::Read, &body).await?;
+        Ok(())
+    }
 
+    /// Streams the answer to the oldest range asked for into a writer.
+    pub async fn receive_read_into<W>(&mut self, out: &mut W) -> Result<u64>
+    where
+        W: tokio::io::AsyncWrite + Unpin,
+    {
         let (status, len) = read_response_header(&mut self.stream).await?;
         if status != basalt_proto::STATUS_OK {
             // Drain the error body so the connection stays usable, then report
@@ -474,9 +493,24 @@ impl Session {
     }
 
     pub async fn write_chunk(&mut self, upload: &str, offset: u64, data: &[u8]) -> Result<()> {
+        self.send_chunk(upload, offset, data).await?;
+        self.confirm_chunk().await
+    }
+
+    /// Sends one chunk of an upload without waiting for the host to write it.
+    ///
+    /// Half of a pipelined upload; see [`Session::send_read`] for why several
+    /// may be in flight on one connection. Each must be matched by exactly one
+    /// [`Session::confirm_chunk`], in order.
+    pub async fn send_chunk(&mut self, upload: &str, offset: u64, data: &[u8]) -> Result<()> {
         let id = parse_upload_id(upload)?;
         let payload = encode_chunk(&id, offset, data);
         write_request(&mut self.stream, Op::WriteChunk, &payload).await?;
+        Ok(())
+    }
+
+    /// Waits for the host to say the oldest chunk sent has been written.
+    pub async fn confirm_chunk(&mut self) -> Result<()> {
         read_response(&mut self.stream).await?;
         Ok(())
     }
