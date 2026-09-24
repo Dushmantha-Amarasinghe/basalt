@@ -310,7 +310,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "basalt-catalog"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "blake3",
  "thiserror 2.0.20",
@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "basalt-host"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "basalt-catalog",
@@ -343,7 +343,7 @@ dependencies = [
 
 [[package]]
 name = "basalt-host-shell"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "basalt-host",
  "basalt-net",
@@ -361,7 +361,7 @@ dependencies = [
 
 [[package]]
 name = "basalt-net"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "basalt-proto",
@@ -381,7 +381,7 @@ dependencies = [
 
 [[package]]
 name = "basalt-proto"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -391,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "basalt-update"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "basalt-net",
  "futures-util",
