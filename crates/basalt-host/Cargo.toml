@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 basalt-proto = { workspace = true }
 basalt-net = { workspace = true }
+basalt-catalog = { workspace = true }
 
 anyhow = { workspace = true }
 blake3 = { workspace = true }

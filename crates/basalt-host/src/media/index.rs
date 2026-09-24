@@ -17,13 +17,15 @@
 //! this project once before, for mirroring *every file*. This is not that: it
 //! holds derived metadata for media only.)
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use basalt_proto::msg::{Episode, LibraryItem, LibraryKind, Season};
 use serde::{Deserialize, Serialize};
 
-use super::parse::{self, Parsed};
+use basalt_catalog::{Catalog, Kind, Lookup};
+
+use super::parse::{self, Candidate, Parsed};
 use super::subs;
 use crate::vault::Vault;
 
@@ -133,12 +135,97 @@ struct Found {
     parsed: Parsed,
 }
 
+/// Confidence given to a title the catalogue confirms.
+///
+/// Above everything the parser can reach on shape alone, because this is the
+/// only signal that is not a guess: somebody released a film called that.
+pub const VERIFIED: u8 = 99;
+
+/// Confidence given to a film newer than the catalogue.
+///
+/// Below [`basalt_proto::msg::CONFIDENT`] on purpose, so the interface marks it
+/// as a guess rather than asserting it.
+pub const UNVERIFIED: u8 = 60;
+
+/// Decides whether a candidate belongs in the library, and how sure to be.
+///
+/// **Series** are taken on their shape. `SxxExx` and a `Season NN` folder are
+/// strong evidence of their own, and plenty of real series — regional ones,
+/// anime under a romanised title, things somebody recorded off air — will
+/// never be in a catalogue. The catalogue only raises confidence here.
+///
+/// **Films** have to exist. Three things, in order:
+///
+/// 1. Something besides the title says "film": a year, a `Movies` folder, or
+///    release tags. Without one, a video is a video, as it always was.
+/// 2. The catalogue knows a film by that title from about that year. That is
+///    what keeps meeting recordings out: *Literature Review* was never
+///    released, whatever folder it is in.
+/// 3. One-word titles need more than a year. *Home* and *Meeting* are both
+///    real, recent films, so `Home 2025.mp4` among somebody's videos has to
+///    show something a home video would not — release tags, a library folder,
+///    or a folder named after it.
+///
+/// The one exception: a film from the catalogue's own year or later that
+/// carries release tags is kept, marked as unsure. It may simply be newer than
+/// the snapshot, and dropping a film somebody just downloaded would be the
+/// wrong way to be cautious.
+///
+/// Without a catalogue at all, the old rule stands: a year or a library folder.
+pub fn decide(candidate: Candidate, catalog: Option<&Catalog>) -> Option<Parsed> {
+    let Candidate {
+        mut parsed,
+        evidence,
+    } = candidate;
+
+    if parsed.is_episode() {
+        if let Some(catalog) = catalog
+            && catalog.find(Kind::Series, &parsed.title, parsed.year) == Lookup::Found
+        {
+            parsed.confidence = parsed.confidence.max(VERIFIED);
+        }
+        return Some(parsed);
+    }
+
+    let Some(catalog) = catalog else {
+        return (parsed.year.is_some() || evidence.media_folder).then_some(parsed);
+    };
+
+    let corroborated = parsed.year.is_some() || evidence.media_folder || evidence.release_markers;
+    if !corroborated {
+        return None;
+    }
+
+    let one_word = parsed.title.split_whitespace().count() < 2;
+    let beyond_year = evidence.media_folder || evidence.release_markers || evidence.named_folder;
+
+    let found = catalog.find(Kind::Film, &parsed.title, parsed.year) == Lookup::Found;
+    if found && (!one_word || beyond_year) {
+        parsed.confidence = parsed.confidence.max(VERIFIED);
+        return Some(parsed);
+    }
+
+    let newer_than_catalog = parsed
+        .year
+        .is_some_and(|year| year + 1 >= catalog.snapshot_year());
+    if newer_than_catalog && evidence.release_markers {
+        parsed.confidence = parsed.confidence.min(UNVERIFIED);
+        return Some(parsed);
+    }
+    None
+}
+
+/// Reads one path into something the library can hold, or nothing.
+fn identify(path: &str, catalog: Option<&Catalog>) -> Option<Parsed> {
+    decide(parse::candidate(path)?, catalog)
+}
+
 /// Walks the vault and builds the index.
 ///
 /// Synchronous and blocking: it is disk-bound and belongs on a blocking thread,
 /// not in the async runtime.
 pub fn scan(vault: &Vault) -> Vec<LibraryItem> {
-    scan_within(vault, MAX_DIRS, MAX_DURATION)
+    scan_within(vault, MAX_DIRS, MAX_DURATION, Catalog::bundled())
 }
 
 /// The walk, with its limits passed in so a test can reach them.
@@ -160,6 +247,7 @@ pub fn scan_within(
     vault: &Vault,
     max_dirs: usize,
     max_duration: std::time::Duration,
+    catalog: Option<&Catalog>,
 ) -> Vec<LibraryItem> {
     let started = std::time::Instant::now();
     let mut found = Vec::new();
@@ -239,7 +327,7 @@ pub fn scan_within(
                     if entry.size < MIN_FEATURE_BYTES {
                         continue;
                     }
-                    if let Some(parsed) = parse::parse(&path) {
+                    if let Some(parsed) = identify(&path, catalog) {
                         found.push(Found {
                             path,
                             size: entry.size,
@@ -262,6 +350,111 @@ pub fn scan_within(
         items.len()
     );
     items
+}
+
+/// Adds videos that just arrived to an index, without walking the drive.
+///
+/// A full scan of a whole drive is minutes of disk on the machines this runs
+/// on, so after one the host rests before the next — which meant a new episode
+/// could take a quarter of an hour to appear under TV Series. Everything needed
+/// to file one new video is right beside it, so it is filed at once, and the
+/// full scan stays what it is good at: noticing what went away.
+///
+/// Returns the new index, or `None` when nothing in it changed.
+pub fn add(
+    existing: &[LibraryItem],
+    vault: &Vault,
+    paths: &[String],
+    catalog: Option<&Catalog>,
+) -> Option<Vec<LibraryItem>> {
+    let mut grouping = Grouping::from_items(existing);
+    let mut added = false;
+
+    for path in paths {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        if crate::uploads::is_temp_name(name) || parse::is_system(path) {
+            continue;
+        }
+        let Ok(entry) = vault.stat(path) else {
+            // Gone again, or never there. The next full scan will agree.
+            continue;
+        };
+        if entry.kind != basalt_proto::msg::EntryKind::File || entry.size < MIN_FEATURE_BYTES {
+            continue;
+        }
+        let Some(parsed) = identify(path, catalog) else {
+            continue;
+        };
+        let tracks = subs::for_video(path, &subtitles_near(vault, path))
+            .into_iter()
+            .map(track)
+            .collect();
+        grouping.fold(
+            Found {
+                path: path.clone(),
+                size: entry.size,
+                mtime: entry.mtime,
+                parsed,
+            },
+            tracks,
+        );
+        added = true;
+    }
+
+    if !added {
+        return None;
+    }
+    let items = grouping.finish();
+    (items != existing).then_some(items)
+}
+
+/// Subtitle files beside a video, and in the subtitle folders next to it —
+/// everywhere [`subs::for_video`] would look.
+fn subtitles_near(vault: &Vault, video: &str) -> Vec<String> {
+    use basalt_proto::msg::EntryKind;
+
+    let join = |dir: &str, name: &str| {
+        if dir.is_empty() {
+            name.to_string()
+        } else {
+            format!("{dir}/{name}")
+        }
+    };
+    let dir = video.rsplit_once('/').map_or("", |(dir, _)| dir);
+
+    let mut found = Vec::new();
+    let mut sub_folders = Vec::new();
+    for entry in vault.list(dir).unwrap_or_default() {
+        match entry.kind {
+            EntryKind::File if subs::is_subtitle(&entry.name) => {
+                found.push(join(dir, &entry.name));
+            }
+            EntryKind::Dir if subs::is_sub_folder(&entry.name) => {
+                sub_folders.push(join(dir, &entry.name));
+            }
+            _ => {}
+        }
+    }
+
+    // Into each `Subs` folder, and the folders inside it: `Subs/Arrival/3_English.srt`.
+    for folder in sub_folders {
+        for entry in vault.list(&folder).unwrap_or_default() {
+            let path = join(&folder, &entry.name);
+            match entry.kind {
+                EntryKind::File if subs::is_subtitle(&entry.name) => found.push(path),
+                EntryKind::Dir => found.extend(
+                    vault
+                        .list(&path)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|e| e.kind == EntryKind::File && subs::is_subtitle(&e.name))
+                        .map(|e| join(&path, &e.name)),
+                ),
+                _ => {}
+            }
+        }
+    }
+    found
 }
 
 /// A stable id from the title and year.
@@ -296,32 +489,74 @@ fn group(found: Vec<Found>, subtitles: &[String]) -> Vec<LibraryItem> {
     let videos: Vec<String> = found.iter().map(|f| f.path.clone()).collect();
     let mut by_video = subs::map_all(&videos, subtitles);
 
-    let mut films: Vec<LibraryItem> = Vec::new();
+    let mut grouping = Grouping::default();
+    for entry in found {
+        let tracks = by_video
+            .remove(&entry.path)
+            .unwrap_or_default()
+            .into_iter()
+            .map(track)
+            .collect();
+        grouping.fold(entry, tracks);
+    }
+    grouping.finish()
+}
+
+/// Films and series being assembled, before they are tidied into an index.
+///
+/// Its own type so that a full scan and a single new file go through exactly
+/// the same rules: an episode added on its own must land where a scan would
+/// have put it, or the next scan would move it.
+#[derive(Default)]
+struct Grouping {
+    films: Vec<LibraryItem>,
     // Ordered so the output is stable between scans, which keeps the revision
     // from bumping just because a hash map iterated differently.
-    let mut series: BTreeMap<String, LibraryItem> = BTreeMap::new();
+    series: BTreeMap<String, LibraryItem>,
+}
 
-    for entry in found {
+impl Grouping {
+    /// Starts from an index that already exists.
+    fn from_items(items: &[LibraryItem]) -> Self {
+        let mut grouping = Grouping::default();
+        for item in items {
+            match item.kind {
+                LibraryKind::Film => grouping.films.push(item.clone()),
+                LibraryKind::Series => {
+                    grouping.series.insert(item.id.clone(), item.clone());
+                }
+            }
+        }
+        grouping
+    }
+
+    fn fold(&mut self, entry: Found, subtitles: Vec<basalt_proto::msg::SubtitleTrack>) {
         let parsed = entry.parsed;
         if parsed.title.is_empty() {
-            continue;
+            return;
         }
 
         if parsed.is_episode() {
-            let id = item_id(LibraryKind::Series, &parsed.title, None);
-            let item = series.entry(id.clone()).or_insert_with(|| LibraryItem {
-                id,
-                subtitles: Vec::new(),
-                kind: LibraryKind::Series,
-                title: parsed.title.clone(),
-                year: parsed.year,
-                path: None,
-                size: 0,
-                added: 0,
-                seasons: Vec::new(),
-                confidence: parsed.confidence,
-                has_art: false,
-            });
+            // The year is part of a series' identity when the path gives one,
+            // so two different shows that share a name stay two shows. Copies
+            // that carry no year are folded into the dated one in `finish`.
+            let id = item_id(LibraryKind::Series, &parsed.title, parsed.year);
+            let item = self
+                .series
+                .entry(id.clone())
+                .or_insert_with(|| LibraryItem {
+                    id,
+                    subtitles: Vec::new(),
+                    kind: LibraryKind::Series,
+                    title: parsed.title.clone(),
+                    year: parsed.year,
+                    path: None,
+                    size: 0,
+                    added: 0,
+                    seasons: Vec::new(),
+                    confidence: parsed.confidence,
+                    has_art: false,
+                });
 
             // A series is only as trustworthy as its least certain episode.
             item.confidence = item.confidence.min(parsed.confidence);
@@ -341,10 +576,9 @@ fn group(found: Vec<Found>, subtitles: &[String]) -> Vec<LibraryItem> {
                     item.seasons.last_mut().expect("just pushed")
                 }
             };
-            let subtitles = by_video.remove(&entry.path).unwrap_or_default();
             season.episodes.push(Episode {
                 number: parsed.episode.unwrap_or(0),
-                subtitles: subtitles.into_iter().map(track).collect(),
+                subtitles,
                 path: entry.path,
                 title: None,
                 size: entry.size,
@@ -354,32 +588,22 @@ fn group(found: Vec<Found>, subtitles: &[String]) -> Vec<LibraryItem> {
             let id = item_id(LibraryKind::Film, &parsed.title, parsed.year);
             // The same film at two qualities is one film. The larger file wins
             // as the one to play; both stay visible in Files.
-            match films.iter_mut().find(|f| f.id == id) {
+            match self.films.iter_mut().find(|f| f.id == id) {
                 Some(existing) => {
                     existing.added = existing.added.max(entry.mtime);
                     if entry.size > existing.size {
                         existing.size = entry.size;
                         // The subtitles follow the copy that will be played.
-                        existing.subtitles = by_video
-                            .remove(&entry.path)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(track)
-                            .collect();
+                        existing.subtitles = subtitles;
                         existing.path = Some(entry.path);
                     }
                 }
-                None => films.push(LibraryItem {
+                None => self.films.push(LibraryItem {
                     id,
                     kind: LibraryKind::Film,
                     title: parsed.title,
                     year: parsed.year,
-                    subtitles: by_video
-                        .remove(&entry.path)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(track)
-                        .collect(),
+                    subtitles,
                     path: Some(entry.path),
                     size: entry.size,
                     added: entry.mtime,
@@ -391,46 +615,98 @@ fn group(found: Vec<Found>, subtitles: &[String]) -> Vec<LibraryItem> {
         }
     }
 
-    let mut items: Vec<LibraryItem> = films;
-    for mut item in series.into_values() {
-        for season in &mut item.seasons {
-            // By number, then largest first, so the copy kept below is the
-            // better one — the same rule films already used.
-            season.episodes.sort_by(|a, b| {
-                a.number
-                    .cmp(&b.number)
-                    .then(b.size.cmp(&a.size))
-                    .then(a.path.cmp(&b.path))
-            });
-            // The same episode twice is one episode.
-            //
-            // This deduplicated on *path*, which can never collide, so a
-            // second copy of an episode anywhere on the drive got a row of its
-            // own: a sixteen-episode season listed seventeen, with one of them
-            // appearing twice. Both files are still there in Files; the
-            // library shows the episode once and plays the larger.
-            season.episodes.dedup_by(|a, b| a.number == b.number);
+    /// Merges, orders and totals everything into a finished index.
+    fn finish(mut self) -> Vec<LibraryItem> {
+        self.merge_undated_series();
+
+        let mut items: Vec<LibraryItem> = self.films;
+        for mut item in self.series.into_values() {
+            for season in &mut item.seasons {
+                // By number, then largest first, so the copy kept below is the
+                // better one — the same rule films already used.
+                season.episodes.sort_by(|a, b| {
+                    a.number
+                        .cmp(&b.number)
+                        .then(b.size.cmp(&a.size))
+                        .then(a.path.cmp(&b.path))
+                });
+                // The same episode twice is one episode.
+                //
+                // This deduplicated on *path*, which can never collide, so a
+                // second copy of an episode anywhere on the drive got a row of its
+                // own: a sixteen-episode season listed seventeen, with one of them
+                // appearing twice. Both files are still there in Files; the
+                // library shows the episode once and plays the larger.
+                season.episodes.dedup_by(|a, b| a.number == b.number);
+            }
+            item.seasons.sort_by_key(|s| s.number);
+            item.size = item
+                .seasons
+                .iter()
+                .flat_map(|season| &season.episodes)
+                .map(|episode| episode.size)
+                .sum();
+            items.push(item);
         }
-        item.seasons.sort_by_key(|s| s.number);
-        item.size = item
-            .seasons
-            .iter()
-            .flat_map(|season| &season.episodes)
-            .map(|episode| episode.size)
-            .sum();
-        items.push(item);
+
+        // A stable order, so two scans of an unchanged drive compare equal and the
+        // revision does not move.
+        items.sort_by(|a, b| {
+            a.title
+                .to_lowercase()
+                .cmp(&b.title.to_lowercase())
+                .then(a.year.cmp(&b.year))
+                .then(a.id.cmp(&b.id))
+        });
+        items
     }
 
-    // A stable order, so two scans of an unchanged drive compare equal and the
-    // revision does not move.
-    items.sort_by(|a, b| {
-        a.title
-            .to_lowercase()
-            .cmp(&b.title.to_lowercase())
-            .then(a.year.cmp(&b.year))
-            .then(a.id.cmp(&b.id))
-    });
-    items
+    /// Folds undated episodes into the one dated series of that name.
+    ///
+    /// Series used to be identified by title alone, so two different shows
+    /// with the same name — a remake and its original — became one show with
+    /// both sets of episodes in it. Now a year keeps them apart. But most
+    /// episodes carry no year at all, and those must still join their show:
+    /// when exactly one dated series has that name, they belong to it. When
+    /// there are two, there is no telling which, and they stay on their own
+    /// rather than being filed under the wrong show.
+    fn merge_undated_series(&mut self) {
+        let mut by_title: HashMap<String, Vec<String>> = HashMap::new();
+        for (id, item) in &self.series {
+            by_title
+                .entry(basalt_catalog::normalise(&item.title))
+                .or_default()
+                .push(id.clone());
+        }
+
+        for ids in by_title.into_values() {
+            let dated: Vec<&String> = ids
+                .iter()
+                .filter(|id| self.series[*id].year.is_some())
+                .collect();
+            let [target] = dated.as_slice() else {
+                continue;
+            };
+            let target = (*target).clone();
+            let undated: Vec<String> = ids
+                .iter()
+                .filter(|id| self.series[*id].year.is_none())
+                .cloned()
+                .collect();
+            for id in undated {
+                let undated = self.series.remove(&id).expect("listed above");
+                let into = self.series.get_mut(&target).expect("still present");
+                into.confidence = into.confidence.min(undated.confidence);
+                into.added = into.added.max(undated.added);
+                for season in undated.seasons {
+                    match into.seasons.iter_mut().find(|s| s.number == season.number) {
+                        Some(existing) => existing.episodes.extend(season.episodes),
+                        None => into.seasons.push(season),
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -494,7 +770,12 @@ mod tests {
         }
         std::fs::create_dir_all(&deep).unwrap();
 
-        let items = scan_within(&vault_of(&dir), 10, std::time::Duration::from_secs(30));
+        let items = scan_within(
+            &vault_of(&dir),
+            10,
+            std::time::Duration::from_secs(30),
+            None,
+        );
         assert_eq!(
             items.len(),
             1,
@@ -753,19 +1034,22 @@ mod tests {
     #[test]
     fn moving_a_film_keeps_its_identity() {
         let dir = temp_dir();
-        put(&dir.0, "Films/Arrival.2016.mkv");
+        put(&dir.0, "Films/Blade.Runner.2049.2017.mkv");
         let before = scan(&vault_of(&dir))[0].id.clone();
 
         std::fs::create_dir_all(dir.0.join("Archive")).unwrap();
         std::fs::rename(
-            dir.0.join("Films/Arrival.2016.mkv"),
-            dir.0.join("Archive/Arrival.2016.mkv"),
+            dir.0.join("Films/Blade.Runner.2049.2017.mkv"),
+            dir.0.join("Archive/Blade.Runner.2049.2017.mkv"),
         )
         .unwrap();
 
         let after = scan(&vault_of(&dir));
         assert_eq!(after[0].id, before);
-        assert_eq!(after[0].path.as_deref(), Some("Archive/Arrival.2016.mkv"));
+        assert_eq!(
+            after[0].path.as_deref(),
+            Some("Archive/Blade.Runner.2049.2017.mkv")
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -895,5 +1179,269 @@ mod tests {
             item_id(LibraryKind::Film, "Arrival", Some(2016)),
             item_id(LibraryKind::Film, "arrival", Some(2016))
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Telling a film from a recording
+    // -----------------------------------------------------------------------
+
+    /// A catalogue small enough to reason about, so these tests say what the
+    /// rules do rather than what one snapshot of Wikidata happens to hold.
+    fn catalogue() -> Catalog {
+        let mut b = basalt_catalog::Builder::new(20260920);
+        b.add(Kind::Film, "Night Harbour", Some((2024, 2024)));
+        b.add(Kind::Film, "Paper Boats", Some((2018, 2018)));
+        b.add(Kind::Film, "Lantern", Some((2019, 2019)));
+        b.add(Kind::Film, "Home", Some((2025, 2025)));
+        b.add(Kind::Series, "Northwind", Some((2021, 2023)));
+        b.finish()
+    }
+
+    fn scan_with(dir: &TempDir, catalog: &Catalog) -> Vec<LibraryItem> {
+        scan_within(&vault_of(dir), MAX_DIRS, MAX_DURATION, Some(catalog))
+    }
+
+    fn titles(items: &[LibraryItem]) -> Vec<&str> {
+        items.iter().map(|i| i.title.as_str()).collect()
+    }
+
+    /// The report this exists for: a term of lecture recordings, all in a
+    /// folder with the year in its name, filed under Movies.
+    #[test]
+    fn recordings_in_a_dated_folder_are_not_films() {
+        let dir = temp_dir();
+        put(
+            &dir.0,
+            "Semester 2025/Literature Review-20251014 100532-Meeting Recording.mp4",
+        );
+        put(
+            &dir.0,
+            "Semester 2025/Network Basics-20250927 090711-Meeting Recording.mp4",
+        );
+        put(&dir.0, "Semester 2025/Physical Sep 2025.mp4");
+        assert!(scan_with(&dir, &catalogue()).is_empty());
+    }
+
+    #[test]
+    fn a_released_film_is_kept_and_trusted() {
+        let dir = temp_dir();
+        put(&dir.0, "Downloads/Night.Harbour.2024.1080p.WEB-DL.x265.mkv");
+        put(&dir.0, "Movies/Paper Boats (2018).mkv");
+        let items = scan_with(&dir, &catalogue());
+        assert_eq!(titles(&items), ["Night Harbour", "Paper Boats"]);
+        assert!(items.iter().all(|i| i.confidence == VERIFIED));
+    }
+
+    #[test]
+    fn a_title_nobody_released_is_not_a_film_even_in_a_movies_folder() {
+        let dir = temp_dir();
+        put(&dir.0, "Movies/Our Trip To The Coast 2024.mkv");
+        assert!(scan_with(&dir, &catalogue()).is_empty());
+    }
+
+    /// A one-word title with a year is a home video far more often than it is
+    /// the film of that name.
+    #[test]
+    fn a_one_word_title_needs_more_than_a_year() {
+        let dir = temp_dir();
+        put(&dir.0, "Videos/Home 2025.mp4");
+        assert!(scan_with(&dir, &catalogue()).is_empty());
+
+        for shown in [
+            "Downloads/Home.2025.1080p.WEBRip.mkv",
+            "Films/Home (2025).mkv",
+            "Home (2025)/Home.mkv",
+        ] {
+            let dir = temp_dir();
+            put(&dir.0, shown);
+            assert_eq!(titles(&scan_with(&dir, &catalogue())), ["Home"], "{shown}");
+        }
+    }
+
+    #[test]
+    fn the_year_has_to_agree_with_the_release() {
+        let dir = temp_dir();
+        put(&dir.0, "Movies/Night Harbour (1999).mkv");
+        assert!(scan_with(&dir, &catalogue()).is_empty());
+    }
+
+    /// Newer than the catalogue and tagged like a release: kept, but marked as
+    /// a guess.
+    #[test]
+    fn a_tagged_film_newer_than_the_catalogue_is_kept_as_unsure() {
+        let dir = temp_dir();
+        put(
+            &dir.0,
+            "Downloads/Tide Line 2026 2160p WEB-DL DDP5.1 H.265.mkv",
+        );
+        let items = scan_with(&dir, &catalogue());
+        assert_eq!(titles(&items), ["Tide Line"]);
+        assert_eq!(items[0].confidence, UNVERIFIED);
+        assert!(items[0].confidence < basalt_proto::msg::CONFIDENT);
+    }
+
+    #[test]
+    fn an_old_unknown_title_is_not_rescued_by_its_tags() {
+        let dir = temp_dir();
+        put(&dir.0, "Downloads/Tide Line 2011 1080p BluRay x264.mkv");
+        assert!(scan_with(&dir, &catalogue()).is_empty());
+    }
+
+    /// Series are taken on their shape; the catalogue only adds confidence.
+    #[test]
+    fn a_series_is_kept_whether_or_not_the_catalogue_knows_it() {
+        let dir = temp_dir();
+        put(&dir.0, "Shows/Northwind/Season 01/Northwind S01E01.mkv");
+        put(
+            &dir.0,
+            "Shows/Harbour Lights/Season 01/Harbour Lights S01E01.mkv",
+        );
+        let items = scan_with(&dir, &catalogue());
+        assert_eq!(titles(&items), ["Harbour Lights", "Northwind"]);
+        assert!(items[0].confidence < VERIFIED);
+        assert_eq!(items[1].confidence, VERIFIED);
+    }
+
+    #[test]
+    fn without_a_catalogue_the_old_rule_stands() {
+        let dir = temp_dir();
+        put(&dir.0, "Movies/Our Trip To The Coast.mkv");
+        put(&dir.0, "Clips/Something 2024.mkv");
+        put(&dir.0, "Clips/No Year At All.mkv");
+        let items = scan_within(&vault_of(&dir), MAX_DIRS, MAX_DURATION, None);
+        assert_eq!(titles(&items), ["Our Trip To The Coast", "Something"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Series that share a name
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn two_shows_with_one_name_and_different_years_stay_apart() {
+        let dir = temp_dir();
+        put(
+            &dir.0,
+            "Shows/Harbour Lights (2004)/Season 01/Harbour Lights S01E01.mkv",
+        );
+        put(
+            &dir.0,
+            "Shows/Harbour Lights (2019)/Season 01/Harbour Lights S01E01.mkv",
+        );
+        let items = scan_with(&dir, &catalogue());
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].year, Some(2004));
+        assert_eq!(items[1].year, Some(2019));
+    }
+
+    #[test]
+    fn undated_episodes_join_the_one_dated_show_of_that_name() {
+        let dir = temp_dir();
+        put(
+            &dir.0,
+            "Shows/Harbour Lights (2019)/Season 01/Harbour Lights S01E01.mkv",
+        );
+        put(&dir.0, "Loose/Harbour.Lights.S01E02.mkv");
+        let items = scan_with(&dir, &catalogue());
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0].year, Some(2019));
+        assert_eq!(items[0].seasons[0].episodes.len(), 2);
+    }
+
+    #[test]
+    fn undated_episodes_are_not_guessed_into_one_of_two_dated_shows() {
+        let dir = temp_dir();
+        put(
+            &dir.0,
+            "Shows/Harbour Lights (2004)/Season 01/Harbour Lights S01E01.mkv",
+        );
+        put(
+            &dir.0,
+            "Shows/Harbour Lights (2019)/Season 01/Harbour Lights S01E01.mkv",
+        );
+        put(&dir.0, "Loose/Harbour.Lights.S01E02.mkv");
+        assert_eq!(scan_with(&dir, &catalogue()).len(), 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // Adding one arrival without a scan
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_new_episode_joins_its_series_without_a_scan() {
+        let dir = temp_dir();
+        put(&dir.0, "Shows/Northwind/Season 01/Northwind S01E01.mkv");
+        let cat = catalogue();
+        let before = scan_with(&dir, &cat);
+
+        put(&dir.0, "Shows/Northwind/Season 01/Northwind S01E02.mkv");
+        put_small(
+            &dir.0,
+            "Shows/Northwind/Season 01/Northwind S01E02.en.srt",
+            b"1",
+        );
+        let after = add(
+            &before,
+            &vault_of(&dir),
+            &["Shows/Northwind/Season 01/Northwind S01E02.mkv".to_string()],
+            Some(&cat),
+        )
+        .expect("the index changed");
+
+        assert_eq!(after.len(), 1);
+        let episodes = &after[0].seasons[0].episodes;
+        assert_eq!(episodes.len(), 2);
+        assert_eq!(episodes[1].number, 2);
+        assert_eq!(
+            episodes[1].subtitles.len(),
+            1,
+            "the subtitle beside it came too"
+        );
+        // And a full scan would have produced exactly this.
+        assert_eq!(after, scan_with(&dir, &cat));
+    }
+
+    #[test]
+    fn a_new_film_is_filed_by_the_same_rules_as_a_scan() {
+        let dir = temp_dir();
+        let cat = catalogue();
+        put(&dir.0, "Downloads/Night.Harbour.2024.1080p.WEB-DL.mkv");
+        put(
+            &dir.0,
+            "Semester 2025/Lecture 4-20251014 100532-Meeting Recording.mp4",
+        );
+        let after = add(
+            &[],
+            &vault_of(&dir),
+            &[
+                "Downloads/Night.Harbour.2024.1080p.WEB-DL.mkv".to_string(),
+                "Semester 2025/Lecture 4-20251014 100532-Meeting Recording.mp4".to_string(),
+            ],
+            Some(&cat),
+        )
+        .expect("the index changed");
+        assert_eq!(titles(&after), ["Night Harbour"]);
+    }
+
+    #[test]
+    fn nothing_worth_filing_leaves_the_index_alone() {
+        let dir = temp_dir();
+        let cat = catalogue();
+        put(&dir.0, "Shows/Northwind/Season 01/Northwind S01E01.mkv");
+        let before = scan_with(&dir, &cat);
+
+        put_small(
+            &dir.0,
+            "Shows/Northwind/Season 01/Northwind S01E03.mkv",
+            b"tiny",
+        );
+        put(&dir.0, "Shows/Northwind/Season 01/.basalt-00aa.part");
+        let paths = [
+            "Shows/Northwind/Season 01/Northwind S01E03.mkv".to_string(),
+            "Shows/Northwind/Season 01/.basalt-00aa.part".to_string(),
+            "Shows/Northwind/Season 01/gone.mkv".to_string(),
+            // Already in the index: filing it again changes nothing.
+            "Shows/Northwind/Season 01/Northwind S01E01.mkv".to_string(),
+        ];
+        assert!(add(&before, &vault_of(&dir), &paths, Some(&cat)).is_none());
     }
 }

@@ -61,11 +61,14 @@ fn folder(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 
+/// Whether a folder name is one set aside for subtitles: `Subs`, `Subtitles`.
+pub fn is_sub_folder(name: &str) -> bool {
+    SUB_FOLDERS.contains(&name.trim().to_ascii_lowercase().as_str())
+}
+
 /// Whether this path sits in a folder set aside for subtitles.
 fn in_sub_folder(path: &str) -> bool {
-    folder(path)
-        .split('/')
-        .any(|segment| SUB_FOLDERS.contains(&segment.trim().to_ascii_lowercase().as_str()))
+    folder(path).split('/').any(is_sub_folder)
 }
 
 /// A normalised form for comparing names: letters and digits only.

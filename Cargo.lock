@@ -179,6 +179,7 @@ name = "basalt-host"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "basalt-catalog",
  "basalt-net",
  "basalt-proto",
  "blake3",
