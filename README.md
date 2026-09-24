@@ -64,11 +64,16 @@ be today.
   frame at a time, subtitle track selection, subtitle files found on the drive,
   and a sync offset for subtitles that drift.
 - **Carries on where you left off.** Resume points live on the host, not on the
-  device, so you can start something on one machine and finish it on another.
+  device, so you can start something on one machine and finish it on another —
+  or, if the household prefers, each device keeps a history of its own.
   Episodes play on to the next one by themselves.
 - **Live, both ways.** The host watches the drive itself, so a file added,
   renamed or deleted — by Basalt, by Explorer, or by anything else — reaches
-  every connected device at once.
+  every connected device at once, and a new film or episode is filed under
+  Movies or TV Series the moment it lands.
+- **A drive that comes and goes.** Unplug the host's drive and it says so, on
+  the host and on every device; plug it back in and it is shared again, with
+  nothing to redo.
 - **Several devices at once.** There is no device limit and no connection
   limit; the host serves bytes and nothing more, so more viewers cost it
   almost nothing.
