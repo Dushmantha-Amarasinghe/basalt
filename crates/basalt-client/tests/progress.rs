@@ -217,7 +217,98 @@ async fn progress_survives_the_host_restarting() {
     let config = HostConfig::load_or_create(&config_path, "progress-host").unwrap();
     let restarted = Host::new(config, config_path).unwrap();
 
-    let entries = restarted.progress(ProgressRequest::default()).entries;
+    let entries = restarted.progress(ProgressRequest::default(), None).entries;
     assert_eq!(entries.len(), 1, "a restart must not lose the resume point");
     assert!((entries[0].fraction - 0.42).abs() < 1e-9);
+}
+
+// ---------------------------------------------------------------------------
+// Shared, or one each
+// ---------------------------------------------------------------------------
+
+/// The default: one history, so something started on one device is carried on
+/// from another.
+#[tokio::test]
+async fn by_default_every_device_sees_one_shared_history() {
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let tv = fixture.paired_client().await;
+
+    laptop
+        .progress(at("films/a.mkv", 0.4, 7200.0))
+        .await
+        .unwrap();
+    let seen = tv.progress(ProgressRequest::default()).await.unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].path, "films/a.mkv");
+}
+
+#[tokio::test]
+async fn with_the_setting_on_each_device_sees_only_its_own() {
+    let fixture = start_host().await;
+    fixture.host.set_progress_per_device(true).unwrap();
+    let laptop = fixture.paired_client().await;
+    let tv = fixture.paired_client().await;
+
+    laptop
+        .progress(at("films/a.mkv", 0.4, 7200.0))
+        .await
+        .unwrap();
+    tv.progress(at("films/b.mkv", 0.7, 3600.0)).await.unwrap();
+
+    let on_laptop = laptop.progress(ProgressRequest::default()).await.unwrap();
+    let on_tv = tv.progress(ProgressRequest::default()).await.unwrap();
+    assert_eq!(on_laptop.len(), 1);
+    assert_eq!(on_laptop[0].path, "films/a.mkv");
+    assert_eq!(on_tv.len(), 1);
+    assert_eq!(on_tv[0].path, "films/b.mkv");
+}
+
+/// Switching back loses nothing: everything was written to the shared history
+/// all along.
+#[tokio::test]
+async fn switching_back_to_shared_brings_everything_back() {
+    let fixture = start_host().await;
+    fixture.host.set_progress_per_device(true).unwrap();
+    let laptop = fixture.paired_client().await;
+    let tv = fixture.paired_client().await;
+    laptop
+        .progress(at("films/a.mkv", 0.4, 7200.0))
+        .await
+        .unwrap();
+    tv.progress(at("films/b.mkv", 0.7, 3600.0)).await.unwrap();
+
+    fixture.host.set_progress_per_device(false).unwrap();
+    let everything = tv.progress(ProgressRequest::default()).await.unwrap();
+    assert_eq!(everything.len(), 2);
+}
+
+/// A device keeps its history when it pairs again, because it is filed under
+/// the device's own id rather than the token that pairing replaces.
+#[tokio::test]
+async fn a_device_that_pairs_again_keeps_its_history() {
+    let fixture = start_host().await;
+    fixture.host.set_progress_per_device(true).unwrap();
+    let laptop = fixture.paired_client().await;
+    laptop
+        .progress(at("films/a.mkv", 0.4, 7200.0))
+        .await
+        .unwrap();
+
+    // Pairing again from the same store: same device, new token.
+    laptop.disconnect().await;
+    let requires_pin = laptop.begin_pairing(fixture.addr).await.unwrap();
+    let pin = requires_pin.then(|| {
+        fixture
+            .host
+            .pending_pairings()
+            .into_iter()
+            .find_map(|r| r.pin)
+            .unwrap()
+    });
+    laptop.finish_pairing(pin.as_deref()).await.unwrap();
+
+    let seen = laptop.progress(ProgressRequest::default()).await.unwrap();
+    assert_eq!(seen.len(), 1, "its place is still there");
+    assert_eq!(fixture.host.devices().len(), 1);
 }

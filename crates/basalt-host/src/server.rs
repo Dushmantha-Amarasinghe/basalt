@@ -242,31 +242,41 @@ impl Host {
         ))
     }
 
-    /// Records, forgets, then answers with everything.
+    /// Records, forgets, then answers with everything this device should see.
     ///
     /// One call rather than three, because a client reporting its position also
     /// wants the current list — and doing both in one round trip means it sees
     /// its own update rather than a stale answer that races it.
+    ///
+    /// `device` is the key of the device asking (see `Device::key`). Updates go
+    /// into its own history as well as the shared one either way; the host's
+    /// setting only decides which of the two it is answered with.
     pub fn progress(
         &self,
         request: basalt_proto::msg::ProgressRequest,
+        device: Option<&str>,
     ) -> basalt_proto::msg::ProgressResponse {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
+        let per_device = self.config.lock().expect("config lock").progress_per_device;
         let (entries, changed) = {
             let mut progress = self.progress.lock().expect("progress lock");
             let mut changed = false;
             if let Some(update) = request.update {
-                progress.record(update, now);
+                progress.record_for(device, update, now);
                 changed = true;
             }
             if let Some(path) = request.forget {
-                changed |= progress.forget(&path);
+                changed |= progress.forget_for(device, &path);
             }
-            (progress.all(), changed)
+            let entries = match (per_device, device) {
+                (true, Some(device)) => progress.all_for(device),
+                _ => progress.all(),
+            };
+            (entries, changed)
         };
 
         if changed {
@@ -312,6 +322,15 @@ impl Host {
     #[doc(hidden)]
     pub fn enable_library_for_test(&self) {
         self.config.lock().expect("config lock").library_enabled = true;
+    }
+
+    /// Whether each device sees its own watch history.
+    ///
+    /// Nothing is moved or lost either way: every update was already written to
+    /// both, so this only changes which one each device is shown from now on.
+    pub fn set_progress_per_device(&self, enabled: bool) -> Result<()> {
+        self.config.lock().expect("config lock").progress_per_device = enabled;
+        self.persist()
     }
 
     /// Turns poster downloads on or off.
@@ -823,9 +842,14 @@ impl Host {
             }
         };
 
-        let (host_name, port, require_pin) = {
+        let (host_name, port, require_pin, progress_per_device) = {
             let config = self.config.lock().expect("config lock");
-            (config.host_name.clone(), config.port, config.require_pin)
+            (
+                config.host_name.clone(),
+                config.port,
+                config.require_pin,
+                config.progress_per_device,
+            )
         };
 
         // Both taken before the struct is built, for the reason spelled out on
@@ -851,6 +875,7 @@ impl Host {
             addresses,
             device_count,
             library,
+            progress_per_device,
             serving,
             problem: None,
         }
@@ -1575,7 +1600,8 @@ where
 
         Op::Progress => {
             let request: ProgressRequest = decode(payload).unwrap_or_default();
-            reply(stream, &host.progress(request)).await?;
+            let device = session.device.as_ref().map(|d| d.key().to_string());
+            reply(stream, &host.progress(request, device.as_deref())).await?;
         }
 
         Op::Unpair => {

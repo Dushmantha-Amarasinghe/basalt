@@ -230,6 +230,9 @@ export function App(): React.JSX.Element {
                     onTmdbKey={(key) => {
                       void api.setTmdbKey(key).then(apply)
                     }}
+                    onProgressPerDevice={(enabled) => {
+                      void api.setProgressPerDevice(enabled).then(apply)
+                    }}
                     build={build}
                     onOpenLog={() => void api.openLogFolder().catch(() => {})}
                     onRename={(name) => {

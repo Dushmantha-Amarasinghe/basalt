@@ -232,6 +232,16 @@ async fn set_posters(state: State<'_, AppState>, enabled: bool) -> Answer<HostSt
     status(state).await
 }
 
+/// Whether each device sees its own watch history.
+#[tauri::command]
+async fn set_progress_per_device(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Answer<HostStatus> {
+    state.host.set_progress_per_device(enabled)?;
+    status(state).await
+}
+
 #[tauri::command]
 async fn set_tmdb_key(state: State<'_, AppState>, key: String) -> Answer<HostStatus> {
     state.host.set_tmdb_key(&key).await?;
@@ -666,6 +676,7 @@ pub fn run() {
             rescan_library,
             set_posters,
             set_tmdb_key,
+            set_progress_per_device,
             build_info,
             open_log_folder,
             open_vault_folder,

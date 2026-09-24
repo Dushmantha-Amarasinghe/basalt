@@ -51,6 +51,8 @@ export interface HostStatus {
   addresses: string[]
   deviceCount: number
   library: LibraryStatus
+  /** Whether each device sees its own watch history rather than a shared one. */
+  progressPerDevice: boolean
   serving: boolean
   /** Why sharing stopped, when it has. */
   problem: string | null
@@ -181,6 +183,8 @@ export const api = {
   setPosters: (enabled: boolean): Promise<HostStatus> =>
     call('set_posters', { enabled }),
   setTmdbKey: (key: string): Promise<HostStatus> => call('set_tmdb_key', { key }),
+  setProgressPerDevice: (enabled: boolean): Promise<HostStatus> =>
+    call('set_progress_per_device', { enabled }),
   openVaultFolder: (): Promise<void> => call('open_vault_folder'),
   /** Which build this is — the commit and the day it was made. */
   buildInfo: (): Promise<string> => call('build_info'),
@@ -228,6 +232,7 @@ const sample: {
       hasKey: false,
       scannedAt: 0,
     },
+    progressPerDevice: false,
     serving: true,
     problem: null,
   },
@@ -379,6 +384,9 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         sample.status.library.withArt = sample.status.library.posters
           ? sample.status.library.films + sample.status.library.series
           : 0
+        return sample.status
+      case 'set_progress_per_device':
+        sample.status.progressPerDevice = Boolean(args?.enabled)
         return sample.status
       case 'set_tmdb_key':
         sample.status.library.hasKey = String(args?.key ?? '').trim().length > 0

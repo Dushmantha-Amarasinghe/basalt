@@ -13,6 +13,13 @@
 //! file ever opened, so the oldest are dropped once there are too many. What is
 //! lost is a resume point for something untouched in months, which is the least
 //! costly thing here to lose.
+//!
+//! **Shared, or one per device — and always both.** A household may want one
+//! history, so a film started on the laptop is finished on the television; or
+//! a history each, so one person's episodes do not move another's place. The
+//! host's owner chooses. Every update is written to the shared history *and*
+//! to the device's own, and the setting only decides which one a device is
+//! shown — so switching either way loses nothing and needs no migration.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,15 +27,31 @@ use std::path::{Path, PathBuf};
 use basalt_proto::msg::Watched;
 use serde::{Deserialize, Serialize};
 
-/// Entries kept before the oldest are dropped.
+/// Entries kept before the oldest are dropped, in each history.
 pub const MAX_ENTRIES: usize = 2_000;
+
+/// Device histories kept before the least recently used is dropped.
+///
+/// A host is paired with a household's devices, not hundreds of them; this is
+/// a ceiling on a file that anything on the network could otherwise grow.
+pub const MAX_DEVICES: usize = 64;
 
 /// Everything watched on one drive.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Progress {
+    /// The history every device shares. Named as it was before devices had
+    /// histories of their own, so an older file still reads.
     #[serde(default)]
-    entries: HashMap<String, Watched>,
+    entries: History,
+    /// Each device's own history, by its key — see `Device::key`.
+    #[serde(default)]
+    devices: HashMap<String, History>,
 }
+
+/// One history: where each file was watched to.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+struct History(HashMap<String, Watched>);
 
 impl Progress {
     /// Where this lives: beside the host's config, keyed by drive.
@@ -59,12 +82,18 @@ impl Progress {
         std::fs::rename(&temp, path)
     }
 
-    /// Records where something got to.
+    /// Records where something got to, in the shared history.
+    pub fn record(&mut self, update: Watched, now: i64) {
+        self.record_for(None, update, now);
+    }
+
+    /// Records where something got to, in the shared history and — when a
+    /// device is named — in that device's own.
     ///
     /// Finishing something *keeps* the entry rather than dropping it: "watched"
     /// is worth knowing, and it is what stops a finished episode reappearing in
     /// Continue watching every time the list is rebuilt.
-    pub fn record(&mut self, mut update: Watched, now: i64) {
+    pub fn record_for(&mut self, device: Option<&str>, mut update: Watched, now: i64) {
         if update.path.trim().is_empty() {
             return;
         }
@@ -73,35 +102,122 @@ impl Progress {
         update.duration = update.duration.max(0.0);
         update.updated_at = now;
 
+        self.entries.record(update.clone());
+        if let Some(device) = device {
+            if !self.devices.contains_key(device) {
+                self.make_room_for_a_device();
+            }
+            self.devices
+                .entry(device.to_string())
+                .or_default()
+                .record(update);
+        }
+    }
+
+    /// Forgets a file in the shared history.
+    pub fn forget(&mut self, path: &str) -> bool {
+        self.forget_for(None, path)
+    }
+
+    /// Forgets a file in the shared history and in a device's own.
+    ///
+    /// From both, because whichever one the device is being shown, "remove
+    /// from Continue watching" has to mean it is gone from what it sees — and
+    /// from what it would see if the setting changed tomorrow.
+    pub fn forget_for(&mut self, device: Option<&str>, path: &str) -> bool {
+        let mut removed = self.entries.0.remove(path).is_some();
+        if let Some(history) = device.and_then(|d| self.devices.get_mut(d)) {
+            removed |= history.0.remove(path).is_some();
+        }
+        removed
+    }
+
+    /// Drops entries for files that are no longer on the drive, everywhere.
+    pub fn retain_existing(&mut self, exists: impl Fn(&str) -> bool) -> bool {
+        let mut changed = self.entries.retain(&exists);
+        for history in self.devices.values_mut() {
+            changed |= history.retain(&exists);
+        }
+        changed
+    }
+
+    /// The shared history, newest first.
+    pub fn all(&self) -> Vec<Watched> {
+        self.entries.newest_first()
+    }
+
+    /// One device's own history, newest first. Empty for a device that has
+    /// never watched anything.
+    pub fn all_for(&self, device: &str) -> Vec<Watched> {
+        self.devices
+            .get(device)
+            .map(History::newest_first)
+            .unwrap_or_default()
+    }
+
+    pub fn get(&self, path: &str) -> Option<&Watched> {
+        self.entries.0.get(path)
+    }
+
+    pub fn get_for(&self, device: &str, path: &str) -> Option<&Watched> {
+        self.devices.get(device)?.0.get(path)
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.0.is_empty()
+    }
+
+    /// How many devices have a history of their own.
+    pub fn device_count(&self) -> usize {
+        self.devices.len()
+    }
+
+    /// Drops the device history used longest ago, if there are too many.
+    fn make_room_for_a_device(&mut self) {
+        while self.devices.len() >= MAX_DEVICES {
+            let stalest = self
+                .devices
+                .iter()
+                .min_by_key(|(key, history)| (history.newest(), (*key).clone()))
+                .map(|(key, _)| key.clone());
+            match stalest {
+                Some(key) => {
+                    self.devices.remove(&key);
+                }
+                None => return,
+            }
+        }
+    }
+}
+
+impl History {
+    fn record(&mut self, update: Watched) {
         // An external player only reveals a byte offset, and a player that
         // reads ahead reports further than it has played. Never let a weaker
         // signal pull a known position backwards within the same session.
-        if let Some(existing) = self.entries.get(&update.path)
+        if let Some(existing) = self.0.get(&update.path)
             && update.duration == 0.0
             && existing.duration > 0.0
             && update.fraction < existing.fraction
         {
             return;
         }
-
-        self.entries.insert(update.path.clone(), update);
+        self.0.insert(update.path.clone(), update);
         self.prune();
     }
 
-    pub fn forget(&mut self, path: &str) -> bool {
-        self.entries.remove(path).is_some()
+    fn retain(&mut self, exists: impl Fn(&str) -> bool) -> bool {
+        let before = self.0.len();
+        self.0.retain(|path, _| exists(path));
+        self.0.len() != before
     }
 
-    /// Drops entries for files that are no longer on the drive.
-    pub fn retain_existing(&mut self, exists: impl Fn(&str) -> bool) -> bool {
-        let before = self.entries.len();
-        self.entries.retain(|path, _| exists(path));
-        self.entries.len() != before
-    }
-
-    /// Everything, newest first.
-    pub fn all(&self) -> Vec<Watched> {
-        let mut entries: Vec<Watched> = self.entries.values().cloned().collect();
+    fn newest_first(&self) -> Vec<Watched> {
+        let mut entries: Vec<Watched> = self.0.values().cloned().collect();
         entries.sort_by(|a, b| {
             b.updated_at
                 .cmp(&a.updated_at)
@@ -110,31 +226,24 @@ impl Progress {
         entries
     }
 
-    pub fn get(&self, path: &str) -> Option<&Watched> {
-        self.entries.get(path)
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+    /// When anything in here was last watched.
+    fn newest(&self) -> i64 {
+        self.0.values().map(|w| w.updated_at).max().unwrap_or(0)
     }
 
     /// Keeps the newest [`MAX_ENTRIES`] and drops the rest.
     fn prune(&mut self) {
-        if self.entries.len() <= MAX_ENTRIES {
+        if self.0.len() <= MAX_ENTRIES {
             return;
         }
         let mut by_age: Vec<(String, i64)> = self
-            .entries
+            .0
             .iter()
             .map(|(path, w)| (path.clone(), w.updated_at))
             .collect();
         by_age.sort_by_key(|(_, at)| std::cmp::Reverse(*at));
         for (path, _) in by_age.into_iter().skip(MAX_ENTRIES) {
-            self.entries.remove(&path);
+            self.0.remove(&path);
         }
     }
 }
@@ -341,5 +450,128 @@ mod tests {
             Progress::path_for(dir, Path::new(r"E:\")),
             Progress::path_for(dir, Path::new(r"F:\"))
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // One history each
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_device_has_its_own_history_and_the_shared_one_is_kept_too() {
+        let mut progress = Progress::default();
+        progress.record_for(Some("laptop"), timed("a.mkv", 0.4, 7200.0), 100);
+        progress.record_for(Some("tv"), timed("b.mkv", 0.7, 3600.0), 200);
+
+        let laptop: Vec<String> = progress
+            .all_for("laptop")
+            .into_iter()
+            .map(|w| w.path)
+            .collect();
+        let tv: Vec<String> = progress.all_for("tv").into_iter().map(|w| w.path).collect();
+        assert_eq!(laptop, ["a.mkv"]);
+        assert_eq!(tv, ["b.mkv"]);
+        assert_eq!(
+            progress.len(),
+            2,
+            "both went into the shared history as well"
+        );
+    }
+
+    #[test]
+    fn one_device_watching_further_does_not_move_anothers_place() {
+        let mut progress = Progress::default();
+        progress.record_for(Some("laptop"), timed("a.mkv", 0.2, 7200.0), 100);
+        progress.record_for(Some("tv"), timed("a.mkv", 0.9, 7200.0), 200);
+
+        assert_eq!(progress.get_for("laptop", "a.mkv").unwrap().fraction, 0.2);
+        assert_eq!(progress.get_for("tv", "a.mkv").unwrap().fraction, 0.9);
+        assert_eq!(
+            progress.get("a.mkv").unwrap().fraction,
+            0.9,
+            "shared: the latest"
+        );
+    }
+
+    #[test]
+    fn a_device_that_never_watched_anything_has_nothing() {
+        let mut progress = Progress::default();
+        progress.record_for(Some("laptop"), watched("a.mkv", 0.5), 1);
+        assert!(progress.all_for("phone").is_empty());
+    }
+
+    #[test]
+    fn forgetting_on_a_device_clears_it_from_both_histories() {
+        let mut progress = Progress::default();
+        progress.record_for(Some("laptop"), watched("a.mkv", 0.5), 1);
+        assert!(progress.forget_for(Some("laptop"), "a.mkv"));
+        assert!(progress.get("a.mkv").is_none());
+        assert!(progress.get_for("laptop", "a.mkv").is_none());
+    }
+
+    #[test]
+    fn a_file_that_left_the_drive_leaves_every_history() {
+        let mut progress = Progress::default();
+        progress.record_for(Some("laptop"), watched("gone.mkv", 0.5), 1);
+        progress.record_for(Some("laptop"), watched("kept.mkv", 0.5), 1);
+        assert!(progress.retain_existing(|path| path == "kept.mkv"));
+        assert!(progress.get_for("laptop", "gone.mkv").is_none());
+        assert!(progress.get_for("laptop", "kept.mkv").is_some());
+    }
+
+    /// Anything on the network can pair when the PIN is off, so the number of
+    /// histories has a ceiling like everything else here.
+    #[test]
+    fn the_device_used_longest_ago_goes_first_once_there_are_too_many() {
+        let mut progress = Progress::default();
+        for i in 0..MAX_DEVICES {
+            progress.record_for(
+                Some(&format!("d{i:03}")),
+                watched("a.mkv", 0.5),
+                i as i64 + 10,
+            );
+        }
+        progress.record_for(Some("newcomer"), watched("a.mkv", 0.5), 10_000);
+
+        assert_eq!(progress.device_count(), MAX_DEVICES);
+        assert!(
+            progress.all_for("d000").is_empty(),
+            "the stalest was dropped"
+        );
+        assert!(!progress.all_for("newcomer").is_empty());
+    }
+
+    /// A file written before devices had histories still reads, as the
+    /// shared history it always was.
+    #[test]
+    fn a_file_from_before_device_histories_still_reads() {
+        let dir = std::env::temp_dir().join(format!("basalt-progress-old-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("progress.json");
+        std::fs::write(
+            &path,
+            br#"{"entries":{"a.mkv":{"path":"a.mkv","fraction":0.5,"position":60.0,"duration":120.0,"updatedAt":7}}}"#,
+        )
+        .unwrap();
+
+        let progress = Progress::load(&path);
+        assert_eq!(progress.get("a.mkv").map(|w| w.fraction), Some(0.5));
+        assert_eq!(progress.device_count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn device_histories_survive_a_round_trip_to_disk() {
+        let dir = std::env::temp_dir().join(format!("basalt-progress-dev-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("progress.json");
+
+        let mut progress = Progress::default();
+        progress.record_for(Some("laptop"), timed("a.mkv", 0.4, 7200.0), 100);
+        progress.save(&path).unwrap();
+
+        let back = Progress::load(&path);
+        assert_eq!(back.get_for("laptop", "a.mkv").unwrap().fraction, 0.4);
+        assert_eq!(back.get("a.mkv").unwrap().fraction, 0.4);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
