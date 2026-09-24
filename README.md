@@ -55,7 +55,9 @@ be today.
   BLAKE3 end to end.
 - **Films and series, recognised.** Turn it on and the host reads the drive and
   files what it finds under Movies and TV Series, with seasons and episodes in
-  order. Posters are optional and need no API key.
+  order. Every film is checked against a bundled catalogue of released titles,
+  so screen recordings and home videos stay out of Movies — offline, with
+  nothing sent anywhere. Posters are optional and need no API key.
 - **A real player.** Built on **mpv**, so it plays what a browser cannot —
   HEVC, E-AC3, DTS, MKV, and the rest — without the host transcoding anything.
   Click to pause, arrow keys to seek and change volume, `,` and `.` to step one
@@ -131,6 +133,15 @@ cd apps/host   && npm install && npx tauri build
 `fetch-libmpv.ps1` downloads libmpv and a small wrapper into `src-tauri/lib/`
 and verifies the wrapper's checksum. They are not in the repository because
 `libmpv-2.dll` is 96 MB.
+
+The host recognises films against a catalogue of every film and series title
+on Wikidata, bundled so that it works offline and sends nothing anywhere. It is
+committed at `crates/basalt-catalog/data/catalog.bin` (about 3 MB) and rebuilt
+for each release with:
+
+```
+cargo run -p catalog-build --release
+```
 
 `cargo test --all` runs the Rust suite; `npm test` in either app runs its own.
 

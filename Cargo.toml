@@ -6,6 +6,8 @@ members = [
     "crates/basalt-host",
     "crates/basalt-client",
     "crates/basalt-update",
+    "crates/basalt-catalog",
+    "tools/catalog-build",
     "bench",
 ]
 # The Tauri shell builds through its own toolchain and pulls in a very large
@@ -17,14 +19,15 @@ exclude = ["apps/client/src-tauri", "apps/host/src-tauri"]
 version = "1.0.0"
 edition = "2024"
 rust-version = "1.98"
-license = "MIT"
-authors = ["Basalt"]
+license = "GPL-3.0-only"
+authors = ["Refora Technologies"]
 
 [workspace.dependencies]
 basalt-proto = { path = "crates/basalt-proto" }
 basalt-net = { path = "crates/basalt-net" }
 basalt-host = { path = "crates/basalt-host" }
 basalt-client = { path = "crates/basalt-client" }
+basalt-catalog = { path = "crates/basalt-catalog" }
 
 anyhow = "1"
 blake3 = "1"

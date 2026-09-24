@@ -1,0 +1,20 @@
+[package]
+name = "catalog-build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Rebuilds the bundled film and series catalogue from Wikidata."
+publish = false
+
+[dependencies]
+basalt-catalog = { workspace = true }
+basalt-net = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls-no-provider",
+    "charset",
+    "http2",
+] }
