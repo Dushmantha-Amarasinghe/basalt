@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import type { Status } from './api'
 import {
   STARTUP_ATTEMPTS_BEFORE_COMPLAINING,
   startupRetryDelay,
+  takeOn,
 } from './useVault'
 
 /*
@@ -45,5 +47,32 @@ describe('startupRetryDelay', () => {
       elapsed += startupRetryDelay(i)
     }
     expect(elapsed).toBeLessThan(2000)
+  })
+})
+
+describe('takeOn', () => {
+  const status = (connected: boolean): Status =>
+    ({ connected, hasPaired: true }) as unknown as Status
+
+  /**
+   * The bug: pairing stored the new status and nothing else, so the first
+   * screen after pairing was an empty folder on a drive of 0 B / 0 B.
+   */
+  it('asks for the listing and the size together when connected', () => {
+    const asked: string[] = []
+    takeOn(status(true), {
+      listing: () => asked.push('listing'),
+      size: () => asked.push('size'),
+    })
+    expect(asked).toEqual(['listing', 'size'])
+  })
+
+  it('asks for nothing when not connected', () => {
+    const asked: string[] = []
+    takeOn(status(false), {
+      listing: () => asked.push('listing'),
+      size: () => asked.push('size'),
+    })
+    expect(asked).toEqual([])
   })
 })

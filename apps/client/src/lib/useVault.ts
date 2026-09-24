@@ -37,6 +37,23 @@ export function startupRetryDelay(attempt: number): number {
   return Math.min(100 * 2 ** Math.max(0, attempt - 1), 4000)
 }
 
+/**
+ * What taking on a connected status means: the listing **and** the drive's
+ * size are asked for, never one without the other.
+ *
+ * Its own function so the rule is stated once and tested. Each place that
+ * used to take on a connection did its own subset of this, and the one that
+ * did nothing but store the status was pairing — the first thing anyone sees.
+ */
+export function takeOn(
+  status: Status,
+  fetch: { listing: () => void; size: () => void },
+): void {
+  if (!status.connected) return
+  fetch.listing()
+  fetch.size()
+}
+
 export interface Vault {
   status: Status | null
   /** Vault-relative directory. `''` is the root. */
@@ -51,9 +68,14 @@ export interface Vault {
   startupFailed: boolean
 
   open: (dir: string) => void
+  /** Lists the current folder again, and asks for the drive's size. */
   refresh: () => void
   reconnect: () => Promise<void>
-  setStatus: (status: Status) => void
+  /**
+   * Takes on a status from anywhere — pairing, forgetting — and, if it is
+   * connected, does everything a connection needs done.
+   */
+  adopt: (status: Status) => void
 }
 
 export function useVault(): Vault {
@@ -101,24 +123,49 @@ export function useVault(): Vault {
     [load],
   )
 
+  const fetchSpace = useCallback(() => {
+    api.space().then(setSpace).catch(() => {})
+  }, [])
+
+  /**
+   * The one place a connection is taken on: the status, the listing, and the
+   * drive's size, together.
+   *
+   * Every route to "connected" comes through here — startup, the backend's
+   * own reconnect, pairing, and the retry loop. Pairing used to store the new
+   * status and nothing else, so the first screen after pairing was an empty
+   * folder on a drive of 0 B / 0 B until somebody pressed refresh — and
+   * refresh listed the folder without asking for the size, so the size never
+   * arrived at all.
+   */
+  const adopt = useCallback(
+    (next: Status) => {
+      setStatus(next)
+      takeOn(next, { listing: () => void load(wanted.current), size: fetchSpace })
+    },
+    [load, fetchSpace],
+  )
+
+  // The size goes with the listing: whatever changed one — an upload, a
+  // delete, something copied in on the host — probably changed the other.
   const refresh = useCallback(() => {
     void load(wanted.current)
-  }, [load])
+    fetchSpace()
+  }, [load, fetchSpace])
 
   const reconnect = useCallback(async () => {
     setReconnecting(true)
     try {
       const next = await api.connectSaved()
-      setStatus(next)
       setError(null)
-      await load(wanted.current)
+      adopt(next)
     } catch {
       // Left to the retry loop below; a failed attempt is the normal case
       // while the host is still waking up.
     } finally {
       setReconnecting(false)
     }
-  }, [load])
+  }, [adopt])
 
   /**
    * First load: ask where we stand, then list the root if connected.
@@ -137,12 +184,8 @@ export function useVault(): Vault {
       try {
         const initial = await api.status()
         if (cancelled) return
-        setStatus(initial)
         setStartupFailed(false)
-        if (initial.connected) {
-          void load('')
-          api.space().then(setSpace).catch(() => {})
-        }
+        adopt(initial)
       } catch (e) {
         if (cancelled) return
         attempt += 1
@@ -158,22 +201,29 @@ export function useVault(): Vault {
     return () => {
       cancelled = true
     }
-  }, [load])
+  }, [adopt])
 
   // The backend reconnects in the background at startup and pushes the result,
   // so the window can open immediately instead of waiting on the network.
+  //
+  // Asked once more as soon as the listener is in place. The push can land in
+  // the gap between the first status call answering "not yet" and this
+  // listener existing, and a push nobody heard left the app offline for good:
+  // nothing is retried while there is no error to retry.
   useAsyncSubscription(
     true,
     useCallback(
       () =>
-        onStatus((next) => {
-          setStatus(next)
-          if (next.connected) {
-            void load(wanted.current)
-            api.space().then(setSpace).catch(() => {})
-          }
+        onStatus(adopt).then((stop) => {
+          api
+            .status()
+            .then((now) => {
+              if (now.connected) adopt(now)
+            })
+            .catch(() => {})
+          return stop
         }),
-      [load],
+      [adopt],
     ),
   )
 
@@ -206,6 +256,6 @@ export function useVault(): Vault {
     open,
     refresh,
     reconnect,
-    setStatus,
+    adopt,
   }
 }

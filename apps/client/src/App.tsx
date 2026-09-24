@@ -848,7 +848,7 @@ export function App(): React.JSX.Element {
       if (!ok) return
 
       const next = await api.forgetHost(hostId)
-      vault.setStatus({ ...next, hasPaired: false, connected: false })
+      vault.adopt({ ...next, hasPaired: false, connected: false })
       setNav('files')
     } catch (e) {
       setNotice(e instanceof Error ? e.message : String(e))
@@ -872,7 +872,7 @@ export function App(): React.JSX.Element {
         <div className="backdrop" />
         <TitleBar vaultName="Basalt" connected={false} />
         <div className="min-h-0 flex-1">
-          <PairingView onPaired={vault.setStatus} />
+          <PairingView onPaired={vault.adopt} />
         </div>
       </div>
     )
