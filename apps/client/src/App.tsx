@@ -1133,7 +1133,14 @@ export function App(): React.JSX.Element {
               >
                 <EmptyState
                   label={
-                    vault.loading || scan.scanning
+                    // Not yet connected is not an empty drive. For the first
+                    // seconds after launch this said "This folder is empty",
+                    // which reads as the drive having been wiped.
+                    !connected
+                      ? vault.error
+                        ? 'Not connected to the host'
+                        : 'Connecting to the host…'
+                      : vault.loading || scan.scanning
                       ? 'Loading…'
                       : query
                         ? `Nothing matches “${query}”`
