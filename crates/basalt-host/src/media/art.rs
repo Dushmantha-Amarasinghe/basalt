@@ -125,12 +125,12 @@ struct FreeMovieDbResult {
 /// Case, punctuation and spacing all differ between a release name and a
 /// catalogue entry without meaning anything: `Northwind Fall` and
 /// `Northwind: Fall` are the same programme.
+///
+/// The catalogue's normalisation, so a poster and a film are matched by the
+/// same rule that decided the film was real. The version that used to live
+/// here kept accents, so `Amelie` never met the catalogue's *Amélie*.
 fn normalise(title: &str) -> String {
-    title
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect()
+    basalt_catalog::normalise(title)
 }
 
 /// Whether a search result is the thing that was asked for.
@@ -463,6 +463,15 @@ mod tests {
         assert!(matches(
             &result("SALT", Some(2022), "SHOW"),
             &series("Salt", None)
+        ));
+        // Accents are not a difference either: a filename typed without one
+        // is the same film.
+        assert!(matches(
+            &result("Amélie", Some(2001), "MOVIE"),
+            &LibraryItem {
+                year: Some(2001),
+                ..film("f9", "Amelie")
+            }
         ));
         // No year on our side is not a mismatch, just less to go on.
         assert!(matches(

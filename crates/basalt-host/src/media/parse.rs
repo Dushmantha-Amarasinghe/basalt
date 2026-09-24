@@ -216,10 +216,39 @@ pub fn is_extra(path: &str) -> bool {
     })
 }
 
-/// Reads a path and says what it is, or nothing if it is not a video.
+/// What a path looks like, and the evidence for it, before anything decides
+/// whether it belongs in the library.
+///
+/// Split from that decision because the decision now has two sources: the
+/// shape of the path, which this module reads, and whether the title was ever
+/// released, which only the catalogue knows. See `index::decide`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub parsed: Parsed,
+    pub evidence: Evidence,
+}
+
+/// Why a film candidate might really be a film, besides its title.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Evidence {
+    /// A folder on the way names it as part of a library: `Movies`, `Films`.
+    pub media_folder: bool,
+    /// Tags only a release carries — `1080p`, `WEB-DL`, `x265`. Somebody's
+    /// screen recording is not labelled with its encoder.
+    pub release_markers: bool,
+    /// The folder it sits in is named after it — `Arrival (2016)/Arrival.mkv`
+    /// — so that folder's year is this film's year.
+    pub named_folder: bool,
+}
+
+/// Reads a path and says what it looks like, or nothing if it is not a video.
+///
+/// No judgement about films here: a recording and a feature can have exactly
+/// the same shape, and telling them apart needs the catalogue. [`parse`] is the
+/// version that judges by shape alone.
 ///
 /// `path` is vault-relative with forward slashes, as the wire spells it.
-pub fn parse(path: &str) -> Option<Parsed> {
+pub fn candidate(path: &str) -> Option<Candidate> {
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let file = segments.last()?;
     if !is_video(file) || is_extra(path) {
@@ -228,9 +257,14 @@ pub fn parse(path: &str) -> Option<Parsed> {
 
     let stem = file.rsplit_once('.').map_or(*file, |(s, _)| s);
     let folders = &segments[..segments.len() - 1];
+    let mut evidence = Evidence {
+        media_folder: in_media_folder(folders),
+        release_markers: has_release_markers(stem),
+        named_folder: false,
+    };
 
-    match episode_numbers(stem) {
-        Some((season, episode)) => Some(episode_from(stem, folders, season, episode)),
+    let parsed = match episode_numbers(stem) {
+        Some((season, episode)) => episode_from(stem, folders, season, episode),
         None => match season_folder(folders) {
             // A `Season NN` folder with an unreadable filename is still clearly
             // an episode of something — the folder above names the series, and
@@ -241,31 +275,63 @@ pub fn parse(path: &str) -> Option<Parsed> {
                 parsed.season = Some(season);
                 parsed.episode = Some(number);
                 parsed.confidence = if number > 0 { 78 } else { 45 };
-                Some(parsed)
+                parsed
             }
             None => {
-                let parsed = film_from(stem, folders);
-                // Something has to say "this is a film" other than its size.
-                //
-                // Anything else means a personal drive indexes to nonsense.
-                // Run over a real one, this filed a hundred and one "films":
-                // lecture captures, CapCut exports, assignment submissions, an
-                // Instagram reel — every video over fifty megabytes, with the
-                // filename as its title. A wall of those is worse than an
-                // empty library, because it buries the four real series that
-                // were also on the drive.
-                //
-                // A year, or a folder that names the thing, and otherwise it
-                // stays in Files where it is still perfectly reachable.
-                // Episodes never reach here: `SxxExx` and a `Season NN` folder
-                // are signals in their own right.
-                if parsed.year.is_none() && !in_media_folder(folders) {
-                    return None;
-                }
-                Some(parsed)
+                let (parsed, named_folder) = film_from(stem, folders);
+                evidence.named_folder = named_folder;
+                parsed
             }
         },
+    };
+    Some(Candidate { parsed, evidence })
+}
+
+/// Reads a path and says what it is, judging by its shape alone.
+///
+/// What the host falls back to without a catalogue, and what matching
+/// subtitles to videos uses. For a film, something has to say "this is a
+/// film" other than its size — a year, or a folder that names the thing.
+///
+/// Anything less means a personal drive indexes to nonsense. Run over a real
+/// one, this filed a hundred and one "films": lecture captures, CapCut
+/// exports, assignment submissions, an Instagram reel — every video over fifty
+/// megabytes, with the filename as its title. Episodes are not held to this:
+/// `SxxExx` and a `Season NN` folder are signals in their own right.
+pub fn parse(path: &str) -> Option<Parsed> {
+    let Candidate { parsed, evidence } = candidate(path)?;
+    if !parsed.is_episode() && parsed.year.is_none() && !evidence.media_folder {
+        return None;
     }
+    Some(parsed)
+}
+
+/// Tags a released film carries and a home video does not.
+///
+/// Only the unambiguous ones. The noise list used for cleaning titles also
+/// holds words like `ts`, `cam`, `h` and bare channel counts, which are fine
+/// for knowing where a title ends and useless as evidence of anything.
+const RELEASE_MARKERS: &[&str] = &[
+    "2160p", "1440p", "1080p", "720p", "576p", "480p", "4k", "uhd", "bluray", "brrip", "bdrip",
+    "bdremux", "remux", "webdl", "webrip", "hdtv", "dvdrip", "hdrip", "x264", "x265", "h264",
+    "h265", "hevc", "av1", "xvid", "10bit", "amzn", "dsnp", "hmax", "atvp",
+];
+
+/// Whether a filename carries release tags.
+///
+/// Read as words, and as neighbouring pairs, because the separators are
+/// arbitrary: `WEB-DL`, `WEB.DL` and `WEBDL` are one tag, as are `H.264` and
+/// `h264`.
+pub fn has_release_markers(stem: &str) -> bool {
+    let words: Vec<String> = stem
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    words.iter().any(|w| RELEASE_MARKERS.contains(&w.as_str()))
+        || words
+            .windows(2)
+            .any(|pair| RELEASE_MARKERS.contains(&format!("{}{}", pair[0], pair[1]).as_str()))
 }
 
 // ---------------------------------------------------------------------------
@@ -491,10 +557,12 @@ fn cut_at_marker(stem: &str) -> String {
 // Films
 // ---------------------------------------------------------------------------
 
-fn film_from(stem: &str, folders: &[&str]) -> Parsed {
+/// A film read off a path, and whether its folder is named after it.
+fn film_from(stem: &str, folders: &[&str]) -> (Parsed, bool) {
     let from_name = clean_title(stem);
     let name_year = year_in(stem);
     let folder = folders.last().copied().unwrap_or_default();
+    let folder_title = clean_title(folder);
     let folder_year = year_in(folder);
 
     // `Arrival (2016)/movie.mkv` — the folder is the only thing that knows.
@@ -505,24 +573,34 @@ fn film_from(stem: &str, folders: &[&str]) -> Parsed {
         );
 
     if generic && !folder.is_empty() {
-        return Parsed {
-            title: clean_title(folder),
+        let parsed = Parsed {
+            title: folder_title,
             year: folder_year,
             season: None,
             episode: None,
             confidence: if folder_year.is_some() { 85 } else { 60 },
         };
+        return (parsed, true);
     }
 
-    let year = name_year.or(folder_year);
-    Parsed {
+    // A folder's year is this film's only when the folder is named after it.
+    //
+    // It used to be taken from whatever folder the file sat in, which gave
+    // every video under `Semester 2025` a release year — and a year was enough
+    // to be filed as a film. That is how a term's worth of meeting recordings
+    // ended up under Movies.
+    let named_folder = !folder_title.is_empty()
+        && basalt_catalog::normalise(&folder_title) == basalt_catalog::normalise(&from_name);
+    let year = name_year.or(if named_folder { folder_year } else { None });
+    let parsed = Parsed {
         title: from_name,
         year,
         // A year is the difference between "probably a film" and "some video".
         confidence: if year.is_some() { 90 } else { 55 },
         season: None,
         episode: None,
-    }
+    };
+    (parsed, named_folder)
 }
 
 // ---------------------------------------------------------------------------
@@ -1028,5 +1106,70 @@ mod tests {
     fn a_non_video_is_not_parsed_at_all() {
         assert!(parse("films/Arrival.2016.srt").is_none());
         assert!(parse("films/poster.jpg").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Evidence for the catalogue's decision
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn release_tags_are_read_whatever_separates_them() {
+        for tagged in [
+            "Night.Harbour.2024.1080p.BluRay.x264-GRP",
+            "Night Harbour 2024 2160p WEB-DL DDP5.1 H.265",
+            "Night_Harbour_2024_WEB.DL",
+            "Night Harbour [720p] [HEVC]",
+            "Night.Harbour.2024.AMZN.WEBRip",
+        ] {
+            assert!(has_release_markers(tagged), "{tagged}");
+        }
+    }
+
+    /// The noise words that end a title are not evidence of a release.
+    #[test]
+    fn ordinary_names_carry_no_release_tags() {
+        for plain in [
+            "Literature Review-20251014 100532-Meeting Recording",
+            "MEET20260910-140358_Recording_1920x1080",
+            "Day 23 [2025-06-17]",
+            "video 7",
+            "Holiday ts cam h 5",
+        ] {
+            assert!(!has_release_markers(plain), "{plain}");
+        }
+    }
+
+    /// A folder's year belongs to the film only when the folder is named after
+    /// it. A term's recordings in `Semester 2025` are not 2025 releases.
+    #[test]
+    fn a_folder_year_is_only_taken_from_a_folder_named_for_the_film() {
+        let unrelated = candidate("Semester 2025/Guest Talk.mp4").unwrap();
+        assert_eq!(unrelated.parsed.year, None);
+        assert!(!unrelated.evidence.named_folder);
+
+        let named = candidate("Paper Boats (2018)/Paper Boats.mkv").unwrap();
+        assert_eq!(named.parsed.year, Some(2018));
+        assert!(named.evidence.named_folder);
+
+        let generic = candidate("Paper Boats (2018)/movie.mkv").unwrap();
+        assert_eq!(generic.parsed.title, "Paper Boats");
+        assert_eq!(generic.parsed.year, Some(2018));
+        assert!(generic.evidence.named_folder);
+    }
+
+    #[test]
+    fn a_candidate_records_what_the_path_showed() {
+        let c = candidate("Movies/Night.Harbour.2024.1080p.WEB-DL.mkv").unwrap();
+        assert!(c.evidence.media_folder);
+        assert!(c.evidence.release_markers);
+        assert_eq!(c.parsed.title, "Night Harbour");
+        assert_eq!(c.parsed.year, Some(2024));
+    }
+
+    /// A candidate makes no judgement; `parse` still does, by shape.
+    #[test]
+    fn a_candidate_is_offered_even_where_parse_would_refuse() {
+        assert!(candidate("Clips/Guest Talk.mp4").is_some());
+        assert!(parse("Clips/Guest Talk.mp4").is_none());
     }
 }
