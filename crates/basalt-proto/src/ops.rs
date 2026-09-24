@@ -91,6 +91,13 @@ pub enum Op {
     /// does not follow you from the laptop to the living room is a bookmark,
     /// not a Continue watching.
     Progress = 22,
+    /// This device is leaving: the host forgets it.
+    ///
+    /// Sent when somebody chooses "Forget this vault". It used to be forgotten
+    /// on the device alone, and the host kept a record that would never connect
+    /// again — one more stale row in its device list every time a device
+    /// re-paired.
+    Unpair = 23,
 }
 
 impl Op {
@@ -99,7 +106,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::Progress as u8;
+    pub const LAST: u8 = Op::Unpair as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -125,6 +132,7 @@ impl Op {
             20 => Op::Library,
             21 => Op::LibraryArt,
             22 => Op::Progress,
+            23 => Op::Unpair,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -245,6 +253,7 @@ mod tests {
             Op::Library,
             Op::LibraryArt,
             Op::Progress,
+            Op::Unpair,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

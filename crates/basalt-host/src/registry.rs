@@ -29,6 +29,15 @@ use crate::error::{HostError, Result};
 /// Requests held at once, so a flood cannot fill memory or bury the real one.
 const MAX_PENDING: usize = 8;
 
+/// How long a device with no id may go unseen before it is let go.
+///
+/// Devices paired before ids existed cannot be told apart once they pair
+/// again, so the host collected them: the same machine listed three times,
+/// two of those never to connect again. Every device still in use says what
+/// it is on its next connection and is kept for good; a record that has had a
+/// month to do that and has not is one nobody is coming back for.
+const FORGOTTEN_AFTER_SECONDS: i64 = 30 * 24 * 60 * 60;
+
 /// A device that has completed pairing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {
@@ -43,6 +52,30 @@ pub struct Device {
     pub paired_at: i64,
     pub last_seen: i64,
     pub writable: bool,
+    /// The id the device made for itself, the same every time it pairs.
+    ///
+    /// Empty for a device paired before devices had one, until it next
+    /// connects and says what it is.
+    #[serde(default)]
+    pub device_id: String,
+    /// Set once somebody renames the device on the host. After that, the name
+    /// the device calls itself no longer replaces the one it was given here.
+    #[serde(default)]
+    pub named_by_host: bool,
+}
+
+impl Device {
+    /// What anything kept per device is filed under.
+    ///
+    /// The device's own id when it has one, because that survives pairing
+    /// again; the token only for a device too old to have sent an id.
+    pub fn key(&self) -> &str {
+        if self.device_id.is_empty() {
+            &self.token_hash
+        } else {
+            &self.device_id
+        }
+    }
 }
 
 /// A client waiting to be let in.
@@ -50,6 +83,8 @@ pub struct Device {
 pub struct PairingRequest {
     pub id: String,
     pub device_name: String,
+    /// See [`Device::device_id`]. Empty from an older client.
+    pub device_id: String,
     /// `None` when the host is not asking for one.
     pub pin: Option<String>,
     pub opened: Instant,
@@ -103,6 +138,11 @@ impl Registry {
         &self.devices
     }
 
+    /// One device, by the hash of its token.
+    pub fn device(&self, token_hash: &str) -> Option<&Device> {
+        self.devices.iter().find(|d| d.token_hash == token_hash)
+    }
+
     pub fn device_count(&self) -> usize {
         self.devices.len()
     }
@@ -139,19 +179,39 @@ impl Registry {
     }
 
     /// Records a client asking to pair, and generates its PIN.
+    ///
+    /// For a client that did not say what device it is; see
+    /// [`Registry::begin_pairing_for`].
     pub fn begin_pairing(
         &mut self,
         now: Instant,
         device_name: &str,
         client_nonce: &str,
     ) -> Result<PairingRequest> {
+        self.begin_pairing_for(now, device_name, "", client_nonce)
+    }
+
+    /// Records a device asking to pair, and generates its PIN.
+    pub fn begin_pairing_for(
+        &mut self,
+        now: Instant,
+        device_name: &str,
+        device_id: &str,
+        client_nonce: &str,
+    ) -> Result<PairingRequest> {
         self.forget_expired(now);
 
         // A client that retries should replace its own waiting request rather
         // than adding another, or one machine reconnecting a few times would
-        // fill the host's screen with itself.
+        // fill the host's screen with itself. Recognised by its id when it has
+        // one, since two machines may well share a name.
         let name = sanitise_device_name(device_name);
-        self.pending.retain(|r| r.device_name != name);
+        let device_id = sanitise_device_id(device_id);
+        if device_id.is_empty() {
+            self.pending.retain(|r| r.device_name != name);
+        } else {
+            self.pending.retain(|r| r.device_id != device_id);
+        }
 
         if self.pending.len() >= MAX_PENDING {
             return Err(HostError::PairingRefused(
@@ -175,6 +235,7 @@ impl Registry {
         let request = PairingRequest {
             id,
             device_name: name,
+            device_id,
             pin,
             opened: now,
             attempts: 0,
@@ -197,13 +258,23 @@ impl Registry {
     /// `host_id` must be this host's own identity, not anything that arrived in
     /// a message — see [`basalt_net::pairing`] for why that distinction is the
     /// whole security of first contact.
+    ///
+    /// The device is recorded under the name it gave when it asked — the one
+    /// shown beside the PIN, and so the one the person at the host agreed to.
+    /// It used to take the name from this final message instead, and clients
+    /// sent the *host's* name there, so every device in the list was called
+    /// after the machine it was connecting to.
+    ///
+    /// A device that pairs again replaces its old record rather than adding a
+    /// second one. It keeps whatever the host had decided about it — whether
+    /// it may write, and a name given here — because pairing again is the same
+    /// device getting a new key, not a new device.
     pub fn finish_pairing(
         &mut self,
         now: Instant,
         host_id: &str,
         request_id: &str,
         proof: Option<&str>,
-        device_name: &str,
     ) -> Result<String> {
         self.forget_expired(now);
 
@@ -250,15 +321,77 @@ impl Registry {
         let token = pairing::random_token()
             .map_err(|e| HostError::PairingRefused(format!("could not issue a token: {e}")))?;
         let stamp = unix_now();
-        self.devices.push(Device {
-            token_hash: hash_token(&token),
-            name: sanitise_device_name(device_name),
-            paired_at: stamp,
-            last_seen: stamp,
-            writable: true,
-        });
-        self.pending.remove(index);
+        let request = self.pending.remove(index);
+
+        let known = (!request.device_id.is_empty())
+            .then(|| {
+                self.devices
+                    .iter_mut()
+                    .find(|d| d.device_id == request.device_id)
+            })
+            .flatten();
+        match known {
+            Some(device) => {
+                device.token_hash = hash_token(&token);
+                device.paired_at = stamp;
+                device.last_seen = stamp;
+                if !device.named_by_host {
+                    device.name = request.device_name;
+                }
+            }
+            None => self.devices.push(Device {
+                token_hash: hash_token(&token),
+                name: request.device_name,
+                paired_at: stamp,
+                last_seen: stamp,
+                writable: true,
+                device_id: request.device_id,
+                named_by_host: false,
+            }),
+        }
         Ok(token)
+    }
+
+    /// Takes in what a connecting device says about itself.
+    ///
+    /// A device paired before ids existed learns its id here, which is what
+    /// lets it be recognised if it ever pairs again. And a device that has been
+    /// renamed shows its new name — unless somebody named it on the host, in
+    /// which case their name stands.
+    ///
+    /// Returns whether anything changed, so the caller knows to save.
+    pub fn observe(&mut self, token_hash: &str, device_id: &str, device_name: &str) -> bool {
+        let Some(device) = self.devices.iter_mut().find(|d| d.token_hash == token_hash) else {
+            return false;
+        };
+        let mut changed = false;
+
+        let device_id = sanitise_device_id(device_id);
+        if device.device_id.is_empty() && !device_id.is_empty() {
+            device.device_id = device_id;
+            changed = true;
+        }
+
+        let name = device_name.trim();
+        if !name.is_empty() && !device.named_by_host {
+            let name = sanitise_device_name(name);
+            if device.name != name {
+                device.name = name;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Lets go of devices with no id that have not connected in a month.
+    ///
+    /// Returns how many went.
+    pub fn forget_abandoned(&mut self, now_unix: i64) -> usize {
+        let before = self.devices.len();
+        self.devices.retain(|d| {
+            !d.device_id.is_empty() || now_unix - d.last_seen < FORGOTTEN_AFTER_SECONDS
+        });
+        before - self.devices.len()
     }
 
     // -----------------------------------------------------------------------
@@ -297,10 +430,24 @@ impl Registry {
         match self.devices.iter_mut().find(|d| d.token_hash == token_hash) {
             Some(d) => {
                 d.name = sanitise_device_name(name);
+                d.named_by_host = true;
                 true
             }
             None => false,
         }
+    }
+}
+
+/// Keeps a device id to something that is plainly an id.
+///
+/// It arrives from the network and becomes a key for files on the host, so
+/// anything but a short run of hex is treated as no id at all.
+fn sanitise_device_id(id: &str) -> String {
+    let id = id.trim();
+    if (16..=64).contains(&id.len()) && id.chars().all(|c| c.is_ascii_hexdigit()) {
+        id.to_ascii_lowercase()
+    } else {
+        String::new()
     }
 }
 
@@ -347,7 +494,7 @@ mod tests {
             pairing::compute_proof(pin, host_id, &request.client_nonce, &request.server_nonce)
                 .unwrap()
         });
-        registry.finish_pairing(now, host_id, &request.id, proof.as_deref(), name)
+        registry.finish_pairing(now, host_id, &request.id, proof.as_deref())
     }
 
     #[test]
@@ -396,7 +543,7 @@ mod tests {
         assert!(request.pin.is_none(), "nothing to read across");
 
         let token = registry
-            .finish_pairing(now, HOST_ID, &request.id, None, "Laptop A")
+            .finish_pairing(now, HOST_ID, &request.id, None)
             .unwrap();
         assert!(registry.authenticate(&token).is_some());
     }
@@ -410,7 +557,7 @@ mod tests {
 
         assert!(
             registry
-                .finish_pairing(now, HOST_ID, &request.id, None, "Intruder")
+                .finish_pairing(now, HOST_ID, &request.id, None)
                 .is_err()
         );
         assert_eq!(registry.device_count(), 0);
@@ -432,7 +579,7 @@ mod tests {
         .unwrap();
         assert!(
             registry
-                .finish_pairing(now, HOST_ID, &request.id, Some(&wrong), "Intruder")
+                .finish_pairing(now, HOST_ID, &request.id, Some(&wrong))
                 .is_err()
         );
         assert_eq!(registry.device_count(), 0);
@@ -465,7 +612,7 @@ mod tests {
 
         assert!(
             registry
-                .finish_pairing(now, HOST_ID, &request.id, Some(&proof), "Impostor")
+                .finish_pairing(now, HOST_ID, &request.id, Some(&proof))
                 .is_err(),
             "a proof bound to a different public key must not pair"
         );
@@ -478,7 +625,7 @@ mod tests {
                 .unwrap();
         assert!(
             registry
-                .finish_pairing(now, HOST_ID, &request.id, Some(&good), "Laptop A")
+                .finish_pairing(now, HOST_ID, &request.id, Some(&good))
                 .is_ok()
         );
     }
@@ -500,7 +647,7 @@ mod tests {
         for attempt in 1..=MAX_PIN_ATTEMPTS {
             assert!(
                 registry
-                    .finish_pairing(now, HOST_ID, &request.id, Some(&wrong), "Intruder")
+                    .finish_pairing(now, HOST_ID, &request.id, Some(&wrong))
                     .is_err(),
                 "attempt {attempt}"
             );
@@ -527,7 +674,7 @@ mod tests {
         )
         .unwrap();
         for _ in 0..MAX_PIN_ATTEMPTS {
-            let _ = registry.finish_pairing(now, HOST_ID, &request.id, Some(&wrong), "Intruder");
+            let _ = registry.finish_pairing(now, HOST_ID, &request.id, Some(&wrong));
         }
 
         let right =
@@ -535,7 +682,7 @@ mod tests {
                 .unwrap();
         assert!(
             registry
-                .finish_pairing(now, HOST_ID, &request.id, Some(&right), "Intruder")
+                .finish_pairing(now, HOST_ID, &request.id, Some(&right))
                 .is_err()
         );
         assert_eq!(registry.device_count(), 0);
@@ -557,7 +704,7 @@ mod tests {
                 .unwrap();
         assert!(
             registry
-                .finish_pairing(later, HOST_ID, &request.id, Some(&proof), "Laptop A")
+                .finish_pairing(later, HOST_ID, &request.id, Some(&proof))
                 .is_err()
         );
     }
@@ -576,7 +723,7 @@ mod tests {
                 .unwrap();
         assert!(
             registry
-                .finish_pairing(just_before, HOST_ID, &request.id, Some(&proof), "Laptop A")
+                .finish_pairing(just_before, HOST_ID, &request.id, Some(&proof))
                 .is_ok()
         );
     }
@@ -632,7 +779,7 @@ mod tests {
         assert!(registry.pending(now).is_empty());
         assert!(
             registry
-                .finish_pairing(now, HOST_ID, &request.id, None, "Someone")
+                .finish_pairing(now, HOST_ID, &request.id, None)
                 .is_err()
         );
     }
@@ -650,7 +797,7 @@ mod tests {
         assert!(registry.pending(now).is_empty());
         assert!(
             registry
-                .finish_pairing(now, HOST_ID, &request.id, None, "Laptop A")
+                .finish_pairing(now, HOST_ID, &request.id, None)
                 .is_err(),
             "a request made under the old rule must not complete under the new one"
         );
@@ -751,5 +898,171 @@ mod tests {
         );
         assert!(request.remaining(opened + PAIRING_WINDOW * 2).is_zero());
         assert!(request.expired(opened + PAIRING_WINDOW * 2));
+    }
+
+    // -----------------------------------------------------------------------
+    // Knowing a device when it comes back
+    // -----------------------------------------------------------------------
+
+    const DEVICE_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const DEVICE_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    /// Pairs the way a current client does: with its own id.
+    fn pair_as(registry: &mut Registry, now: Instant, name: &str, id: &str) -> String {
+        let nonce = pairing::random_nonce().unwrap();
+        let request = registry.begin_pairing_for(now, name, id, &nonce).unwrap();
+        let proof = request.pin.as_ref().map(|pin| {
+            pairing::compute_proof(pin, HOST_ID, &request.client_nonce, &request.server_nonce)
+                .unwrap()
+        });
+        registry
+            .finish_pairing(now, HOST_ID, &request.id, proof.as_deref())
+            .unwrap()
+    }
+
+    /// The bug this replaces: devices were recorded under whatever the last
+    /// pairing message said, and clients sent the host's own name there.
+    #[test]
+    fn a_device_is_listed_under_the_name_it_asked_with() {
+        let mut registry = with_pin();
+        let token = pair_as(&mut registry, Instant::now(), "Laptop A", DEVICE_A);
+        let device = registry.authenticate(&token).unwrap();
+        assert_eq!(device.name, "Laptop A");
+        assert_eq!(device.device_id, DEVICE_A);
+    }
+
+    /// Pairing again is the same device with a new key, not a second device.
+    #[test]
+    fn pairing_again_replaces_the_device_rather_than_adding_it() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let first = pair_as(&mut registry, now, "Laptop A", DEVICE_A);
+        assert!(registry.set_writable(&hash_token(&first), false));
+
+        let second = pair_as(&mut registry, now, "Laptop A", DEVICE_A);
+        assert_eq!(registry.device_count(), 1);
+        assert!(
+            registry.authenticate(&first).is_none(),
+            "the old key is gone"
+        );
+        let device = registry.authenticate(&second).expect("the new key works");
+        assert!(!device.writable, "what the host decided about it stands");
+    }
+
+    #[test]
+    fn two_machines_that_share_a_name_are_two_devices() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        pair_as(&mut registry, now, "Laptop", DEVICE_A);
+        pair_as(&mut registry, now, "Laptop", DEVICE_B);
+        assert_eq!(registry.device_count(), 2);
+    }
+
+    #[test]
+    fn a_waiting_request_is_replaced_by_the_same_device_not_the_same_name() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let nonce = pairing::random_nonce().unwrap();
+        registry
+            .begin_pairing_for(now, "Laptop", DEVICE_A, &nonce)
+            .unwrap();
+        registry
+            .begin_pairing_for(now, "Laptop", DEVICE_B, &nonce)
+            .unwrap();
+        assert_eq!(registry.pending(now).len(), 2);
+        registry
+            .begin_pairing_for(now, "Laptop, renamed", DEVICE_A, &nonce)
+            .unwrap();
+        assert_eq!(registry.pending(now).len(), 2);
+    }
+
+    /// Devices paired before ids existed say what they are when they next
+    /// connect, and from then on are recognised like any other.
+    #[test]
+    fn a_device_from_before_ids_learns_its_id_and_name_on_connecting() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let token = pair(&mut registry, now, HOST_ID, "The Host's Own Name").unwrap();
+        let hash = hash_token(&token);
+        assert!(registry.device(&hash).unwrap().device_id.is_empty());
+
+        assert!(registry.observe(&hash, DEVICE_A, "Laptop A"));
+        let device = registry.device(&hash).unwrap();
+        assert_eq!(device.device_id, DEVICE_A);
+        assert_eq!(device.name, "Laptop A");
+        assert!(
+            !registry.observe(&hash, DEVICE_A, "Laptop A"),
+            "nothing new"
+        );
+
+        pair_as(&mut registry, now, "Laptop A", DEVICE_A);
+        assert_eq!(registry.device_count(), 1);
+    }
+
+    #[test]
+    fn a_name_given_on_the_host_outlives_the_one_the_device_uses() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let token = pair_as(&mut registry, now, "DESKTOP-7Q2", DEVICE_A);
+        let hash = hash_token(&token);
+        assert!(registry.rename(&hash, "Kitchen laptop"));
+
+        assert!(!registry.observe(&hash, DEVICE_A, "DESKTOP-7Q2"));
+        assert_eq!(registry.device(&hash).unwrap().name, "Kitchen laptop");
+
+        let again = pair_as(&mut registry, now, "DESKTOP-7Q2", DEVICE_A);
+        assert_eq!(
+            registry.authenticate(&again).unwrap().name,
+            "Kitchen laptop"
+        );
+    }
+
+    #[test]
+    fn devices_without_an_id_are_let_go_after_a_month_unseen() {
+        let now = 1_800_000_000;
+        let day = 24 * 60 * 60;
+        let device = |name: &str, id: &str, seen: i64| Device {
+            token_hash: format!("{name}-hash"),
+            name: name.into(),
+            paired_at: seen,
+            last_seen: seen,
+            writable: true,
+            device_id: id.into(),
+            named_by_host: false,
+        };
+        let mut registry = Registry::new(
+            vec![
+                device("abandoned", "", now - 31 * day),
+                device("recent", "", now - day),
+                device("known", DEVICE_A, now - 400 * day),
+            ],
+            true,
+        );
+        assert_eq!(registry.forget_abandoned(now), 1);
+        let names: Vec<&str> = registry.devices().iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["recent", "known"]);
+    }
+
+    #[test]
+    fn anything_that_is_not_plainly_an_id_is_treated_as_none() {
+        assert_eq!(sanitise_device_id(DEVICE_A), DEVICE_A);
+        assert_eq!(
+            sanitise_device_id("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+            DEVICE_A
+        );
+        assert_eq!(sanitise_device_id("abc"), "");
+        assert_eq!(sanitise_device_id("../../../etc/passwd/aaaaaaaaaa"), "");
+        assert_eq!(sanitise_device_id(&"a".repeat(200)), "");
+    }
+
+    #[test]
+    fn a_device_is_filed_under_its_id_once_it_has_one() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let token = pair(&mut registry, now, HOST_ID, "Old laptop").unwrap();
+        let hash = hash_token(&token);
+        assert_eq!(registry.device(&hash).unwrap().key(), hash);
+        registry.observe(&hash, DEVICE_B, "Old laptop");
+        assert_eq!(registry.device(&hash).unwrap().key(), DEVICE_B);
     }
 }

@@ -35,6 +35,25 @@ pub struct Session {
     info: SessionInfo,
 }
 
+/// Who this device is, as it introduces itself to a host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Me {
+    /// What the host lists it as.
+    pub name: String,
+    /// The id it made for itself once, the same on every connection. See
+    /// [`HelloRequest::device_id`].
+    pub id: String,
+}
+
+impl Me {
+    pub fn new(name: impl Into<String>, id: impl Into<String>) -> Self {
+        Me {
+            name: name.into(),
+            id: id.into(),
+        }
+    }
+}
+
 /// A pairing the host is currently displaying.
 ///
 /// Holds everything the proof is bound to, so the second step cannot be
@@ -47,6 +66,8 @@ pub struct PairChallenge {
     pub server_nonce: String,
     /// The key the host actually presented, not anything it claimed.
     pub host_id: String,
+    /// The name this device asked under.
+    pub device_name: String,
 }
 
 /// Opens a TLS connection and reads the host's greeting.
@@ -56,7 +77,7 @@ pub struct PairChallenge {
 async fn open(
     addr: SocketAddr,
     trust: Trust,
-    device_name: &str,
+    me: &Me,
 ) -> Result<(TlsStream<TcpStream>, HelloResponse, String)> {
     let tcp = socket::connect(addr).await?;
     let (connector, verifier) = client_config(trust);
@@ -72,7 +93,8 @@ async fn open(
         Op::Hello,
         &HelloRequest {
             protocol: PROTOCOL_VERSION,
-            device_name: device_name.to_string(),
+            device_name: me.name.clone(),
+            device_id: me.id.clone(),
         },
     )
     .await?;
@@ -95,14 +117,9 @@ async fn open(
 
 impl Session {
     /// Reconnects to a host already paired with.
-    pub async fn connect(
-        addr: SocketAddr,
-        host_id: &str,
-        token: &str,
-        device_name: &str,
-    ) -> Result<Self> {
+    pub async fn connect(addr: SocketAddr, host_id: &str, token: &str, me: &Me) -> Result<Self> {
         let (mut stream, hello, presented) =
-            open(addr, Trust::Pinned(host_id.to_string()), device_name).await?;
+            open(addr, Trust::Pinned(host_id.to_string()), me).await?;
 
         // Belt and braces: the TLS verifier has already refused anything else,
         // so this can only fire if that check were ever weakened.
@@ -135,8 +152,8 @@ impl Session {
     }
 
     /// Looks at a host without pairing, so the client can show what it found.
-    pub async fn probe(addr: SocketAddr, device_name: &str) -> Result<HelloResponse> {
-        let (_stream, hello, presented) = open(addr, Trust::FirstContact, device_name).await?;
+    pub async fn probe(addr: SocketAddr, me: &Me) -> Result<HelloResponse> {
+        let (_stream, hello, presented) = open(addr, Trust::FirstContact, me).await?;
         // Report the key that was actually presented rather than the claim in
         // the body, so the id shown to the user is the one that will be pinned.
         Ok(HelloResponse {
@@ -157,8 +174,8 @@ impl Session {
     /// Trust is [`Trust::FirstContact`] here because there is nothing to
     /// compare against yet — which is exactly why the PIN proof is bound to the
     /// key that turned up. See [`basalt_net::pairing`].
-    pub async fn begin_pair(addr: SocketAddr, device_name: &str) -> Result<(Self, PairChallenge)> {
-        let (mut stream, hello, presented) = open(addr, Trust::FirstContact, device_name).await?;
+    pub async fn begin_pair(addr: SocketAddr, me: &Me) -> Result<(Self, PairChallenge)> {
+        let (mut stream, hello, presented) = open(addr, Trust::FirstContact, me).await?;
 
         let client_nonce = basalt_net::pairing::random_nonce()
             .map_err(|e| ClientError::Protocol(format!("no randomness available: {e}")))?;
@@ -168,7 +185,8 @@ impl Session {
             Op::PairBegin,
             &PairBeginRequest {
                 client_nonce: client_nonce.clone(),
-                device_name: device_name.to_string(),
+                device_name: me.name.clone(),
+                device_id: me.id.clone(),
             },
         )
         .await?;
@@ -179,6 +197,7 @@ impl Session {
             client_nonce,
             server_nonce: begin.server_nonce,
             host_id: presented.clone(),
+            device_name: me.name.clone(),
         };
 
         Ok((
@@ -224,7 +243,10 @@ impl Session {
             &PairFinishRequest {
                 request: challenge.request.clone(),
                 proof,
-                device_name: self.info.host_name.clone(),
+                // This device's own name. It used to be `info.host_name` — the
+                // host's — and every device was listed on the host under the
+                // name of the machine it was connecting to.
+                device_name: challenge.device_name.clone(),
             },
         )
         .await
@@ -249,6 +271,13 @@ impl Session {
 
     pub async fn ping(&mut self) -> Result<()> {
         write_request(&mut self.stream, Op::Ping, &[]).await?;
+        read_response(&mut self.stream).await?;
+        Ok(())
+    }
+
+    /// Asks the host to forget this device. The connection is unusable after.
+    pub async fn unpair(&mut self) -> Result<()> {
+        write_request(&mut self.stream, Op::Unpair, &[]).await?;
         read_response(&mut self.stream).await?;
         Ok(())
     }

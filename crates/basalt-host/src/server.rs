@@ -67,7 +67,8 @@ pub struct Host {
 impl Host {
     pub fn new(config: HostConfig, config_path: std::path::PathBuf) -> Result<Arc<Self>> {
         let identity = config.identity()?;
-        let registry = Registry::new(config.devices.clone(), config.require_pin);
+        let mut registry = Registry::new(config.devices.clone(), config.require_pin);
+        let abandoned = registry.forget_abandoned(unix_now());
 
         // A drive that is not there is not a reason to refuse to start.
         //
@@ -116,7 +117,7 @@ impl Host {
             None => crate::media::Progress::default(),
         };
 
-        Ok(Arc::new(Self {
+        let host = Arc::new(Self {
             identity,
             config_path,
             config: std::sync::Mutex::new(config),
@@ -133,7 +134,12 @@ impl Host {
             arrived_during_scan: std::sync::Mutex::new(Vec::new()),
             last_scan: std::sync::Mutex::new(None),
             progress: std::sync::Mutex::new(progress),
-        }))
+        });
+        if abandoned > 0 {
+            tracing::info!("let go of {abandoned} devices that never came back");
+            host.persist()?;
+        }
+        Ok(host)
     }
 
     pub async fn watch(&self) -> Option<Arc<crate::watch::Watch>> {
@@ -1033,6 +1039,13 @@ impl Host {
     }
 }
 
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// How much of the time a drive may spend being scanned.
 ///
 /// The rest before the next full scan is this multiple of how long the last
@@ -1191,6 +1204,8 @@ pub async fn serve(server: BoundServer) -> Result<()> {
 #[derive(Default)]
 struct Session {
     device: Option<Device>,
+    /// What the device said about itself when it connected: its name and id.
+    hello: Option<HelloRequest>,
 }
 
 impl Session {
@@ -1272,7 +1287,9 @@ where
         Op::Ping => write_ok(stream, &[]).await?,
 
         Op::Hello => {
-            let _req: HelloRequest = decode(payload)?;
+            // Kept for the rest of the connection: pairing and authenticating
+            // both want to know which device this is.
+            session.hello = Some(decode(payload)?);
             reply(
                 stream,
                 &HelloResponse {
@@ -1291,9 +1308,18 @@ where
             // The host records the attempt and displays it, rather than needing
             // a window opened in advance. That is what lets it show *which*
             // machine is asking, beside the number to read across.
+            let hello = session.hello.as_ref();
+            let name = match req.device_name.trim() {
+                "" => hello.map_or("", |h| h.device_name.as_str()),
+                name => name,
+            };
+            let device_id = match req.device_id.trim() {
+                "" => hello.map_or("", |h| h.device_id.as_str()),
+                id => id,
+            };
             let request = {
                 let mut registry = host.registry.lock().expect("registry lock");
-                registry.begin_pairing(Instant::now(), &req.device_name, &req.client_nonce)?
+                registry.begin_pairing_for(Instant::now(), name, device_id, &req.client_nonce)?
             };
             reply(
                 stream,
@@ -1318,7 +1344,6 @@ where
                     host.host_id(),
                     &req.request,
                     req.proof.as_deref(),
-                    &req.device_name,
                 )?
             };
             host.persist()?;
@@ -1342,13 +1367,32 @@ where
 
         Op::Auth => {
             let req: AuthRequest = decode(payload)?;
-            let device = {
+            let (device, changed) = {
                 let mut registry = host.registry.lock().expect("registry lock");
-                registry.authenticate(&req.token)
+                match registry.authenticate(&req.token) {
+                    Some(device) => {
+                        // Whatever the device says about itself now — an id
+                        // it did not have when it paired, a new name — is
+                        // taken in on every connection.
+                        let changed = session.hello.as_ref().is_some_and(|hello| {
+                            registry.observe(
+                                &device.token_hash,
+                                &hello.device_id,
+                                &hello.device_name,
+                            )
+                        });
+                        let current = registry.device(&device.token_hash).cloned();
+                        (current, changed)
+                    }
+                    None => (None, false),
+                }
             };
             let Some(device) = device else {
                 return Err(HostError::Unauthenticated);
             };
+            if changed {
+                host.persist()?;
+            }
             let response = AuthResponse {
                 vault: host.vault_name(),
                 device_name: device.name.clone(),
@@ -1532,6 +1576,14 @@ where
         Op::Progress => {
             let request: ProgressRequest = decode(payload).unwrap_or_default();
             reply(stream, &host.progress(request)).await?;
+        }
+
+        Op::Unpair => {
+            let Some(device) = session.device.take() else {
+                return Err(HostError::Unauthenticated);
+            };
+            host.revoke(&device.token_hash)?;
+            write_ok(stream, &[]).await?;
         }
 
         Op::LibraryArt => {
