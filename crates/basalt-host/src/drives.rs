@@ -76,6 +76,19 @@ pub fn is_available(path: &Path) -> bool {
     std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false)
 }
 
+/// A path the way a person writes it.
+///
+/// A canonical Windows path comes back as `\\?\D:\`, which is correct and looks
+/// like something has gone wrong. The host's window showed exactly that under
+/// the drive's name.
+pub fn display(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{share}");
+    }
+    text.strip_prefix(r"\\?\").unwrap_or(&text).to_string()
+}
+
 #[cfg(windows)]
 fn windows_drives() -> Vec<Drive> {
     use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
@@ -204,6 +217,14 @@ mod tests {
             total: 0,
         };
         assert_eq!(drive.display_name(), "Films (E:)");
+    }
+
+    #[test]
+    fn a_path_is_shown_the_way_a_person_writes_it() {
+        assert_eq!(display(Path::new(r"\\?\D:\")), r"D:\");
+        assert_eq!(display(Path::new(r"\\?\D:\Films")), r"D:\Films");
+        assert_eq!(display(Path::new(r"\\?\UNC\nas\share")), r"\\nas\share");
+        assert_eq!(display(Path::new(r"E:\")), r"E:\");
     }
 
     #[test]

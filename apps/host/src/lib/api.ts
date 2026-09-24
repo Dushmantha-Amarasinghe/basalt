@@ -287,6 +287,14 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const answer = (): unknown => {
     switch (command) {
       case 'status':
+        // `?missing` shows the drive as unplugged, which is otherwise only
+        // reachable by pulling a real drive out of a real machine.
+        if (previewFlag('missing') && sample.status.vault) {
+          return {
+            ...sample.status,
+            vault: { ...sample.status.vault, free: 0, total: 0, available: false },
+          }
+        }
         return sample.status
       case 'list_drives':
         return sample.drives
