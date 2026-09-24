@@ -182,6 +182,15 @@ pub enum ErrorCode {
     Io,
     /// A newer client asked for something this host does not implement.
     Unsupported,
+    /// The host is running, but the drive it shares is not connected.
+    ///
+    /// Its own code so a client can say so and keep checking, rather than
+    /// showing an empty folder — which is what a generic failure looked like.
+    Unavailable,
+    /// A code from a newer host than this build knows, read as a plain
+    /// failure rather than as a reply that will not parse at all.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -260,6 +269,14 @@ mod tests {
                 "{op:?} touches the drive and must require a token"
             );
         }
+    }
+
+    #[test]
+    fn a_code_this_build_does_not_know_still_reads() {
+        let err: WireError =
+            serde_json::from_str(r#"{"code":"something_newer","message":"hm"}"#).unwrap();
+        assert_eq!(err.code, ErrorCode::Unknown);
+        assert_eq!(err.message, "hm");
     }
 
     #[test]

@@ -100,6 +100,7 @@ impl ClientError {
                 Some(E::NotEmpty) => "notempty",
                 Some(E::Unauthenticated) => "unpaired",
                 Some(E::PairingRefused) => "pairing",
+                Some(E::Unavailable) => "unavailable",
                 Some(_) => "error",
                 None if e.is_transient() => "offline",
                 None => "error",

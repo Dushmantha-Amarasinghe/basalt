@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
+  AlertTriangle,
   ClipboardPaste,
   Copy,
   Download,
@@ -1283,13 +1284,31 @@ function DropOverlay({
  * honest banner over it is far more useful than an empty window, and when the
  * host comes back the same folder is still there.
  */
+/**
+ * Why the folder on screen is not what the drive holds right now.
+ *
+ * Every listing failure is said here. Only losing the host used to be: any
+ * other failure — the host's drive unplugged, a folder it would not open —
+ * left an empty folder on screen and no word about why, which reads as the
+ * drive having been wiped.
+ */
 function ConnectionBanner({
   vault,
 }: {
   vault: ReturnType<typeof useVault>
 }): React.JSX.Element | null {
-  const offline = vault.error?.kind === 'offline' || vault.error?.kind === 'unpaired'
-  if (!offline) return null
+  const kind = vault.error?.kind
+  if (!kind) return null
+
+  const offline = kind === 'offline' || kind === 'unpaired'
+  const waiting = kind === 'unavailable'
+  const text = offline
+    ? vault.reconnecting
+      ? 'Reconnecting…'
+      : 'Lost the host. Trying again in the background.'
+    : waiting
+      ? `${capitalise(vault.error?.message ?? 'The drive is not connected')}. It will be back here as soon as it is plugged in again.`
+      : capitalise(vault.error?.message ?? 'Something went wrong')
 
   return (
     <motion.div
@@ -1299,21 +1318,27 @@ function ConnectionBanner({
       className="shrink-0 overflow-hidden border-b border-line bg-ink2"
     >
       <div className="flex items-center gap-2.5 px-4 py-2">
-        <Loader2 size={13} className="shrink-0 animate-spin text-textFaint" />
-        <span className="text-[12px] text-textDim">
-          {vault.reconnecting
-            ? 'Reconnecting…'
-            : 'Lost the host. Trying again in the background.'}
+        {offline || waiting ? (
+          <Loader2 size={13} className="shrink-0 animate-spin text-textFaint" />
+        ) : (
+          <AlertTriangle size={13} className="shrink-0 text-danger" />
+        )}
+        <span className={cn('text-[12px]', offline || waiting ? 'text-textDim' : 'text-danger')}>
+          {text}
         </span>
         <button
-          onClick={() => void vault.reconnect()}
-          className="ml-auto rounded px-2 py-0.5 text-[11px] text-textDim transition-colors hover:bg-white/[0.05] hover:text-text"
+          onClick={() => (offline ? void vault.reconnect() : vault.refresh())}
+          className="ml-auto shrink-0 rounded px-2 py-0.5 text-[11px] text-textDim transition-colors hover:bg-white/[0.05] hover:text-text"
         >
-          Retry now
+          {offline ? 'Retry now' : waiting ? 'Check now' : 'Try again'}
         </button>
       </div>
     </motion.div>
   )
+}
+
+function capitalise(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
 function ToolButton({

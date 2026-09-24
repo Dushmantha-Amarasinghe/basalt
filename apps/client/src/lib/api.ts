@@ -178,6 +178,8 @@ export function inProgress(watched: Watched): boolean {
 export type ErrorKind =
   | 'offline'
   | 'notfound'
+  /** The host is there, but the drive it shares is not connected. */
+  | 'unavailable'
   | 'denied'
   | 'exists'
   | 'notempty'

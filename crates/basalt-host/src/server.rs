@@ -1049,6 +1049,37 @@ impl Host {
         snapshot.save(&self.config_path)
     }
 
+    /// Says a failure caused by the drive disappearing as exactly that.
+    ///
+    /// The drive monitor notices within seconds and lets go of it, but in
+    /// those seconds every request still reached the drive and failed on its
+    /// own terms — "was not found", with nothing after it — and a device
+    /// showed an empty folder rather than a missing drive. Only failures are
+    /// checked, so this costs nothing while everything works.
+    async fn explain(&self, e: HostError) -> HostError {
+        if !matches!(
+            e,
+            HostError::NotFound(_) | HostError::Io(_) | HostError::Denied(_)
+        ) {
+            return e;
+        }
+        let Some(vault) = self.vault().await else {
+            return e;
+        };
+        let root = vault.root().to_path_buf();
+        let gone = tokio::task::spawn_blocking(move || !crate::drives::is_available(&root))
+            .await
+            .unwrap_or(false);
+        if gone {
+            HostError::Unavailable(format!(
+                "{} is not connected to the host right now",
+                vault.name()
+            ))
+        } else {
+            e
+        }
+    }
+
     async fn require_vault(&self) -> Result<Arc<Vault>> {
         if let Some(vault) = self.vault().await {
             return Ok(vault);
@@ -1284,6 +1315,7 @@ where
         if let Err(e) = dispatch(&mut stream, &host, &mut session, op, &payload).await {
             // A refusal is an answer, not a reason to hang up: the client is
             // pooling this connection and will use it again.
+            let e = host.explain(e).await;
             let code = e.code();
             tracing::debug!("{op:?} failed: {e}");
             if let Err(e) = write_err(&mut stream, code, &e.to_string()).await {

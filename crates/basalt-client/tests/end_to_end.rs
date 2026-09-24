@@ -1240,3 +1240,52 @@ async fn a_cancelled_download_leaves_no_partial_file() {
     assert!(!dest.with_extension("bin.part").exists());
     assert!(client.list("").await.is_ok(), "and the client carries on");
 }
+
+// ---------------------------------------------------------------------------
+// The host's drive going away and coming back
+// ---------------------------------------------------------------------------
+
+/// What a device sees when the drive on the host is unplugged: a clear
+/// "not connected" it can wait on — not an empty folder — and the drive back
+/// again once it returns, with nothing re-paired or restarted.
+#[tokio::test]
+async fn a_drive_unplugged_on_the_host_says_so_and_comes_back() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+    assert!(client.list("").await.is_ok());
+
+    let vault = fixture.vault_path("");
+    let away = fixture.dir.join("unplugged");
+    std::fs::rename(&vault, &away).unwrap();
+
+    let mut refused = None;
+    for _ in 0..60 {
+        match client.list("").await {
+            Err(e) => {
+                refused = Some(e);
+                break;
+            }
+            Ok(_) => tokio::time::sleep(std::time::Duration::from_millis(150)).await,
+        }
+    }
+    let err = refused.expect("the host notices the drive has gone");
+    assert_eq!(err.kind(), "unavailable", "got: {err}");
+    assert!(
+        err.to_string().contains("Test Vault"),
+        "names the drive: {err}"
+    );
+
+    std::fs::rename(&away, &vault).unwrap();
+    let mut back = false;
+    for _ in 0..60 {
+        if client.list("").await.is_ok() {
+            back = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    assert!(
+        back,
+        "the drive is served again without anything being redone"
+    );
+}
