@@ -13,9 +13,18 @@
 //! directory so that the final step is a rename within one volume, which is
 //! atomic. A rename across volumes is a copy, and a copy of a 2 GB film at the
 //! end of an upload would be both slow and a second chance to fail.
+//!
+//! **Kept open, and hashed as it arrives.** Each chunk used to reopen the
+//! temporary file, write, and close it again — a file open and close per four
+//! megabytes, which on Windows is also where antivirus gets to look — and the
+//! whole file was read back at the end to hash it, which is the pause at 100%
+//! on a large upload. Now each upload holds its file open and hashes each chunk
+//! as it lands, and each has a lock of its own, so two uploads no longer wait
+//! on each other's disk writes.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use basalt_proto::hex;
 use basalt_proto::msg::UPLOAD_ID_BYTES;
@@ -38,15 +47,27 @@ pub struct Upload {
     pub overwrite: bool,
 }
 
+/// An upload in progress: what it is, and the open file and hash behind it.
+#[derive(Debug)]
+struct Open {
+    upload: Upload,
+    /// Taken when the upload is committed or abandoned, so a chunk arriving
+    /// after that finds nothing to write to rather than a file being renamed.
+    file: Option<tokio::fs::File>,
+    /// BLAKE3 of everything written so far.
+    hasher: blake3::Hasher,
+}
+
+type Slot = Arc<tokio::sync::Mutex<Open>>;
+
 /// Every upload this host currently has open.
 ///
-/// A single lock covers the map and is held across the write of one chunk.
-/// That serialises simultaneous uploads, which sounds worse than it is: the
-/// link runs at ~22.7 MB/s and is the bottleneck by a wide margin, so two
-/// uploads sharing it were never going to proceed in parallel anyway.
+/// The map's own lock is only ever held long enough to find an upload. Each
+/// upload has a lock of its own for writing, so two uploads write to disk at
+/// the same time rather than one after the other.
 #[derive(Debug, Default)]
 pub struct Uploads {
-    open: tokio::sync::Mutex<HashMap<[u8; UPLOAD_ID_BYTES], Upload>>,
+    open: std::sync::Mutex<HashMap<[u8; UPLOAD_ID_BYTES], Slot>>,
 }
 
 /// The name of the temporary file for an upload.
@@ -120,9 +141,25 @@ impl Uploads {
             )));
         }
 
-        self.open.lock().await.insert(
-            id,
-            Upload {
+        // What is already there is hashed once, now, so the hash carries on
+        // from it as the rest arrives.
+        let hasher = if received > 0 {
+            let partial = temp.clone();
+            tokio::task::spawn_blocking(move || hasher_of(&partial))
+                .await
+                .map_err(|e| HostError::BadRequest(format!("hashing failed: {e}")))?
+                .map_err(|e| from_io(rel, e))?
+        } else {
+            blake3::Hasher::new()
+        };
+        let file = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&temp)
+            .await
+            .map_err(|e| from_io(rel, e))?;
+
+        let slot = Arc::new(tokio::sync::Mutex::new(Open {
+            upload: Upload {
                 rel: rel.to_string(),
                 target,
                 temp,
@@ -130,8 +167,22 @@ impl Uploads {
                 received,
                 overwrite,
             },
-        );
+            file: Some(file),
+            hasher,
+        }));
+        // Anything already open under this id — a connection that dropped
+        // mid-upload — is replaced, and its file handle closed with it.
+        self.open.lock().expect("uploads lock").insert(id, slot);
         Ok((id, received))
+    }
+
+    fn slot(&self, id: &[u8; UPLOAD_ID_BYTES]) -> Result<Slot> {
+        self.open
+            .lock()
+            .expect("uploads lock")
+            .get(id)
+            .cloned()
+            .ok_or_else(|| HostError::BadRequest("no such upload".into()))
     }
 
     /// Appends one chunk.
@@ -146,10 +197,13 @@ impl Uploads {
         offset: u64,
         data: &[u8],
     ) -> Result<u64> {
-        let mut open = self.open.lock().await;
-        let upload = open
-            .get_mut(id)
-            .ok_or_else(|| HostError::BadRequest("no such upload".into()))?;
+        let slot = self.slot(id)?;
+        let mut open = slot.lock().await;
+        let Open {
+            upload,
+            file,
+            hasher,
+        } = &mut *open;
 
         if offset != upload.received {
             return Err(HostError::BadRequest(format!(
@@ -164,15 +218,19 @@ impl Uploads {
             )));
         }
 
-        let mut file = tokio::fs::OpenOptions::new()
-            .append(true)
-            .open(&upload.temp)
-            .await
-            .map_err(|e| from_io(&upload.rel, e))?;
+        let Some(file) = file.as_mut() else {
+            return Err(HostError::BadRequest(format!(
+                "{} has already been finished",
+                upload.rel
+            )));
+        };
         file.write_all(data)
             .await
             .map_err(|e| from_io(&upload.rel, e))?;
+        // Flushed per chunk so a failed write is reported against the chunk
+        // that failed, rather than surfacing on whichever comes next.
         file.flush().await.map_err(|e| from_io(&upload.rel, e))?;
+        hasher.update(data);
 
         upload.received += data.len() as u64;
         Ok(upload.received)
@@ -185,11 +243,28 @@ impl Uploads {
         expected_hash: &str,
         mtime: Option<i64>,
     ) -> Result<()> {
-        let upload = {
-            let mut open = self.open.lock().await;
-            open.remove(id)
-                .ok_or_else(|| HostError::BadRequest("no such upload".into()))?
+        let slot = self
+            .open
+            .lock()
+            .expect("uploads lock")
+            .remove(id)
+            .ok_or_else(|| HostError::BadRequest("no such upload".into()))?;
+        // Waits for any chunk still being written, then takes the upload over.
+        let (upload, file, hasher) = {
+            let mut open = slot.lock().await;
+            (open.upload.clone(), open.file.take(), open.hasher.clone())
         };
+
+        // Everything written is flushed and the file closed before it is
+        // renamed: Windows refuses to rename a file that is still open.
+        if let Some(mut file) = file {
+            let flushed = file.flush().await;
+            drop(file);
+            if let Err(e) = flushed {
+                tokio::fs::remove_file(&upload.temp).await.ok();
+                return Err(from_io(&upload.rel, e));
+            }
+        }
 
         if upload.received != upload.size {
             tokio::fs::remove_file(&upload.temp).await.ok();
@@ -199,11 +274,9 @@ impl Uploads {
             )));
         }
 
-        let temp = upload.temp.clone();
-        let actual = tokio::task::spawn_blocking(move || hash_file(&temp))
-            .await
-            .map_err(|e| HostError::BadRequest(format!("hashing failed: {e}")))?
-            .map_err(|e| from_io(&upload.rel, e))?;
+        // The hash of every byte as it was written, carried along the way
+        // rather than read back off the disk at the end.
+        let actual = hasher.finalize().to_hex().to_string();
 
         if !hex::constant_time_eq(actual.as_bytes(), expected_hash.as_bytes()) {
             // A file that does not hash is not written. Leaving the original
@@ -245,24 +318,34 @@ impl Uploads {
 
     /// Abandons an upload and removes its partial file.
     pub async fn abort(&self, id: &[u8; UPLOAD_ID_BYTES]) -> Result<()> {
-        let upload = self.open.lock().await.remove(id);
-        if let Some(upload) = upload {
-            tokio::fs::remove_file(&upload.temp).await.ok();
+        let slot = self.open.lock().expect("uploads lock").remove(id);
+        if let Some(slot) = slot {
+            let temp = {
+                let mut open = slot.lock().await;
+                // The handle has to go before the file can: Windows will not
+                // delete a file that is open.
+                drop(open.file.take());
+                open.upload.temp.clone()
+            };
+            tokio::fs::remove_file(&temp).await.ok();
         }
         Ok(())
     }
 
     pub async fn count(&self) -> usize {
-        self.open.lock().await.len()
+        self.open.lock().expect("uploads lock").len()
     }
 
     pub async fn get(&self, id: &[u8; UPLOAD_ID_BYTES]) -> Option<Upload> {
-        self.open.lock().await.get(id).cloned()
+        let slot = self.slot(id).ok()?;
+        let open = slot.lock().await;
+        Some(open.upload.clone())
     }
 }
 
-/// BLAKE3 of a whole file, read in blocks so a film does not land in memory.
-fn hash_file(path: &Path) -> std::io::Result<String> {
+/// A hasher that has already read a whole file, so hashing can carry on from
+/// the end of it. Read in blocks so a film does not land in memory.
+fn hasher_of(path: &Path) -> std::io::Result<blake3::Hasher> {
     use std::io::Read;
 
     let mut file = std::fs::File::open(path)?;
@@ -275,7 +358,7 @@ fn hash_file(path: &Path) -> std::io::Result<String> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(hasher.finalize().to_hex().to_string())
+    Ok(hasher)
 }
 
 /// Best effort: keep the modification time the client reported.

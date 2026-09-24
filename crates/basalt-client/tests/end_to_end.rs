@@ -1133,3 +1133,110 @@ async fn a_device_keeps_its_id_across_the_app_reopening() {
     assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
     assert_eq!(fixture.client().device_id(), id);
 }
+
+// ---------------------------------------------------------------------------
+// Several chunks on the wire at once
+// ---------------------------------------------------------------------------
+
+/// More chunks than are ever in flight together, and a tail that is not a
+/// whole chunk, so every path through the pipeline is taken.
+#[tokio::test]
+async fn a_file_of_many_chunks_survives_being_pipelined() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+
+    let chunk = basalt_client::client::CHUNK_BYTES as usize;
+    let data = sample_bytes(chunk * (basalt_client::client::IN_FLIGHT + 2) + 321);
+    let source = fixture.dir.join("many-source.bin");
+    std::fs::write(&source, &data).unwrap();
+
+    let reported = Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+    let seen = Arc::clone(&reported);
+    let progress: basalt_client::client::ProgressFn =
+        Arc::new(move |p: basalt_client::Progress| {
+            seen.lock().unwrap().push(p.transferred);
+        });
+    client
+        .upload(&source, "many.bin", false, Some(progress), None)
+        .await
+        .unwrap();
+
+    let steps = reported.lock().unwrap().clone();
+    assert!(
+        steps.windows(2).all(|w| w[0] < w[1]),
+        "progress only moves forward"
+    );
+    assert_eq!(steps.last().copied(), Some(data.len() as u64));
+
+    let dest = fixture.dir.join("many-back.bin");
+    client
+        .download("many.bin", &dest, None, None)
+        .await
+        .unwrap();
+    assert_eq!(blake3_of(&std::fs::read(&dest).unwrap()), blake3_of(&data));
+
+    // Every answer was read: the connections that carried the pipeline are
+    // back in the pool and still in step.
+    for _ in 0..4 {
+        assert!(client.list("").await.is_ok());
+    }
+}
+
+#[tokio::test]
+async fn a_cancelled_upload_leaves_nothing_on_the_host() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+
+    let chunk = basalt_client::client::CHUNK_BYTES as usize;
+    let source = fixture.dir.join("cancel-source.bin");
+    std::fs::write(&source, sample_bytes(chunk * 8)).unwrap();
+
+    let cancel = basalt_client::client::Cancel::new();
+    let stop = cancel.clone();
+    let progress: basalt_client::client::ProgressFn = Arc::new(move |_| stop.cancel());
+    let result = client
+        .upload(
+            &source,
+            "cancelled.bin",
+            false,
+            Some(progress),
+            Some(cancel),
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "a cancelled upload reports that it did not finish"
+    );
+
+    // Nothing under its name, and no partial file hidden beside it.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let leftovers: Vec<String> = std::fs::read_dir(fixture.vault_path(""))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("cancelled") || name.ends_with(".part"))
+        .collect();
+    assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
+    assert!(client.list("").await.is_ok(), "and the client carries on");
+}
+
+#[tokio::test]
+async fn a_cancelled_download_leaves_no_partial_file() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+
+    let chunk = basalt_client::client::CHUNK_BYTES as usize;
+    std::fs::write(fixture.vault_path("large.bin"), sample_bytes(chunk * 8)).unwrap();
+
+    let cancel = basalt_client::client::Cancel::new();
+    let stop = cancel.clone();
+    let progress: basalt_client::client::ProgressFn = Arc::new(move |_| stop.cancel());
+    let dest = fixture.dir.join("large-back.bin");
+    let result = client
+        .download("large.bin", &dest, Some(progress), Some(cancel))
+        .await;
+    assert!(result.is_err());
+    assert!(!dest.exists());
+    assert!(!dest.with_extension("bin.part").exists());
+    assert!(client.list("").await.is_ok(), "and the client carries on");
+}
