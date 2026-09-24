@@ -137,8 +137,12 @@ pub struct TransferEvent {
     pub transferred: u64,
     pub total: u64,
     pub status: &'static str,
-    /// Bytes per second over the whole transfer so far.
+    /// Bytes per second now: over the last couple of seconds, the same window
+    /// the title bar's speed is measured over. See [`crate::rate`].
     pub rate: f64,
+    /// Bytes per second to plan the time left on: a longer window, so the
+    /// estimate is calm rather than jumping with every hiccup.
+    pub eta_rate: f64,
 }
 
 /// An error the interface can branch on.
@@ -332,10 +336,12 @@ mod tests {
             total: 2,
             status: "active",
             rate: 3.0,
+            eta_rate: 2.5,
         };
         assert_eq!(
             keys(&event),
             vec![
+                "etaRate",
                 "id",
                 "kind",
                 "name",
@@ -368,6 +374,7 @@ mod tests {
             total: 0,
             status: "done",
             rate: 0.0,
+            eta_rate: 0.0,
         };
 
         let host = DiscoveredHost::new(&found("aa", true, true), false);

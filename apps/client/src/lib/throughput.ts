@@ -42,7 +42,21 @@ const IDLE_AFTER_MS = 400
  */
 const IDLE_FLOOR_RATE = 16 * 1024
 
+/**
+ * How far back the number beside the trace looks.
+ *
+ * The same two seconds each transfer's own speed is measured over, so the
+ * title bar and the Transfers panel say the same thing. The number used to be
+ * the last single report — an eighth of a second — which jumped with every
+ * chunk, while the panel showed an average since the transfer began; on
+ * screen at once, they rarely agreed.
+ */
+export const READOUT_WINDOW_MS = 2000
+
 const samples = new Float64Array(SAMPLE_COUNT)
+
+/** Recent reports, for the readout: when each arrived and what it carried. */
+const recent: Array<{ at: number; bytes: number; millis: number }> = []
 const listeners = new Set<() => void>()
 
 let watchdog: ReturnType<typeof setInterval> | null = null
@@ -69,12 +83,41 @@ export function recordWindow(bytes: number, millis: number): void {
   if (!Number.isFinite(bytes) || !Number.isFinite(millis)) return
   if (bytes < 0 || millis <= 0) return
   lastReportAt = now()
+  recent.push({ at: lastReportAt, bytes, millis })
+  while (recent.length > 0 && recent[0]!.at < lastReportAt - READOUT_WINDOW_MS * 2) {
+    recent.shift()
+  }
   push((bytes / millis) * 1000)
+}
+
+/**
+ * Bytes per second over the last [`READOUT_WINDOW_MS`] of wall-clock time.
+ *
+ * Divided by the time that passed, not by the time the reports cover: the
+ * backend only reports when something moved, so a stall appears as a gap
+ * between reports — and a gap is slowness the number has to include.
+ */
+export function getReadoutRate(at: number = now()): number {
+  const cutoff = at - READOUT_WINDOW_MS
+  let bytes = 0
+  let began = Infinity
+  for (const report of recent) {
+    // A report covers the interval *before* it arrived, so one landing right
+    // at the edge of the window is all outside it.
+    if (report.at <= cutoff) continue
+    bytes += report.bytes
+    began = Math.min(began, report.at - report.millis)
+  }
+  if (bytes === 0) return 0
+  // A transfer younger than the window is measured over its own life.
+  const span = Math.max(Math.min(at - began, READOUT_WINDOW_MS), 1)
+  return (bytes / span) * 1000
 }
 
 /** Clears the trace, for when the connection drops or a view resets. */
 export function resetThroughput(): void {
   samples.fill(0)
+  recent.length = 0
   for (const listener of listeners) listener()
 }
 

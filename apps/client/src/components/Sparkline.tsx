@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   IDLE_FLOOR_RATE,
   getCurrent,
-  getCurrentMbps,
+  getReadoutRate,
   getSamples,
   subscribeThroughput,
 } from '@/lib/throughput'
@@ -131,7 +131,7 @@ export function ThroughputReadout({
   className?: string
   idleLabel?: string
 }): React.JSX.Element {
-  const [value, setValue] = useState(() => getCurrentMbps())
+  const [value, setValue] = useState(() => getReadoutRate() / 1e6)
 
   useEffect(() => {
     // Text only needs to keep up with the eye, not the data. Updating a few
@@ -141,7 +141,7 @@ export function ThroughputReadout({
       const now = performance.now()
       if (now - last < 320) return
       last = now
-      setValue(getCurrentMbps())
+      setValue(getReadoutRate() / 1e6)
     })
   }, [])
 

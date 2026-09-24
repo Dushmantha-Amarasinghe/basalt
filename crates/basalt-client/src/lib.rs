@@ -13,6 +13,7 @@ pub mod client;
 pub mod players;
 pub mod pool;
 pub mod proxy;
+pub mod rate;
 pub mod session;
 pub mod store;
 pub mod ui;
