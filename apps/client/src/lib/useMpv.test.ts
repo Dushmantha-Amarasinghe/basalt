@@ -100,6 +100,19 @@ describe('hasEnded', () => {
     expect(hasEnded(true, 120, 0)).toBe(false)
   })
 
+  /// Dragged or skipped to the end, mpv stops there paused and never raises
+  /// the flag. That is the end, and the next episode has to come.
+  it('is the end when stopped paused at the end without the flag', () => {
+    expect(hasEnded(false, 180, 180, true)).toBe(true)
+    expect(hasEnded(null, 3599, 3600, true)).toBe(true)
+  })
+
+  it('is not the end for a pause anywhere else', () => {
+    expect(hasEnded(false, 1800, 3600, true)).toBe(false)
+    expect(hasEnded(false, 3590, 3600, true)).toBe(false)
+    expect(hasEnded(false, 0, 0, true)).toBe(false)
+  })
+
   it('takes only a real true, not anything truthy', () => {
     expect(hasEnded(false, 3600, 3600)).toBe(false)
     expect(hasEnded(null, 3600, 3600)).toBe(false)
