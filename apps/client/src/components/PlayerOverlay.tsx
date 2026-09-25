@@ -108,6 +108,19 @@ export function PlayerOverlay({
     idleTimer.current = setTimeout(() => setShowControls(false), CONTROLS_IDLE)
   }, [])
 
+  /**
+   * Puts the subtitle menu away. From the picture, the controls go too:
+   * that click means back to the film, and they would otherwise sit there
+   * for the idle time on top of it.
+   */
+  const dismissMenu = useCallback((hideControls: boolean) => {
+    setMenu(false)
+    setOverBar(false)
+    if (!hideControls) return
+    if (idleTimer.current) clearTimeout(idleTimer.current)
+    setShowControls(false)
+  }, [])
+
   const pinned = mpv.paused || menu || overBar || !mpv.picture
   const controlsUp = showControls || pinned
   const open = item !== null
@@ -465,6 +478,12 @@ export function PlayerOverlay({
           <div
             onClick={onSingleClick}
             onDoubleClick={onDoubleClick}
+            // A pointer over the picture is not over the bar, whatever the
+            // bar last heard. Its `mouseleave` never comes when the pointer
+            // leaves by way of a window on top — the file picker behind "Add
+            // a subtitle file" — and the controls were then held up, as if
+            // hovered, until the pointer went back over the bar and out.
+            onMouseMove={() => setOverBar(false)}
             className={cn(
               'absolute inset-0',
               !mpv.picture && 'bg-black',
@@ -619,6 +638,24 @@ export function PlayerOverlay({
             </motion.button>
           </div>
 
+          {/*
+            With the menu open, a click on the picture means back to the film:
+            the menu goes, the controls go with it, and the film plays — it
+            carries on if it was playing, and continues if it was paused for
+            the menu. Before, the click went through to the picture and
+            paused it, and the menu stayed, holding the controls up until
+            somebody found the bar and clicked there instead.
+          */}
+          {menu && (
+            <div
+              className="absolute inset-0"
+              onClick={() => {
+                dismissMenu(true)
+                if (mpv.paused) void mpv.setPaused(false)
+              }}
+            />
+          )}
+
           <motion.div
             initial={false}
             animate={{ y: controlsUp ? 0 : 28, opacity: controlsUp ? 1 : 0 }}
@@ -634,12 +671,14 @@ export function PlayerOverlay({
             <AnimatePresence>
               {menu && (
                 <>
-                  {/* Clicking anywhere else puts it away, which is what every
-                      menu does and what anyone will try first. Behind the
-                      menu itself, so the menu still takes its own clicks. */}
+                  {/* Clicking elsewhere on the bar puts it away. Behind the
+                      menu itself, so the menu still takes its own clicks. The
+                      picture has its own catcher, over the stage — `fixed`
+                      here only ever covered the bar, because the bar moves
+                      and a moving parent is what `fixed` is measured from. */}
                   <div
-                    className="fixed inset-0 z-[5]"
-                    onClick={() => setMenu(false)}
+                    className="absolute inset-0 z-[5]"
+                    onClick={() => dismissMenu(false)}
                   />
                   <SubtitleMenu
                     mpv={mpv}
@@ -701,6 +740,19 @@ export function PlayerOverlay({
               </span>
 
               <div className="flex-1" />
+
+              {/* Straight on to the next episode, without waiting for the
+                  end of this one — the credits, most of the time. */}
+              {nextUp && onPlayNext && (
+                <button
+                  onClick={() => onPlayNext(nextUp.path)}
+                  title={nextUp.label}
+                  className="flex h-8 items-center gap-1 rounded-md px-2 text-[11px] text-textDim transition-colors hover:bg-white/[0.06] hover:text-text"
+                >
+                  Next episode
+                  <ChevronRight size={14} />
+                </button>
+              )}
 
               <button
                 onClick={() => setMenu((open) => !open)}

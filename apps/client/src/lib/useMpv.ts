@@ -184,9 +184,21 @@ const OBSERVED = [
  * So the position has to agree. Something that has really ended sits within a
  * couple of seconds of its own duration, and nothing in the middle of a film
  * can pass that.
+ *
+ * Nor is the flag always there when it has ended. Skip or drag to the end and
+ * mpv stops on the last frame, paused, without ever raising `eof-reached` —
+ * so the episode sat finished at 3:00 of 3:00 and the next one never came,
+ * which is exactly how somebody checks that the next one will come. Paused
+ * at the very end is the end too.
  */
-export function hasEnded(flag: unknown, position: number, duration: number): boolean {
-  if (flag !== true || duration <= 0) return false
+export function hasEnded(
+  flag: unknown,
+  position: number,
+  duration: number,
+  paused = false,
+): boolean {
+  if (duration <= 0) return false
+  if (flag !== true && !paused) return false
   return position >= duration - END_SLACK
 }
 
@@ -333,18 +345,34 @@ export function useMpv(): Mpv {
     await mpv.command('set', [name, String(value)])
   }, [])
 
+  /** Which read of the track list is the latest; older ones are dropped. */
+  const trackRead = useRef(0)
+
+  /**
+   * The subtitle and audio tracks, read one property at a time.
+   *
+   * Every read tolerates a missing value. mpv does not answer "none" for a
+   * track with no title or no language — it refuses, and one refusal used to
+   * abandon the whole list. A file whose audio carries no tags therefore had
+   * no subtitle menu at all, and a subtitle added from disk played on screen
+   * while the menu still offered only "Off".
+   *
+   * Reads can overlap — a file opening and a subtitle being added — so only
+   * the newest one is kept, never whichever happened to finish last.
+   */
   const readTracks = useCallback(async () => {
-    const count = Number(await mpv.getProperty('track-list/count', 'int64')) || 0
+    const mine = ++trackRead.current
+    const count = Number(await readProperty('track-list/count', 'int64')) || 0
     const tracks: MpvTrack[] = []
     for (let i = 0; i < count; i++) {
-      const kind = String(await mpv.getProperty(`track-list/${i}/type`, 'string') ?? '')
+      const kind = String((await readProperty(`track-list/${i}/type`, 'string')) ?? '')
       if (kind !== 'sub' && kind !== 'audio') continue
 
-      const id = Number(await mpv.getProperty(`track-list/${i}/id`, 'int64')) || 0
-      const title = String(await mpv.getProperty(`track-list/${i}/title`, 'string') ?? '')
-      const lang = String(await mpv.getProperty(`track-list/${i}/lang`, 'string') ?? '')
+      const id = Number(await readProperty(`track-list/${i}/id`, 'int64')) || 0
+      const title = String((await readProperty(`track-list/${i}/title`, 'string')) ?? '')
+      const lang = String((await readProperty(`track-list/${i}/lang`, 'string')) ?? '')
       const external =
-        String(await mpv.getProperty(`track-list/${i}/external`, 'string') ?? '') === 'yes'
+        String((await readProperty(`track-list/${i}/external`, 'string')) ?? '') === 'yes'
 
       // Titles are often more useful than codes — a file can carry `English`,
       // `English (SDH)` and `English (forced)`, which `en` three times does
@@ -352,7 +380,7 @@ export function useMpv(): Mpv {
       const label = title || lang || `Track ${id}`
       tracks.push({ id, kind, label, external })
     }
-    setState((s) => ({ ...s, tracks }))
+    if (mine === trackRead.current) setState((s) => ({ ...s, tracks }))
   }, [])
 
   // One init for the life of the window.
@@ -391,8 +419,14 @@ export function useMpv(): Mpv {
           const { name, data } = event as { name: string; data: unknown }
           setState((s) => {
             switch (name) {
-              case 'pause':
-                return { ...s, paused: Boolean(data) }
+              case 'pause': {
+                const paused = Boolean(data)
+                return {
+                  ...s,
+                  paused,
+                  ended: hasEnded(eof.current, s.position, s.duration, paused),
+                }
+              }
               case 'time-pos': {
                 // The end is judged again as the clock moves, not only when
                 // mpv flags it. Skipping past the end sets the flag before the
@@ -400,17 +434,27 @@ export function useMpv(): Mpv {
                 // the flag does not change again — the episode sat finished
                 // at 3:00 of 3:00 and the next one never started.
                 const position = Number(data) || 0
-                return { ...s, position, ended: hasEnded(eof.current, position, s.duration) }
+                return {
+                  ...s,
+                  position,
+                  ended: hasEnded(eof.current, position, s.duration, s.paused),
+                }
               }
-              case 'duration':
-                return { ...s, duration: Number(data) || 0 }
+              case 'duration': {
+                const duration = Number(data) || 0
+                return {
+                  ...s,
+                  duration,
+                  ended: hasEnded(eof.current, s.position, duration, s.paused),
+                }
+              }
               case 'volume':
                 return { ...s, volume: Number(data) || 0 }
               case 'mute':
                 return { ...s, muted: Boolean(data) }
               case 'eof-reached':
                 eof.current = data
-                return { ...s, ended: hasEnded(data, s.position, s.duration) }
+                return { ...s, ended: hasEnded(data, s.position, s.duration, s.paused) }
               case 'paused-for-cache':
                 return { ...s, buffering: data === true }
               case 'sid':
@@ -471,10 +515,13 @@ export function useMpv(): Mpv {
         setState((s) => ({ ...s, loadFailed: 'This file could not be opened.' }))
       } else {
         setState((s) => ({ ...s, started: true, picture: next.verdict === 'video' }))
+        // Read here as well as on a change of count: the next episode usually
+        // has the same number of tracks as the last, and then no change comes.
+        void readTracks()
       }
       return
     }
-  }, [])
+  }, [readTracks])
 
   const load = useCallback(
     async (url: string, startAt: number) => {
@@ -604,7 +651,8 @@ export function useMpv(): Mpv {
     // `select` makes it the active track, which is what someone who just
     // chose a file expects to happen.
     await mpv.command('sub-add', [path, 'select'])
-  }, [])
+    await readTracks()
+  }, [readTracks])
 
   const setSubtitleDelay = useCallback(
     async (seconds: number) => {
