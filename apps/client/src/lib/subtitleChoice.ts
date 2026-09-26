@@ -175,7 +175,12 @@ export function labelOf(track: SubTrack): TrackLabel {
  * then whether it was SDH — and after that whatever the file marks as its
  * default, then simply the first.
  */
-export function chooseSubtitle(tracks: SubTrack[], pref: SubtitlePref): number | null {
+export function chooseSubtitle(
+  tracks: SubTrack[],
+  pref: SubtitlePref,
+  /** Before any language has been chosen, the one the computer is set to. */
+  systemLang: string = typeof navigator !== 'undefined' ? navigator.language : '',
+): number | null {
   if (tracks.length === 0) return null
   const forced = tracks.filter((t) => t.forced)
   if (!pref.on) {
@@ -185,7 +190,10 @@ export function chooseSubtitle(tracks: SubTrack[], pref: SubtitlePref): number |
 
   const full = tracks.filter((t) => !t.forced)
   const pool = full.length > 0 ? full : forced
-  const wanted = primaryOf(pref.lang)
+  // Before anything was chosen there is still a better guess than the first
+  // track: the language this computer is set to. A file whose first track
+  // is Spanish should not open in Spanish for someone reading English.
+  const wanted = primaryOf(pref.lang ?? systemLang)
   let best: SubTrack | null = null
   let bestScore = -1
   for (const track of pool) {

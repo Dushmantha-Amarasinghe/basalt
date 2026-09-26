@@ -50,9 +50,15 @@ be today.
   is refused rather than trusted. Nothing leaves your network, and there is no
   cloud account anywhere in the design.
 - **Browse the whole drive.** Files, folders, search, copy, move, rename,
-  delete, upload by drag-and-drop onto whichever folder you drop on. Transfers
-  are compressed where that helps, batched for small files, and verified with
+  delete, and select several by dragging a box around them. Upload files or
+  whole folders by dropping them onto whichever folder you want. Transfers are
+  compressed where that helps, batched for small files, and verified with
   BLAKE3 end to end.
+- **Photos, music and videos, sorted.** The host sorts every photo, song and
+  video on the drive, however deep, into their own sections. Photos are laid
+  out in rows by month at their own shapes, with a viewer that zooms; videos
+  show a picture from inside them; music is a track list by artist and album.
+  Thumbnails are made once, on the host, and shared by every device.
 - **Films and series, recognised.** Turn it on and the host reads the drive and
   files what it finds under Movies and TV Series, with seasons and episodes in
   order. Every film is checked against a bundled catalogue of released titles,
@@ -61,8 +67,9 @@ be today.
 - **A real player.** Built on **mpv**, so it plays what a browser cannot —
   HEVC, E-AC3, DTS, MKV, and the rest — without the host transcoding anything.
   Click to pause, arrow keys to seek and change volume, `,` and `.` to step one
-  frame at a time, subtitle track selection, subtitle files found on the drive,
-  and a sync offset for subtitles that drift.
+  frame at a time, and `C` for subtitles. Subtitles are named by language,
+  remembered on or off from one video to the next, found beside the video on
+  the drive or dropped onto it, and nudged into sync when they drift.
 - **Carries on where you left off.** Resume points live on the host, not on the
   device, so you can start something on one machine and finish it on another —
   or, if the household prefers, each device keeps a history of its own.
