@@ -61,12 +61,11 @@ export function SettingsView({
   status,
   space,
   onForget,
-  onRepair,
 }: {
   status: Status | null
   space: [number, number] | null
+  /** Unpairs from this vault; pairing with another starts from there. */
   onForget: () => void
-  onRepair: () => void
 }): React.JSX.Element {
   const [free, total] = space ?? [0, 0]
 
@@ -87,7 +86,8 @@ export function SettingsView({
             The address is where the host answered today, not something this app
             remembers and depends on. When the router gives it a different one,
             this app finds it again by its pinned identity — which is why you
-            were never asked to type one.
+            were never asked to type one. To use a different vault, forget this
+            one and pair with the other.
           </Note>
           <Action label="Forget this vault" danger onClick={onForget} />
         </Section>
@@ -151,7 +151,6 @@ export function SettingsView({
             since has had to present exactly this key — a different machine at
             the same address is refused rather than trusted.
           </Note>
-          <Action label="Pair with a different vault" onClick={onRepair} />
         </Section>
       </div>
     </div>
