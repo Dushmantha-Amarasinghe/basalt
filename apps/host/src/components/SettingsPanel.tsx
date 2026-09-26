@@ -57,6 +57,7 @@ export function SettingsPanel({
   return (
     <div className="rounded-lg glass divide-y divide-line">
       <Row
+        onToggle={() => onRequirePin(!status.requirePin)}
         title="Ask for a PIN when pairing"
         detail={
           status.requirePin
@@ -74,6 +75,7 @@ export function SettingsPanel({
       />
 
       <Row
+        onToggle={() => onLibrary(!status.library.enabled)}
         title="Recognise films and series"
         detail={
           status.library.enabled
@@ -117,6 +119,7 @@ export function SettingsPanel({
       />
 
       <Row
+        onToggle={() => onStartWithWindows(!status.startWithWindows)}
         title="Start when Windows starts"
         detail="Opens in the notification area at login, so the drive is there before you go looking for it."
         control={
@@ -265,7 +268,10 @@ function Artwork({
   return (
     <div className="mt-2.5 border-t border-line pt-2.5">
       <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1">
+        <div
+          className="min-w-0 flex-1 cursor-pointer select-none"
+          onClick={() => onPosters(!posters)}
+        >
           <div className="text-[12px] text-textDim">Download posters</div>
           <p className="mt-0.5 text-[11px] leading-relaxed text-textFaint">
             {/* Said plainly, because this is the actual cost of the switch and
@@ -363,9 +369,13 @@ function Row({
   control,
   warn,
   extra,
+  onToggle,
 }: {
   title: string
   detail: string
+  /** For a row whose control is a switch: clicking the words flips it too,
+   *  as clicking a label does anywhere else. */
+  onToggle?: () => void
   control?: React.ReactNode
   warn?: boolean
   /** Rendered under the detail, for a control the row itself cannot hold. */
@@ -374,6 +384,10 @@ function Row({
   return (
     <div className="flex items-start gap-4 px-5 py-4">
       <div className="min-w-0 flex-1">
+        <div
+          onClick={onToggle}
+          className={onToggle ? 'group cursor-pointer select-none' : undefined}
+        >
         <div className="text-[13px] font-medium text-text">{title}</div>
         <AnimatePresence mode="wait" initial={false}>
           <motion.p
@@ -391,6 +405,7 @@ function Row({
             {detail}
           </motion.p>
         </AnimatePresence>
+        </div>
         {extra}
       </div>
       <div className="mt-0.5 shrink-0">{control}</div>

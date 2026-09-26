@@ -26,8 +26,12 @@ export function HexMark({
   }
 
   // Three columns packed the way basalt actually fractures: one above, two
-  // below, sharing edges.
-  const r = 5.2
+  // below. Sized to the canvas: the three together are five radii wide, and
+  // at 5.2 the outer two ran past both edges of the 24-unit box and were cut
+  // off. At 4.3 the whole mark, stroke included, sits inside it with a
+  // little room either side. `tools/make-icons.py` draws the app icons from
+  // the same numbers.
+  const r = 4.3
   const dx = r * 1.5
   const dy = r * Math.sqrt(3) * 0.5
 
