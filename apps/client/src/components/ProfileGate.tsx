@@ -525,24 +525,36 @@ function Checkbox({
   label: string
   className?: string
 }): React.JSX.Element {
+  // One button for the box and its sentence, so a click anywhere on either
+  // ticks it. It was a <label> around a button with its own click handler on
+  // the text: a click on the sentence toggled once through that handler and
+  // again through the label passing the click to the button, and the box
+  // ended up exactly as it was.
   return (
-    <label className={cn('flex cursor-pointer select-none items-center gap-2.5', className)}>
-      <button
-        type="button"
-        role="checkbox"
-        aria-checked={checked}
-        onClick={() => onChange(!checked)}
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={cn(
+        'group flex cursor-pointer select-none items-center gap-2.5 rounded-md px-1.5 py-1 text-left',
+        className,
+      )}
+    >
+      <span
         className={cn(
           'flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors duration-150',
-          checked ? 'border-transparent bg-basalt text-ink' : 'border-white/25 bg-transparent',
+          checked
+            ? 'border-transparent bg-basalt text-ink'
+            : 'border-white/25 bg-transparent group-hover:border-white/45',
         )}
       >
         {checked && <Check size={11} strokeWidth={3} />}
-      </button>
-      <span className="text-[12px] text-textDim" onClick={() => onChange(!checked)}>
+      </span>
+      <span className="text-[12px] text-textDim transition-colors duration-150 group-hover:text-text">
         {label}
       </span>
-    </label>
+    </button>
   )
 }
 

@@ -6,6 +6,7 @@ import { justify } from '@/lib/justify'
 import { folderOf, formatOf, groupByMonth, stemOf, trackInfo } from '@/lib/mediaInfo'
 import { thumbUrl } from '@/lib/thumbs'
 import { cn, formatBytes } from '@/lib/utils'
+import { HexMark as BasaltMark } from './HexMark'
 
 /**
  * Videos, Photos and Music, each drawn as what it is.
@@ -65,7 +66,7 @@ export function Thumb({
 
   return (
     <div className={cn('relative overflow-hidden bg-[#141416]', className)}>
-      {!loaded && <HexMark />}
+      {!loaded && <Placeholder />}
       {src && !failed && (
         <img
           src={src}
@@ -86,21 +87,12 @@ export function Thumb({
   )
 }
 
-function HexMark(): React.JSX.Element {
+/** The Basalt mark, faint, in the middle of a tile with no picture yet. */
+function Placeholder(): React.JSX.Element {
   return (
-    <svg
-      viewBox="0 0 100 100"
-      className="absolute inset-0 h-full w-full opacity-[0.05]"
-      aria-hidden="true"
-      preserveAspectRatio="xMidYMid meet"
-    >
-      <polygon
-        points="50,22 74,36 74,64 50,78 26,64 26,36"
-        fill="none"
-        stroke="#F4F4F5"
-        strokeWidth="1.6"
-      />
-    </svg>
+    <div className="absolute inset-0 flex items-center justify-center text-basalt opacity-[0.07]">
+      <BasaltMark size={56} />
+    </div>
   )
 }
 
