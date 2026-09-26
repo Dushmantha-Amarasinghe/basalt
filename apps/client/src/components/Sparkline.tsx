@@ -136,13 +136,26 @@ export function ThroughputReadout({
   useEffect(() => {
     // Text only needs to keep up with the eye, not the data. Updating a few
     // times a second reads as live while cutting re-renders by two thirds.
+    //
+    // Throttled with a trailing update, never by dropping: the last change
+    // is exactly the one that says the transfer has stopped, and dropping it
+    // left the final speed on screen.
     let last = 0
-    return subscribeThroughput(() => {
-      const now = performance.now()
-      if (now - last < 320) return
-      last = now
+    let trailing: ReturnType<typeof setTimeout> | null = null
+    const update = (): void => {
+      last = performance.now()
+      trailing = null
       setValue(getReadoutRate() / 1e6)
+    }
+    const unsubscribe = subscribeThroughput(() => {
+      const wait = 320 - (performance.now() - last)
+      if (wait <= 0) update()
+      else if (trailing === null) trailing = setTimeout(update, wait)
     })
+    return () => {
+      unsubscribe()
+      if (trailing !== null) clearTimeout(trailing)
+    }
   }, [])
 
   return (

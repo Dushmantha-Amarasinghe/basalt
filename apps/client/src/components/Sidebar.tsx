@@ -12,7 +12,6 @@ import {
   Video,
 } from 'lucide-react'
 import { cn, formatBytes } from '@/lib/utils'
-import { ThroughputReadout } from './Sparkline'
 
 export type NavKey =
   | 'files'
@@ -208,8 +207,12 @@ function DriveStatus({
         <span className="tnum font-mono text-[10px] text-textFaint">
           {formatBytes(used)} / {formatBytes(total)}
         </span>
-        {connected && (
-          <ThroughputReadout className="tnum font-mono text-[10px] text-textDim" />
+        {/* Free space rather than a speed. The speed lives in the title bar;
+            two readouts of one number were two chances to disagree. */}
+        {total > 0 && (
+          <span className="tnum font-mono text-[10px] text-textDim">
+            {formatBytes(Math.max(0, total - used))} free
+          </span>
         )}
       </div>
     </div>
