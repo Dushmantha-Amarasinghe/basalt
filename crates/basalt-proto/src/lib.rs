@@ -17,6 +17,7 @@ pub mod codec;
 pub mod frame;
 pub mod hex;
 pub mod manifest;
+pub mod media;
 pub mod msg;
 pub mod ops;
 

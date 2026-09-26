@@ -18,7 +18,7 @@ pub mod session;
 pub mod store;
 pub mod ui;
 
-pub use client::{Basalt, Progress, TransferKind};
+pub use client::{Basalt, Progress, TransferKind, TreeUpload};
 pub use pool::Pool;
 pub use session::{Session, SessionInfo};
 pub use store::{ClientStore, KnownHost};
@@ -101,6 +101,7 @@ impl ClientError {
                 Some(E::Unauthenticated) => "unpaired",
                 Some(E::PairingRefused) => "pairing",
                 Some(E::Unavailable) => "unavailable",
+                Some(E::Unsupported) => "unsupported",
                 Some(_) => "error",
                 None if e.is_transient() => "offline",
                 None => "error",

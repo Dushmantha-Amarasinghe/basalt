@@ -42,9 +42,22 @@ pub async fn read_request<R>(r: &mut R) -> Result<(Op, Vec<u8>)>
 where
     R: AsyncRead + Unpin + ?Sized,
 {
+    let (op, payload) = read_request_raw(r).await?;
+    Ok((Op::from_u8(op)?, payload))
+}
+
+/// A request whose operation may be one this build does not know.
+///
+/// The payload is read either way, so the connection stays in step and the
+/// caller can answer "unsupported" instead of hanging up. Hanging up is what
+/// older hosts did, and a newer device saw it as the host going offline.
+pub async fn read_request_raw<R>(r: &mut R) -> Result<(u8, Vec<u8>)>
+where
+    R: AsyncRead + Unpin + ?Sized,
+{
     let mut head = [0u8; 5];
     r.read_exact(&mut head).await?;
-    let op = Op::from_u8(head[0])?;
+    let op = head[0];
     let len = u32::from_le_bytes([head[1], head[2], head[3], head[4]]);
     if len > MAX_REQUEST_BYTES {
         return Err(NetError::Protocol(format!(

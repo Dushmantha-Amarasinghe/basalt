@@ -98,6 +98,13 @@ pub enum Op {
     /// again — one more stale row in its device list every time a device
     /// re-paired.
     Unpair = 23,
+    /// Every video, music file and photo on the drive, and the most recently
+    /// changed files — what the Videos, Music, Photos and Recent sections
+    /// show. Found by the host's own walk of the whole drive, rather than by
+    /// each device listing a couple of folders levels deep for itself.
+    Collections = 24,
+    /// A small preview image of a video or a photo, made by the host.
+    Thumbnail = 25,
 }
 
 impl Op {
@@ -106,7 +113,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::Unpair as u8;
+    pub const LAST: u8 = Op::Thumbnail as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -133,6 +140,8 @@ impl Op {
             21 => Op::LibraryArt,
             22 => Op::Progress,
             23 => Op::Unpair,
+            24 => Op::Collections,
+            25 => Op::Thumbnail,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -263,6 +272,8 @@ mod tests {
             Op::LibraryArt,
             Op::Progress,
             Op::Unpair,
+            Op::Collections,
+            Op::Thumbnail,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Check, Image as ImageIcon, Pencil, RefreshCw } from 'lucide-react'
-import type { HostStatus } from '@/lib/api'
+import type { HostStatus, Sections } from '@/lib/api'
 import { About } from './About'
 import { Switch } from './ui/Switch'
 import { formatAgo } from '@/lib/utils'
@@ -27,6 +27,7 @@ export function SettingsPanel({
   onPosters,
   onTmdbKey,
   onProgressPerDevice,
+  onSections,
   onRename,
   build,
   onOpenLog,
@@ -39,6 +40,7 @@ export function SettingsPanel({
   onPosters: (enabled: boolean) => void
   onTmdbKey: (key: string) => void
   onProgressPerDevice: (enabled: boolean) => void
+  onSections: (sections: Sections) => void
   onRename: (name: string) => void
   /** Which build this is, for telling one install from another. */
   build: string
@@ -102,6 +104,12 @@ export function SettingsPanel({
             </>
           ) : null
         }
+      />
+
+      <Row
+        title="Sections on your devices"
+        detail="What each device lists under Library. Hiding a section only tidies the sidebar; every file stays reachable under Files."
+        extra={<SectionPicker sections={status.sections} onChange={onSections} />}
       />
 
       <Row
@@ -370,7 +378,7 @@ function Row({
 }: {
   title: string
   detail: string
-  control: React.ReactNode
+  control?: React.ReactNode
   warn?: boolean
   /** Rendered under the detail, for a control the row itself cannot hold. */
   extra?: React.ReactNode
@@ -398,6 +406,56 @@ function Row({
         {extra}
       </div>
       <div className="mt-0.5 shrink-0">{control}</div>
+    </div>
+  )
+}
+
+const SECTION_LABELS: Array<[keyof Sections, string]> = [
+  ['movies', 'Movies'],
+  ['series', 'TV Series'],
+  ['videos', 'Videos'],
+  ['music', 'Music'],
+  ['photos', 'Photos'],
+]
+
+/**
+ * One chip per section, on or off.
+ *
+ * Chips rather than five more switches: they are one decision about one
+ * sidebar, and a row of five toggles reads as five unrelated settings.
+ */
+function SectionPicker({
+  sections,
+  onChange,
+}: {
+  sections: Sections
+  onChange: (sections: Sections) => void
+}): React.JSX.Element {
+  return (
+    <div className="mt-3 flex flex-wrap gap-1.5">
+      {SECTION_LABELS.map(([key, label]) => {
+        const on = sections[key]
+        return (
+          <button
+            key={key}
+            type="button"
+            role="switch"
+            aria-checked={on}
+            onClick={() => onChange({ ...sections, [key]: !on })}
+            className={
+              on
+                ? 'flex items-center gap-1.5 rounded-full border border-white/20 bg-white/[0.08] px-3 py-1 text-[11.5px] text-text transition-colors duration-150 hover:bg-white/[0.12]'
+                : 'flex items-center gap-1.5 rounded-full border border-line px-3 py-1 text-[11.5px] text-textFaint transition-colors duration-150 hover:border-white/15 hover:text-textDim'
+            }
+          >
+            <Check
+              size={11}
+              className={on ? 'opacity-100 transition-opacity duration-150' : 'opacity-0 transition-opacity duration-150'}
+            />
+            {label}
+          </button>
+        )
+      })}
     </div>
   )
 }

@@ -228,6 +228,39 @@ pub fn scan(vault: &Vault) -> Vec<LibraryItem> {
     scan_within(vault, MAX_DIRS, MAX_DURATION, Catalog::bundled())
 }
 
+/// Everything one walk of the drive found.
+#[derive(Debug, Default)]
+pub struct Walk {
+    /// Films and series, when recognising them is on.
+    pub items: Vec<LibraryItem>,
+    /// Every media file, for the collections.
+    pub gathered: crate::media::collect::Gatherer,
+    /// Partial uploads left long enough to sweep away, vault-relative.
+    pub stale_parts: Vec<String>,
+}
+
+/// The whole walk: films, collections and leftovers, in one pass.
+pub fn walk(vault: &Vault, films: bool, now: i64) -> Walk {
+    walk_within(
+        vault,
+        MAX_DIRS,
+        MAX_DURATION,
+        Catalog::bundled(),
+        films,
+        now,
+    )
+}
+
+/// Films only, with the limits passed in so a test can reach them.
+pub fn scan_within(
+    vault: &Vault,
+    max_dirs: usize,
+    max_duration: std::time::Duration,
+    catalog: Option<&Catalog>,
+) -> Vec<LibraryItem> {
+    walk_within(vault, max_dirs, max_duration, catalog, true, 0).items
+}
+
 /// The walk, with its limits passed in so a test can reach them.
 ///
 /// **Breadth-first, and that is the point.** This used to be a `Vec` with
@@ -243,21 +276,32 @@ pub fn scan(vault: &Vault) -> Vec<LibraryItem> {
 /// four levels down, so breadth-first reaches all of it early and the ceiling
 /// now truncates the deepest corners — the part least likely to hold a film —
 /// rather than everything after the first one.
-pub fn scan_within(
+///
+/// **Collections ride along.** Every media file the walk passes is noted for
+/// Videos, Music, Photos and Recent — including inside `Extras` and `Sample`
+/// folders, which are skipped for films but are still videos somebody may
+/// want to find. Partial uploads left behind are noted too, so the one walk
+/// that reads every folder is also what tidies them away.
+pub fn walk_within(
     vault: &Vault,
     max_dirs: usize,
     max_duration: std::time::Duration,
     catalog: Option<&Catalog>,
-) -> Vec<LibraryItem> {
+    films: bool,
+    now: i64,
+) -> Walk {
     let started = std::time::Instant::now();
     let mut found = Vec::new();
+    let mut walk = Walk::default();
     // Collected alongside the videos, in the same walk. A second pass looking
     // for them would mean reading every directory on the drive twice.
     let mut subtitles: Vec<String> = Vec::new();
-    let mut queue = std::collections::VecDeque::from([String::new()]);
+    // Each folder with whether it is inside an extras folder, where nothing
+    // is a film but everything is still a file.
+    let mut queue = std::collections::VecDeque::from([(String::new(), false)]);
     let mut visited = 0usize;
 
-    while let Some(dir) = queue.pop_front() {
+    while let Some((dir, in_extras)) = queue.pop_front() {
         visited += 1;
         if visited > max_dirs {
             tracing::warn!(
@@ -310,11 +354,24 @@ pub fn scan_within(
 
             match entry.kind {
                 basalt_proto::msg::EntryKind::Dir => {
-                    if !parse::is_extra(&path) && !parse::is_system(&path) {
-                        queue.push_back(path);
+                    if !parse::is_system(&path) {
+                        let extras = in_extras || parse::is_extra(&path);
+                        queue.push_back((path, extras));
                     }
                 }
                 basalt_proto::msg::EntryKind::File => {
+                    if crate::uploads::is_temp_name(&entry.name) {
+                        if now > 0
+                            && crate::media::collect::is_stale_part(entry.size, entry.mtime, now)
+                        {
+                            walk.stale_parts.push(path);
+                        }
+                        continue;
+                    }
+                    walk.gathered.note(&path, entry.size, entry.mtime);
+                    if !films || in_extras {
+                        continue;
+                    }
                     // Before the size floor: a subtitle is a few kilobytes,
                     // and the floor exists to keep home videos out of the
                     // library, not to throw away the subtitles for a film.
@@ -340,16 +397,16 @@ pub fn scan_within(
         }
     }
 
-    let items = group(found, &subtitles);
+    walk.items = group(found, &subtitles);
     // Logged because this is the one expensive thing the host does, and when
     // somebody says it has stopped responding this line is what says whether a
     // scan was the reason.
     tracing::info!(
         "scanned {visited} directories in {:?}, found {} items",
         started.elapsed(),
-        items.len()
+        walk.items.len()
     );
-    items
+    walk
 }
 
 /// Adds videos that just arrived to an index, without walking the drive.

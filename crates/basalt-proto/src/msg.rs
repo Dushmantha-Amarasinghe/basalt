@@ -411,6 +411,100 @@ pub struct LibraryResponse {
     /// Absent when `known_revision` already matched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<Vec<LibraryItem>>,
+    /// Which sections the host's owner wants devices to show.
+    ///
+    /// All of them from a host older than the setting.
+    #[serde(default)]
+    pub sections: Sections,
+}
+
+/// The library sections a device shows in its sidebar.
+///
+/// A presentation choice, not access control: every file is still under
+/// Files. It exists so a household that keeps no music does not look at an
+/// empty Music section on every device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Sections {
+    pub movies: bool,
+    pub series: bool,
+    pub videos: bool,
+    pub music: bool,
+    pub photos: bool,
+}
+
+impl Default for Sections {
+    fn default() -> Self {
+        Self {
+            movies: true,
+            series: true,
+            videos: true,
+            music: true,
+            photos: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionsRequest {
+    /// Return nothing when the host's copy still matches this.
+    #[serde(default)]
+    pub known_revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionsResponse {
+    /// Bumped whenever any collection changes.
+    pub revision: u64,
+    /// True while the host is walking the drive.
+    pub scanning: bool,
+    /// Absent when `known_revision` already matched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collections: Option<Collections>,
+}
+
+/// Media on the drive, sorted into what it is, newest first.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Collections {
+    pub videos: Vec<MediaFile>,
+    pub music: Vec<MediaFile>,
+    pub photos: Vec<MediaFile>,
+    /// The most recently changed files of any kind, for Recent.
+    pub recent: Vec<MediaFile>,
+    /// True when a collection was cut short at its cap.
+    pub truncated: bool,
+}
+
+/// One file in a collection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaFile {
+    /// Vault-relative.
+    pub path: String,
+    pub size: u64,
+    /// Unix seconds.
+    pub mtime: i64,
+    /// Pixels, as the photo is meant to be seen — already turned for its
+    /// camera orientation. Photos only, and only when the header was read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbnailRequest {
+    /// Vault-relative path of a video or photo.
+    pub path: String,
+    /// The longest side wanted, in pixels. The host picks the nearest size it
+    /// makes: a small one for grids and a large one for viewing a photo whose
+    /// format the device cannot show itself.
+    #[serde(default)]
+    pub size: u32,
 }
 
 /// A film or a series. Episodes hang off the series.
@@ -725,6 +819,7 @@ mod tests {
             enabled: true,
             scanning: false,
             items: None,
+            sections: Sections::default(),
         };
         let json = serde_json::to_string(&response).unwrap();
         assert!(!json.contains("items"), "an unchanged index sends no items");
@@ -850,6 +945,7 @@ mod tests {
             enabled: true,
             scanning: false,
             items: Some(vec![item.clone()]),
+            sections: Sections::default(),
         };
 
         let mut all = keys(serde_json::to_value(&item).unwrap());

@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use basalt_net::framing::{read_request, write_err, write_ok, write_response_header};
+use basalt_net::framing::{read_request_raw, write_err, write_ok, write_response_header};
 use basalt_net::identity::HostIdentity;
 use basalt_net::tls::server_config;
 use basalt_proto::codec::{Codec, CompressionPolicy};
@@ -48,6 +48,14 @@ pub struct Host {
     drive_lost: std::sync::atomic::AtomicBool,
     /// The media index, and whether a scan is running.
     library: std::sync::Mutex<crate::media::Library>,
+    /// Every video, song and photo on the drive, and the newest files.
+    collections: std::sync::Mutex<crate::media::collect::Stored>,
+    /// Thumbnails being made at once. Two: a grid scrolled quickly asks for
+    /// dozens, and making them all together would starve everything else the
+    /// host is doing — a film being streamed, most of all.
+    thumb_gate: tokio::sync::Semaphore,
+    /// Thumbnails written, for trimming the cache every so often.
+    thumbs_written: std::sync::atomic::AtomicUsize,
     scanning: std::sync::atomic::AtomicBool,
     /// A scan was asked for while one was already running.
     rescan_wanted: std::sync::atomic::AtomicBool,
@@ -109,6 +117,14 @@ impl Host {
             _ => crate::media::index::Library::default(),
         };
 
+        let collections = match &config.vault_path {
+            Some(root) => crate::media::collect::Stored::load(&crate::media::collect::stored_path(
+                config_path.parent().unwrap_or(std::path::Path::new(".")),
+                root,
+            )),
+            None => crate::media::collect::Stored::default(),
+        };
+
         let progress = match &config.vault_path {
             Some(root) => crate::media::Progress::load(&crate::media::Progress::path_for(
                 config_path.parent().unwrap_or(std::path::Path::new(".")),
@@ -129,6 +145,9 @@ impl Host {
             watch_generation: tokio::sync::watch::Sender::new(0),
             drive_lost: std::sync::atomic::AtomicBool::new(drive_lost),
             library: std::sync::Mutex::new(library),
+            collections: std::sync::Mutex::new(collections),
+            thumb_gate: tokio::sync::Semaphore::new(2),
+            thumbs_written: std::sync::atomic::AtomicUsize::new(0),
             scanning: std::sync::atomic::AtomicBool::new(false),
             rescan_wanted: std::sync::atomic::AtomicBool::new(false),
             arrived_during_scan: std::sync::Mutex::new(Vec::new()),
@@ -199,6 +218,175 @@ impl Host {
             } else {
                 None
             },
+            sections: self.sections(),
+        }
+    }
+
+    /// Which library sections devices show.
+    pub fn sections(&self) -> basalt_proto::msg::Sections {
+        self.config.lock().expect("config lock").sections
+    }
+
+    /// Changes which sections devices show, and tells them.
+    pub async fn set_sections(&self, sections: basalt_proto::msg::Sections) -> Result<()> {
+        self.config.lock().expect("config lock").sections = sections;
+        self.persist()?;
+        // The library answer carries the sections, so asking every device to
+        // fetch it again is how they hear.
+        self.announce(basalt_proto::msg::Change::LibraryChanged)
+            .await;
+        Ok(())
+    }
+
+    /// A picture of a video or photo: from the cache, or made now.
+    ///
+    /// Anything that cannot be pictured — no mpv beside the host, a file the
+    /// decoders do not read — is "not found", which the device shows as its
+    /// ordinary tile.
+    pub async fn thumbnail(&self, rel: &str, size: u32) -> Result<Vec<u8>> {
+        let vault = self
+            .vault()
+            .await
+            .ok_or_else(|| HostError::Unavailable(self.vault_name()))?;
+        let entry = vault.stat(rel)?;
+        let path = vault.resolve(rel)?;
+        let bucket = crate::media::thumbs::bucket(size);
+        let dir = self.config_dir().join("thumbs");
+        let cached = crate::media::thumbs::cache_path(&dir, rel, entry.size, entry.mtime, bucket);
+        if let Ok(bytes) = tokio::fs::read(&cached).await {
+            return Ok(bytes);
+        }
+
+        let _turn = self
+            .thumb_gate
+            .acquire()
+            .await
+            .map_err(|_| HostError::NotFound(rel.to_string()))?;
+        // Somebody else may have made it while this waited its turn.
+        if let Ok(bytes) = tokio::fs::read(&cached).await {
+            return Ok(bytes);
+        }
+        let bytes = tokio::task::spawn_blocking(move || crate::media::thumbs::make(&path, bucket))
+            .await
+            .map_err(|e| HostError::BadRequest(format!("the thumbnail panicked: {e}")))?
+            .map_err(|e| HostError::NotFound(e.to_string()))?;
+
+        if let Some(parent) = cached.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        let _ = tokio::fs::write(&cached, &bytes).await;
+        let written = self
+            .thumbs_written
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if written % 500 == 499 {
+            tokio::task::spawn_blocking(move || crate::media::thumbs::trim(&dir));
+        }
+        Ok(bytes)
+    }
+
+    /// Answers a client, omitting the collections when it already has them.
+    pub fn collections_response(
+        &self,
+        known_revision: u64,
+    ) -> basalt_proto::msg::CollectionsResponse {
+        let stored = self.collections.lock().expect("collections lock");
+        basalt_proto::msg::CollectionsResponse {
+            revision: stored.revision,
+            scanning: self.is_scanning(),
+            // Revision 0 is "never walked", which no client can already have.
+            collections: (known_revision != stored.revision || stored.revision == 0)
+                .then(|| stored.collections.clone()),
+        }
+    }
+
+    fn collections_path(&self) -> Option<std::path::PathBuf> {
+        Some(crate::media::collect::stored_path(
+            self.config_dir(),
+            &self.vault_path()?,
+        ))
+    }
+
+    fn save_collections(&self) {
+        let snapshot = self.collections.lock().expect("collections lock").clone();
+        if let Some(path) = self.collections_path()
+            && let Err(e) = snapshot.save(&path)
+        {
+            tracing::warn!("could not save the collections: {e}");
+        }
+    }
+
+    /// Adds files that just arrived to the collections.
+    async fn collect_arrivals(&self, vault: &Arc<Vault>, paths: &[String]) -> bool {
+        let (vault, paths) = (Arc::clone(vault), paths.to_vec());
+        let existing = self
+            .collections
+            .lock()
+            .expect("collections lock")
+            .collections
+            .clone();
+        let next = tokio::task::spawn_blocking(move || {
+            let arrived: Vec<basalt_proto::msg::MediaFile> = paths
+                .iter()
+                .filter(|path| {
+                    let name = path.rsplit('/').next().unwrap_or(path);
+                    !crate::uploads::is_temp_name(name)
+                        && !crate::media::parse::is_system(path)
+                        && basalt_proto::media::kind_of(path).is_some()
+                })
+                .filter_map(|path| {
+                    let entry = vault.stat(path).ok()?;
+                    (entry.kind == basalt_proto::msg::EntryKind::File).then(|| {
+                        basalt_proto::msg::MediaFile {
+                            path: path.clone(),
+                            size: entry.size,
+                            mtime: entry.mtime,
+                            width: None,
+                            height: None,
+                        }
+                    })
+                })
+                .collect();
+            if arrived.is_empty() {
+                return None;
+            }
+            Some(crate::media::collect::add(&existing, &arrived, |rel| {
+                vault
+                    .resolve(rel)
+                    .ok()
+                    .and_then(|p| crate::media::collect::photo_size(&p))
+            }))
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some(next) = next else {
+            return false;
+        };
+        let changed = self
+            .collections
+            .lock()
+            .expect("collections lock")
+            .replace(next);
+        if changed {
+            self.save_collections();
+        }
+        changed
+    }
+
+    /// Drops files and folders that went away from the collections, at once.
+    ///
+    /// No walk needed: a path that is gone is gone, and everything under a
+    /// folder that is gone went with it.
+    async fn file_removals(&self, paths: Vec<String>) {
+        let changed = {
+            let mut stored = self.collections.lock().expect("collections lock");
+            let next = crate::media::collect::remove(&stored.collections, &paths);
+            stored.replace(next)
+        };
+        if changed {
+            self.save_collections();
+            self.announce(basalt_proto::msg::Change::LibraryChanged)
+                .await;
         }
     }
 
@@ -437,6 +625,9 @@ impl Host {
                         }
                     }
 
+                    if !batch.removed.is_empty() {
+                        host.file_removals(std::mem::take(&mut batch.removed)).await;
+                    }
                     if !batch.arrived.is_empty() {
                         host.file_arrivals(batch.arrived).await;
                     }
@@ -468,12 +659,16 @@ impl Host {
 
     /// Files videos that just arrived, without walking the drive.
     async fn file_arrivals(self: &Arc<Self>, paths: Vec<String>) {
-        if !self.library_enabled() {
-            return;
-        }
         let Some(vault) = self.vault().await else {
             return;
         };
+        if self.collect_arrivals(&vault, &paths).await {
+            self.announce(basalt_proto::msg::Change::LibraryChanged)
+                .await;
+        }
+        if !self.library_enabled() {
+            return;
+        }
         // Remembered for a scan already walking the drive, which would
         // otherwise finish and replace the index without them.
         if self.is_scanning() {
@@ -562,9 +757,9 @@ impl Host {
     pub fn start_scan(self: &Arc<Self>) {
         use std::sync::atomic::Ordering;
 
-        if !self.library_enabled() {
-            return;
-        }
+        // Whether or not films are being recognised: the same walk is what
+        // finds everything for Videos, Music and Photos.
+        //
         // One scan at a time. A request while one runs is remembered rather
         // than dropped: the running scan may already have passed whatever
         // changed, so another follows it, after the usual rest.
@@ -603,13 +798,83 @@ impl Host {
             .expect("arrivals lock")
             .clear();
         let began = std::time::Instant::now();
+        let films = self.library_enabled();
+        let now = unix_now();
         let walked = Arc::clone(&vault);
-        let mut items = tokio::task::spawn_blocking(move || crate::media::scan(&walked))
+        let crate::media::index::Walk {
+            mut items,
+            gathered,
+            stale_parts,
+        } = tokio::task::spawn_blocking(move || crate::media::index::walk(&walked, films, now))
             .await
             .map_err(|e| HostError::BadRequest(format!("the scan panicked: {e}")))?;
 
+        // Partial uploads nobody came back for. Looked at again first: one the
+        // walk saw may have been resumed since. An upload still in progress
+        // holds its file open, and Windows refuses to delete it.
+        if !stale_parts.is_empty() {
+            let swept = Arc::clone(&vault);
+            let removed = tokio::task::spawn_blocking(move || {
+                stale_parts
+                    .iter()
+                    .filter(|rel| {
+                        let Ok(entry) = swept.stat(rel) else {
+                            return false;
+                        };
+                        let Ok(path) = swept.resolve(rel) else {
+                            return false;
+                        };
+                        crate::media::collect::is_stale_part(entry.size, entry.mtime, now)
+                            && std::fs::remove_file(path).is_ok()
+                    })
+                    .count()
+            })
+            .await
+            .unwrap_or(0);
+            if removed > 0 {
+                tracing::info!("removed {removed} partial uploads nobody came back for");
+            }
+        }
+
+        // The collections, with photo sizes read for anything new.
+        let previous = self
+            .collections
+            .lock()
+            .expect("collections lock")
+            .collections
+            .clone();
+        let measured = Arc::clone(&vault);
+        let collections = tokio::task::spawn_blocking(move || {
+            gathered.finish(&previous, |rel| {
+                measured
+                    .resolve(rel)
+                    .ok()
+                    .and_then(|p| crate::media::collect::photo_size(&p))
+            })
+        })
+        .await
+        .map_err(|e| HostError::BadRequest(format!("the scan panicked: {e}")))?;
+        let mut collections_changed = self
+            .collections
+            .lock()
+            .expect("collections lock")
+            .replace(collections);
+
         // Anything that landed while the walk was under way, filed on top.
         let arrived = std::mem::take(&mut *self.arrived_during_scan.lock().expect("arrivals lock"));
+        if !arrived.is_empty() {
+            collections_changed |= self.collect_arrivals(&vault, &arrived).await;
+        }
+        if collections_changed {
+            self.save_collections();
+        }
+
+        if !films {
+            *self.last_scan.lock().expect("scan clock") =
+                Some((std::time::Instant::now(), began.elapsed()));
+            return Ok(collections_changed);
+        }
+
         if !arrived.is_empty() {
             let base = items.clone();
             if let Some(with) = tokio::task::spawn_blocking(move || {
@@ -644,7 +909,7 @@ impl Host {
 
         *self.last_scan.lock().expect("scan clock") =
             Some((std::time::Instant::now(), began.elapsed()));
-        Ok(changed)
+        Ok(changed || collections_changed)
     }
 
     pub fn host_id(&self) -> &str {
@@ -712,6 +977,9 @@ impl Host {
         *self.library.lock().expect("library lock") = library;
         *self.progress.lock().expect("progress lock") = crate::media::Progress::load(
             &crate::media::Progress::path_for(self.config_dir(), &root),
+        );
+        *self.collections.lock().expect("collections lock") = crate::media::collect::Stored::load(
+            &crate::media::collect::stored_path(self.config_dir(), &root),
         );
 
         self.start_scan();
@@ -842,13 +1110,14 @@ impl Host {
             }
         };
 
-        let (host_name, port, require_pin, progress_per_device) = {
+        let (host_name, port, require_pin, progress_per_device, sections) = {
             let config = self.config.lock().expect("config lock");
             (
                 config.host_name.clone(),
                 config.port,
                 config.require_pin,
                 config.progress_per_device,
+                config.sections,
             )
         };
 
@@ -876,6 +1145,7 @@ impl Host {
             device_count,
             library,
             progress_per_device,
+            sections,
             serving,
             problem: None,
         }
@@ -1119,8 +1389,10 @@ const MAX_REST: std::time::Duration = std::time::Duration::from_secs(900);
 /// What one settled burst of changes asks of the library.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Batch {
-    /// Videos that appeared, to be filed on their own.
+    /// Media that appeared, to be filed on its own.
     arrived: Vec<String>,
+    /// Media and folders that went, dropped from the collections at once.
+    removed: Vec<String>,
     /// Something only a full walk can account for: a removal, a new folder,
     /// or the watcher losing track.
     needs_scan: bool,
@@ -1128,7 +1400,7 @@ struct Batch {
 
 impl Batch {
     fn is_empty(&self) -> bool {
-        self.arrived.is_empty() && !self.needs_scan
+        self.arrived.is_empty() && self.removed.is_empty() && !self.needs_scan
     }
 
     fn note(&mut self, change: &basalt_proto::msg::Change) {
@@ -1143,8 +1415,10 @@ impl Batch {
         // appears or goes may hold any number of videos.
         let folder = |path: &String| !path.rsplit('/').next().unwrap_or(path).contains('.');
 
+        let media = |path: &String| basalt_proto::media::kind_of(path).is_some();
+
         match change {
-            Change::Created { path } if interesting(path) && is_video(path) => {
+            Change::Created { path } if interesting(path) && (is_video(path) || media(path)) => {
                 if !self.arrived.contains(path) {
                     self.arrived.push(path.clone());
                 }
@@ -1152,14 +1426,27 @@ impl Batch {
             Change::Created { path } if interesting(path) && folder(path) => {
                 self.needs_scan = true;
             }
-            Change::Removed { path } if interesting(path) && (is_video(path) || folder(path)) => {
-                self.needs_scan = true;
+            Change::Removed { path } if interesting(path) && (media(path) || folder(path)) => {
+                self.removed.push(path.clone());
+                // Films need the walk to notice a removal; the collections
+                // have already let it go.
+                if is_video(path) || folder(path) {
+                    self.needs_scan = true;
+                }
             }
             Change::Renamed { from, to } => {
-                if interesting(to) && is_video(to) && !self.arrived.contains(to) {
+                if interesting(to) && (is_video(to) || media(to)) && !self.arrived.contains(to) {
                     self.arrived.push(to.clone());
                 }
+                if interesting(from) && (media(from) || folder(from)) {
+                    self.removed.push(from.clone());
+                }
                 if interesting(from) && (is_video(from) || folder(from)) {
+                    self.needs_scan = true;
+                }
+                // A folder renamed brings everything in it under a new name,
+                // which only a walk can list.
+                if interesting(to) && folder(to) {
                     self.needs_scan = true;
                 }
             }
@@ -1286,11 +1573,22 @@ where
     let mut counted: Option<String> = None;
 
     let result = loop {
-        let (op, payload) = match read_request(&mut stream).await {
+        let (raw, payload) = match read_request_raw(&mut stream).await {
             Ok(v) => v,
             // A peer that goes away between requests is the normal end of a
             // pooled connection, not a failure.
             Err(_) => break Ok(()),
+        };
+        // Something a newer device asks for that this host cannot do. Said
+        // so, and the connection kept: the device can carry on without it.
+        let Ok(op) = basalt_proto::ops::Op::from_u8(raw) else {
+            write_err(
+                &mut stream,
+                ErrorCode::Unsupported,
+                "this host does not do that yet; update Basalt Host",
+            )
+            .await?;
+            continue;
         };
 
         // Register the connection the moment it has a device to attribute it
@@ -1642,6 +1940,17 @@ where
             };
             host.revoke(&device.token_hash)?;
             write_ok(stream, &[]).await?;
+        }
+
+        Op::Collections => {
+            let req: basalt_proto::msg::CollectionsRequest = decode(payload).unwrap_or_default();
+            reply(stream, &host.collections_response(req.known_revision)).await?;
+        }
+
+        Op::Thumbnail => {
+            let req: basalt_proto::msg::ThumbnailRequest = decode(payload)?;
+            let bytes = host.thumbnail(&req.path, req.size).await?;
+            write_ok(stream, &bytes).await?;
         }
 
         Op::LibraryArt => {

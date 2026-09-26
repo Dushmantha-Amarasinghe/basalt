@@ -234,10 +234,16 @@ async fn set_posters(state: State<'_, AppState>, enabled: bool) -> Answer<HostSt
 
 /// Whether each device sees its own watch history.
 #[tauri::command]
-async fn set_progress_per_device(
+async fn set_sections(
     state: State<'_, AppState>,
-    enabled: bool,
+    sections: basalt_proto::msg::Sections,
 ) -> Answer<HostStatus> {
+    state.host.set_sections(sections).await?;
+    status(state).await
+}
+
+#[tauri::command]
+async fn set_progress_per_device(state: State<'_, AppState>, enabled: bool) -> Answer<HostStatus> {
     state.host.set_progress_per_device(enabled)?;
     status(state).await
 }
@@ -499,10 +505,7 @@ async fn check_update() -> Answer<Option<basalt_update::Release>> {
 /// The file is verified against the checksum published beside it before this
 /// returns; an installer that fails is deleted rather than handed back.
 #[tauri::command]
-async fn download_update(
-    app: tauri::AppHandle,
-    release: basalt_update::Release,
-) -> Answer<String> {
+async fn download_update(app: tauri::AppHandle, release: basalt_update::Release) -> Answer<String> {
     let into = std::env::temp_dir().join("Basalt Updates");
     let emitter = app.clone();
     let path = basalt_update::fetch(&release, &into, move |had, total| {
@@ -569,6 +572,15 @@ pub fn run() {
                 devices = config.devices.len(),
                 "opening the vault"
             );
+            // Video thumbnails come from the libmpv the installer puts beside
+            // the app. Found here rather than guessed at, because in
+            // development the resources are not beside the executable.
+            if let Ok(dir) = app.path().resource_dir() {
+                let dll = dir.join("lib").join("libmpv-2.dll");
+                if dll.exists() {
+                    basalt_host::media::thumbs::set_mpv_path(dll);
+                }
+            }
             let host = Host::new(config, config_path)?;
             tracing::info!("vault open");
 
@@ -677,6 +689,7 @@ pub fn run() {
             set_posters,
             set_tmdb_key,
             set_progress_per_device,
+            set_sections,
             build_info,
             open_log_folder,
             open_vault_folder,

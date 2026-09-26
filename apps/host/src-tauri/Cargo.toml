@@ -22,6 +22,7 @@ tauri-build = { version = "2", features = [] }
 # that nothing here is covered by a test, which is why every shape this file
 # sends to the interface is defined and tested in `basalt-host::ui` instead.
 basalt-host = { path = "../../../crates/basalt-host" }
+basalt-proto = { path = "../../../crates/basalt-proto" }
 basalt-update = { path = "../../../crates/basalt-update" }
 basalt-net = { path = "../../../crates/basalt-net" }
 

@@ -330,6 +330,22 @@ async fn remove_entry(state: State<'_, AppState>, path: String, recursive: bool)
     Ok(state.client.remove(&path, recursive).await?)
 }
 
+/// Every video, song and photo on the drive, sorted by the host.
+#[tauri::command]
+async fn collections(
+    state: State<'_, AppState>,
+    known_revision: u64,
+) -> Answer<basalt_proto::msg::CollectionsResponse> {
+    Ok(state.client.collections(known_revision).await?)
+}
+
+/// The start of every media URL; a percent-encoded vault path goes on the end,
+/// and `?thumb=320` makes it a thumbnail.
+#[tauri::command]
+async fn media_base(state: State<'_, AppState>) -> Answer<String> {
+    Ok(state.proxy().await?.base_url())
+}
+
 /// A URL the player, image viewer or PDF viewer can open directly.
 #[tauri::command]
 async fn media_url(state: State<'_, AppState>, path: String) -> Answer<String> {
@@ -425,7 +441,7 @@ async fn upload(
     remote: String,
     overwrite: bool,
     id: String,
-) -> Answer<u64> {
+) -> Answer<UploadOutcome> {
     let name = remote.rsplit('/').next().unwrap_or(&remote).to_string();
     let cancel = Cancel::new();
     state
@@ -435,19 +451,49 @@ async fn upload(
         .insert(id.clone(), cancel.clone());
 
     let report = progress_reporter(app, id.clone(), name, "upload");
-    let result = state
-        .client
-        .upload(
-            &PathBuf::from(local),
-            &remote,
-            overwrite,
-            Some(report),
-            Some(cancel),
-        )
-        .await;
+    let local = PathBuf::from(local);
+
+    // A folder goes up whole, as one transfer. Handed to the file upload it
+    // used to fail as "access is denied", which is how Windows answers a
+    // program that opens a folder as if it were a file.
+    let is_folder = tokio::fs::metadata(&local)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
+    let result = if is_folder {
+        state
+            .client
+            .upload_tree(&local, &remote, Some(report), Some(cancel))
+            .await
+            .map(|tree| UploadOutcome {
+                bytes: tree.bytes,
+                files: tree.files,
+                failed: tree.failed,
+            })
+    } else {
+        state
+            .client
+            .upload(&local, &remote, overwrite, Some(report), Some(cancel))
+            .await
+            .map(|bytes| UploadOutcome {
+                bytes,
+                files: 1,
+                failed: Vec::new(),
+            })
+    };
 
     state.transfers.lock().expect("transfers lock").remove(&id);
     Ok(result?)
+}
+
+/// What an upload did: one file, or a folder of them.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadOutcome {
+    bytes: u64,
+    files: usize,
+    /// Files in a folder that did not arrive, and why.
+    failed: Vec<(String, String)>,
 }
 
 /// Hands a file to a player that can actually decode it.
@@ -546,7 +592,6 @@ fn cancel_transfer(state: State<'_, AppState>, id: String) -> bool {
     }
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 // ---------------------------------------------------------------------------
 // Updates
 // ---------------------------------------------------------------------------
@@ -583,10 +628,7 @@ async fn check_update() -> Answer<Option<basalt_update::Release>> {
 /// The file is verified against the checksum published beside it before this
 /// returns; an installer that fails is deleted rather than handed back.
 #[tauri::command]
-async fn download_update(
-    app: tauri::AppHandle,
-    release: basalt_update::Release,
-) -> Answer<String> {
+async fn download_update(app: tauri::AppHandle, release: basalt_update::Release) -> Answer<String> {
     let into = std::env::temp_dir().join("Basalt Updates");
     let emitter = app.clone();
     let path = basalt_update::fetch(&release, &into, move |had, total| {
@@ -624,6 +666,7 @@ async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
     Ok(())
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebView2 refuses to start playback with sound unless the page has a
     // recent user gesture. Clicking a file in the list *is* one, but the
@@ -747,6 +790,8 @@ pub fn run() {
             rename_entry,
             remove_entry,
             media_url,
+            media_base,
+            collections,
             download,
             upload,
             open_externally,

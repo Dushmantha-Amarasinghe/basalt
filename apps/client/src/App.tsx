@@ -37,7 +37,7 @@ import {
   type SortDirection,
   type SortField,
 } from '@/components/SortMenu'
-import { MediaGrid } from '@/components/MediaGrid'
+import { MusicList, PhotoGrid, VideoGrid, sortTracks } from '@/components/MediaViews'
 import { SettingsView } from '@/components/SettingsView'
 import { TransfersPanel } from '@/components/TransfersPanel'
 import { PlayerOverlay } from '@/components/PlayerOverlay'
@@ -49,9 +49,19 @@ import { PropertiesPanel } from '@/components/PropertiesPanel'
 import { useContextMenu, type MenuAction } from '@/components/ui/ContextMenu'
 import { PromptDialog, type PromptRequest } from '@/components/ui/PromptDialog'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
-import { api, isFinished, joinPath, parentOf, type SubtitleTrack } from '@/lib/api'
+import {
+  api,
+  isFinished,
+  joinPath,
+  parentOf,
+  type MediaFile,
+  type SubtitleTrack,
+} from '@/lib/api'
+import { fileToEntry, useCollections } from '@/lib/useCollections'
+import { useMediaBase } from '@/lib/thumbs'
+import { stemOf, trackInfo } from '@/lib/mediaInfo'
 import { useVault } from '@/lib/useVault'
-import { filterKind, recentOf, useLibraryScan } from '@/lib/useLibrary'
+import { filterKind, isKind, recentOf, useLibraryScan } from '@/lib/useLibrary'
 import { transferId, useTransfers } from '@/lib/useTransfers'
 import { nameOf, useFileActions } from '@/lib/useFileActions'
 import { useAsyncSubscription, useLatest } from '@/lib/useAsyncSubscription'
@@ -97,7 +107,9 @@ export function App(): React.JSX.Element {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [transfersOpen, setTransfersOpen] = useState(false)
   const [playing, setPlaying] = useState<MediaItem | null>(null)
-  const [viewingIndex, setViewingIndex] = useState<number | null>(null)
+  /** The photo viewer: the photos it steps through, and which one is open. */
+  const [viewer, setViewer] = useState<{ photos: MediaFile[]; index: number } | null>(null)
+  const viewingIndex = viewer?.index ?? null
   const [view, setView] = useState<ViewMode>('details')
   const [sortField, setSortField] = useState<SortField>('name')
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
@@ -120,10 +132,31 @@ export function App(): React.JSX.Element {
 
   const stars = useStars(vault.status?.hostId, nav === 'starred')
 
-  const needsScan = nav === 'recent' || LIBRARY_KEYS.includes(nav)
+  const collections = useCollections(connected)
+  const mediaBase = useMediaBase(connected)
+  // Only for a host too old to sort the drive itself.
+  const needsScan =
+    collections.unsupported && (nav === 'recent' || LIBRARY_KEYS.includes(nav))
   const scan = useLibraryScan(needsScan, connected)
 
   const media = useMediaLibrary(connected)
+
+  /** Sections the host's owner chose not to show. */
+  const hiddenSections = useMemo(() => {
+    const s = media.sections
+    const hidden = new Set<NavKey>()
+    if (!s.movies) hidden.add('movies')
+    if (!s.series) hidden.add('series')
+    if (!s.videos) hidden.add('videos')
+    if (!s.music) hidden.add('music')
+    if (!s.photos) hidden.add('photos')
+    return hidden
+  }, [media.sections])
+
+  // Looking at a section the host has just hidden: back to Files.
+  useEffect(() => {
+    if (hiddenSections.has(nav)) setNav('files')
+  }, [hiddenSections, nav])
   const isMedia = MEDIA_KEYS.includes(nav)
 
   const watched = useWatched(connected)
@@ -217,20 +250,49 @@ export function App(): React.JSX.Element {
     [watchedByPath],
   )
 
+  /**
+   * The track after each one, within its album, for music to play on.
+   *
+   * Within the album, not the whole library: an album finishing is the
+   * natural place to stop, and running on into whatever sorts next is a
+   * shuffle nobody asked for.
+   */
+  const nextTrack = useMemo(() => {
+    const next = new Map<string, { path: string; label: string }>()
+    const tracks = sortTracks(collections.collections.music)
+    for (let i = 0; i < tracks.length - 1; i++) {
+      const here = tracks[i]!
+      const after = tracks[i + 1]!
+      if (parentOf(here.path) === parentOf(after.path)) {
+        next.set(here.path, { path: after.path, label: trackInfo(after.path).title })
+      }
+    }
+    return next
+  }, [collections.collections.music])
+
   const nextAfter = useCallback(
-    (path: string): { path: string; label: string } | null => nextByPath.get(path) ?? null,
-    [nextByPath],
+    (path: string): { path: string; label: string } | null =>
+      nextByPath.get(path) ?? nextTrack.get(path) ?? null,
+    [nextByPath, nextTrack],
   )
 
   // The drive is the truth: whatever changes it, the folder on screen reloads
   // and the index is asked again. Nothing here polls.
-  useLiveChanges(vault.dir, vault.refresh, media.refresh)
+  const refreshLibrary = useCallback(() => {
+    media.refresh()
+    collections.refresh()
+  }, [media, collections])
+  useLiveChanges(vault.dir, vault.refresh, refreshLibrary)
 
   const sectionEntries = useMemo(() => {
-    if (nav === 'recent') return recentOf(scan.files)
+    if (nav === 'recent') {
+      return collections.unsupported
+        ? recentOf(scan.files)
+        : collections.collections.recent.map(fileToEntry)
+    }
     if (nav === 'starred') return stars.entries
     return vault.entries
-  }, [nav, scan.files, stars.entries, vault.entries])
+  }, [nav, scan.files, stars.entries, vault.entries, collections])
 
   const entries = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -245,10 +307,26 @@ export function App(): React.JSX.Element {
 
   const isLibrary = LIBRARY_KEYS.includes(nav)
 
-  const libraryItems = useMemo(() => {
+  /**
+   * The files of the section on screen, as the host sorted them — or, from a
+   * host too old to, as the old scan found them — narrowed by the search box.
+   */
+  const libraryFiles = useMemo<MediaFile[]>(() => {
     if (!isLibrary) return []
-    return entriesToMedia(filterKind(scan.files, nav as 'videos' | 'music' | 'photos'))
-  }, [isLibrary, nav, scan.files])
+    const kind = nav as 'videos' | 'music' | 'photos'
+    const all: MediaFile[] = collections.unsupported
+      ? filterKind(scan.files, kind).map((e) => ({
+          path: e.id,
+          size: e.size,
+          mtime: Math.floor(e.modified / 1000),
+        }))
+      : collections.collections[kind]
+    const needle = query.trim().toLowerCase()
+    const found = needle ? all.filter((f) => f.path.toLowerCase().includes(needle)) : all
+    return kind === 'music' ? sortTracks(found) : found
+  }, [isLibrary, nav, collections, scan.files, query])
+
+  const libraryScanning = collections.unsupported ? scan.scanning : !collections.loaded || collections.scanning
 
   /** The films or series on screen, filtered by the search box. */
   const mediaItems = useMemo(() => {
@@ -395,8 +473,19 @@ export function App(): React.JSX.Element {
           total: 0,
         })
         try {
-          await api.upload(local, joinPath(into, name), false, id)
-          transfers.finish(id)
+          const outcome = await api.upload(local, joinPath(into, name), false, id)
+          const failed = outcome?.failed ?? []
+          if (failed.length > 0) {
+            // A folder that mostly arrived is not a failed transfer, but the
+            // files that did not have to be named somewhere.
+            const [first, why] = failed[0]!
+            transfers.finish(
+              id,
+              `${failed.length} of ${outcome.files + failed.length} files did not upload. ${nameOf(first)}: ${why}`,
+            )
+          } else {
+            transfers.finish(id)
+          }
         } catch (e) {
           transfers.finish(id, e instanceof Error ? e.message : String(e))
         } finally {
@@ -449,11 +538,21 @@ export function App(): React.JSX.Element {
         vault.open(entry.id)
         return
       }
+      // A photo opens in the viewer, stepping through the photos beside it.
+      // It used to be downloaded, like any file the app did not play.
+      if (isKind(entry.name, 'photos')) {
+        const photos = entries
+          .filter((e) => e.kind === 'file' && isKind(e.name, 'photos'))
+          .map((e) => ({ path: e.id, size: e.size, mtime: Math.floor(e.modified / 1000) }))
+        const index = Math.max(0, photos.findIndex((p) => p.path === entry.id))
+        setViewer({ photos, index })
+        return
+      }
       const media = entriesToMedia([entry])[0]
       if (isMediaFile(entry.name)) setPlaying(media ?? null)
       else void downloadOne(entry)
     },
-    [vault, downloadOne],
+    [vault, downloadOne, entries],
   )
 
   /**
@@ -967,6 +1066,7 @@ export function App(): React.JSX.Element {
 
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <Sidebar
+          hidden={hiddenSections}
           active={nav}
           onNavigate={setNav}
           driveUsed={vault.space ? vault.space[1] - vault.space[0] : 0}
@@ -996,7 +1096,7 @@ export function App(): React.JSX.Element {
                     {(isMedia
                       ? mediaItems.length
                       : isLibrary
-                        ? libraryItems.length
+                        ? libraryFiles.length
                         : entries.length
                     ).toLocaleString()}
                   </span>
@@ -1109,18 +1209,39 @@ export function App(): React.JSX.Element {
                 onForget={watched.forget}
               />
             ) : isLibrary ? (
-              libraryItems.length === 0 ? (
+              libraryFiles.length === 0 ? (
                 <EmptyState
-                  label={scan.scanning ? 'Looking through the vault…' : `No ${nav} found`}
+                  label={
+                    libraryScanning
+                      ? 'Looking through the drive…'
+                      : query
+                        ? `Nothing matches “${query}”`
+                        : `No ${nav} found`
+                  }
+                />
+              ) : nav === 'photos' ? (
+                <PhotoGrid
+                  files={libraryFiles}
+                  base={mediaBase}
+                  onOpen={(index) => setViewer({ photos: libraryFiles, index })}
+                />
+              ) : nav === 'music' ? (
+                <MusicList
+                  files={libraryFiles}
+                  playing={playing?.id ?? null}
+                  onPlay={(file) => setPlaying(musicItem(file))}
                 />
               ) : (
-                <MediaGrid
-                  items={libraryItems}
-                  shape={nav === 'photos' ? 'square' : 'poster'}
-                  onOpen={(item, index) => {
-                    if (nav === 'photos') setViewingIndex(index)
-                    else setPlaying(item)
+                <VideoGrid
+                  files={libraryFiles}
+                  base={mediaBase}
+                  progressOf={(path) => {
+                    const entry = watchedByPath.get(path)
+                    return entry && entry.duration > 0 && !isFinished(entry)
+                      ? entry.position / entry.duration
+                      : undefined
                   }}
+                  onPlay={(file) => void playPath(file.path)}
                 />
               )
             ) : entries.length === 0 ? (
@@ -1225,10 +1346,15 @@ export function App(): React.JSX.Element {
       />
 
       <ImageViewer
-        items={libraryItems}
+        photos={viewer?.photos ?? []}
         index={viewingIndex}
-        onIndexChange={setViewingIndex}
-        onClose={() => setViewingIndex(null)}
+        base={mediaBase}
+        onIndexChange={(index) => setViewer((v) => (v ? { ...v, index } : v))}
+        onClose={() => setViewer(null)}
+        onDownload={(path) => {
+          const photo = viewer?.photos.find((p) => p.path === path)
+          if (photo) void downloadOne(fileToEntry(photo))
+        }}
       />
 
       <PropertiesPanel
@@ -1470,4 +1596,15 @@ function StatusBar({
       </button>
     </div>
   )
+}
+
+/** A song as the player shows it: its title, and who and what it is from. */
+function musicItem(file: MediaFile): MediaItem {
+  const base = entriesToMedia([fileToEntry(file)])[0]!
+  const info = trackInfo(file.path)
+  return {
+    ...base,
+    title: info.title || stemOf(file.path),
+    subtitle: [info.artist, info.album].filter(Boolean).join(' · ') || 'Music',
+  }
 }
