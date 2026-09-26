@@ -52,11 +52,15 @@ export function useIdentity(connected: boolean): Identity {
   const refresh = useCallback(async () => {
     try {
       const next = await api.identity()
+      // About to ask who is using the device: with the host's list as it is
+      // now, not as it was — a profile removed on the host must not be
+      // offered.
+      if (next.choose) await reloadProfiles()
       if (live.current) setState(next)
     } catch {
       // Not connected: asked again when it is.
     }
-  }, [])
+  }, [reloadProfiles])
 
   useEffect(() => {
     if (!connected) {
