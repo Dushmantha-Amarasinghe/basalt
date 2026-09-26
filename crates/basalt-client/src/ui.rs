@@ -158,9 +158,16 @@ pub struct UiError {
 
 impl From<crate::ClientError> for UiError {
     fn from(e: crate::ClientError) -> Self {
+        // What the host said, without the code it said it under: the kind
+        // already carries that, and "Denied: that PIN is not right" read as
+        // an error dump rather than a sentence.
+        let message = match &e {
+            crate::ClientError::Net(basalt_net::NetError::Remote(wire)) => wire.message.clone(),
+            other => other.to_string(),
+        };
         Self {
             kind: e.kind().to_string(),
-            message: e.to_string(),
+            message,
         }
     }
 }
@@ -168,6 +175,16 @@ impl From<crate::ClientError> for UiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refusal_reads_as_what_the_host_said() {
+        let e = crate::ClientError::Net(basalt_net::NetError::Remote(
+            basalt_proto::WireError::new(basalt_proto::ErrorCode::Denied, "that PIN is not right"),
+        ));
+        let ui = UiError::from(e);
+        assert_eq!(ui.kind, "denied");
+        assert_eq!(ui.message, "that PIN is not right");
+    }
 
     fn keys(value: &impl Serialize) -> Vec<String> {
         let json = serde_json::to_value(value).unwrap();
