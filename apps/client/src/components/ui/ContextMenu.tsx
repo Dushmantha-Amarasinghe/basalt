@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { motion } from 'framer-motion'
+import { POPOVER } from '@/lib/motion'
+import { AnimatePresence, motion } from 'framer-motion'
 import { cn } from '@/lib/utils'
 
 export interface MenuAction {
@@ -57,14 +58,21 @@ export function useContextMenu(): {
   return {
     open,
     close,
-    node: state ? (
-      <ContextMenuSurface
-        x={state.x}
-        y={state.y}
-        actions={state.actions}
-        onClose={close}
-      />
-    ) : null,
+    // Inside AnimatePresence so it fades out as it came in, rather than
+    // vanishing in a single frame.
+    node: (
+      <AnimatePresence>
+        {state && (
+          <ContextMenuSurface
+            key={`${state.x},${state.y}`}
+            x={state.x}
+            y={state.y}
+            actions={state.actions}
+            onClose={close}
+          />
+        )}
+      </AnimatePresence>
+    ),
   }
 }
 
@@ -154,9 +162,7 @@ function ContextMenuSurface({
       <motion.div
         ref={ref}
         role="menu"
-        initial={{ opacity: 0, scale: 0.97 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 0.09, ease: 'easeOut' }}
+        {...POPOVER}
         style={{
           position: 'fixed',
           left,

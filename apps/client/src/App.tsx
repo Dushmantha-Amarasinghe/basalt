@@ -802,6 +802,11 @@ export function App(): React.JSX.Element {
         return [entry.id]
       },
       onDropInto: (entry, paths) => void actions.moveInto(paths, entry.id),
+      onSelectSet: (ids) => {
+        setSelected(ids)
+        // Shift-click after a drag box extends from where the box began.
+        anchor.current = entries.find((e) => ids.has(e.id))?.id ?? null
+      },
     }),
     [handleSelect, openEntry, selected, menu, entryActions, downloadOne, entries, actions],
   )

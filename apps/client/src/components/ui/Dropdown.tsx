@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { POPOVER } from '@/lib/motion'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Check, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -134,7 +135,7 @@ export function Dropdown({
               initial={{ opacity: 0, y: at.above ? 4 : -4 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: at.above ? 4 : -4 }}
-              transition={{ duration: 0.13, ease: [0.22, 1, 0.36, 1] }}
+              transition={POPOVER.transition}
               style={{
                 left: at.left,
                 top: at.above ? undefined : at.top,

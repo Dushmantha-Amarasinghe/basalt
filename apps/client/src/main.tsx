@@ -1,4 +1,5 @@
 import React from 'react'
+import { MotionConfig } from 'framer-motion'
 import ReactDOM from 'react-dom/client'
 import { App } from './App'
 import { suppressNativeContextMenu } from './lib/nativeMenu'
@@ -10,6 +11,10 @@ suppressNativeContextMenu()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    {/* Windows' "show animations" setting, honoured by everything that moves
+        — not only the CSS, which the stylesheet already handles. */}
+    <MotionConfig reducedMotion="user">
+      <App />
+    </MotionConfig>
   </React.StrictMode>,
 )

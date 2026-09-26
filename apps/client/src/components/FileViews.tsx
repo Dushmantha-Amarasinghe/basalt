@@ -4,6 +4,7 @@ import { Folder } from 'lucide-react'
 import type { Entry, RowHandlers } from './FileList'
 import { DRAG_MIME, draggedPaths, iconFor } from './FileList'
 import { cn, formatBytes } from '@/lib/utils'
+import { MarqueeBox, useMarquee } from './useMarquee'
 
 /**
  * Tiles and List, the two Explorer-style alternatives to Details.
@@ -109,6 +110,7 @@ const Tile = memo(function Tile({
             }
           : undefined
       }
+      data-entry=""
       style={{ width: TILE_WIDTH, height: TILE_HEIGHT }}
       className={cn(
         'row-contain flex flex-col items-center justify-center gap-2 rounded-md px-2 text-center transition-colors',
@@ -161,6 +163,20 @@ export function TileView({
   const [ref, width] = useContainerWidth()
   const perRow = Math.max(1, Math.floor((width - 16) / TILE_WIDTH))
   const rows = rowCountFor(entries.length, perRow)
+  const marquee = useMarquee({
+    grid: {
+      rowStride: TILE_HEIGHT + 8,
+      itemHeight: TILE_HEIGHT,
+      columns: perRow,
+      colStride: TILE_WIDTH + 4,
+      itemWidth: TILE_WIDTH,
+      left: 8,
+    },
+    count: entries.length,
+    idAt: (index) => entries[index]?.id,
+    selected,
+    onChange: handlers.onSelectSet,
+  })
 
   const renderRow = useCallback(
     (rowIndex: number) => {
@@ -187,7 +203,8 @@ export function TileView({
   return (
     <div
       ref={ref}
-      className="h-full pb-2 pt-2"
+      className="relative h-full pb-2 pt-2"
+      onPointerDown={marquee.onPointerDown}
       onContextMenu={(e) => {
         if (e.defaultPrevented) return
         e.preventDefault()
@@ -195,10 +212,17 @@ export function TileView({
       }}
     >
       {width > 0 && (
-        <VList style={{ height: '100%' }} count={rows} itemSize={TILE_HEIGHT + 8} overscan={3}>
+        <VList
+          className="marquee-scroll"
+          style={{ height: '100%' }}
+          count={rows}
+          itemSize={TILE_HEIGHT + 8}
+          overscan={3}
+        >
           {renderRow}
         </VList>
       )}
+      <MarqueeBox style={marquee.box} />
     </div>
   )
 }
@@ -265,6 +289,7 @@ const ListCell = memo(function ListCell({
             }
           : undefined
       }
+      data-entry=""
       style={{ width: LIST_COLUMN_WIDTH, height: LIST_ROW_HEIGHT }}
       className={cn(
         'row-contain flex items-center gap-2 rounded px-2 text-left text-[12px] transition-colors',
@@ -307,6 +332,20 @@ export function ListView({
   const [ref, width] = useContainerWidth()
   const perRow = Math.max(1, Math.floor((width - 16) / LIST_COLUMN_WIDTH))
   const rows = rowCountFor(entries.length, perRow)
+  const marquee = useMarquee({
+    grid: {
+      rowStride: LIST_ROW_HEIGHT + 2,
+      itemHeight: LIST_ROW_HEIGHT,
+      columns: perRow,
+      colStride: LIST_COLUMN_WIDTH + 4,
+      itemWidth: LIST_COLUMN_WIDTH,
+      left: 8,
+    },
+    count: entries.length,
+    idAt: (index) => entries[index]?.id,
+    selected,
+    onChange: handlers.onSelectSet,
+  })
 
   const renderRow = useCallback(
     (rowIndex: number) => {
@@ -333,7 +372,8 @@ export function ListView({
   return (
     <div
       ref={ref}
-      className="h-full pb-2 pt-2"
+      className="relative h-full pb-2 pt-2"
+      onPointerDown={marquee.onPointerDown}
       onContextMenu={(e) => {
         if (e.defaultPrevented) return
         e.preventDefault()
@@ -342,6 +382,7 @@ export function ListView({
     >
       {width > 0 && (
         <VList
+          className="marquee-scroll"
           style={{ height: '100%' }}
           count={rows}
           itemSize={LIST_ROW_HEIGHT + 2}
@@ -350,6 +391,7 @@ export function ListView({
           {renderRow}
         </VList>
       )}
+      <MarqueeBox style={marquee.box} />
     </div>
   )
 }
