@@ -185,6 +185,9 @@ struct Mpv {
     command: unsafe extern "C" fn(Handle, *const *const std::ffi::c_char) -> i32,
     wait_event: unsafe extern "C" fn(Handle, f64) -> *const Event,
     terminate_destroy: unsafe extern "C" fn(Handle),
+    get_property_string:
+        unsafe extern "C" fn(Handle, *const std::ffi::c_char) -> *mut std::ffi::c_char,
+    free: unsafe extern "C" fn(*mut std::ffi::c_void),
     /// Kept loaded for as long as the functions above are used.
     _library: libloading::Library,
 }
@@ -197,6 +200,21 @@ struct Event {
 
 const EVENT_SHUTDOWN: i32 = 1;
 const EVENT_END_FILE: i32 = 7;
+const EVENT_FILE_LOADED: i32 = 8;
+
+/// How long reading one file's header may take.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// A video's size in pixels, read from the file itself.
+///
+/// Only the header is read: mpv opens the file paused, with no output, and
+/// reports the size the container declares — a fraction of a second even
+/// for a 4K film. `None` when mpv is not here or the file will not open.
+///
+/// Blocking: call from a blocking thread.
+pub fn video_size(path: &Path) -> Option<(u32, u32)> {
+    Mpv::get()?.probe(path)
+}
 
 static MPV: OnceLock<Option<Mpv>> = OnceLock::new();
 static MPV_PATH: OnceLock<PathBuf> = OnceLock::new();
@@ -245,9 +263,84 @@ impl Mpv {
                 command: *library.get(b"mpv_command\0")?,
                 wait_event: *library.get(b"mpv_wait_event\0")?,
                 terminate_destroy: *library.get(b"mpv_terminate_destroy\0")?,
+                get_property_string: *library.get(b"mpv_get_property_string\0")?,
+                free: *library.get(b"mpv_free\0")?,
                 _library: library,
             })
         }
+    }
+
+    fn probe(&self, path: &Path) -> Option<(u32, u32)> {
+        let handle = unsafe { (self.create)() };
+        if handle.is_null() {
+            return None;
+        }
+        let options: &[(&str, &str)] = &[
+            ("config", "no"),
+            ("terminal", "no"),
+            ("msg-level", "all=no"),
+            ("load-scripts", "no"),
+            ("ytdl", "no"),
+            ("vo", "null"),
+            ("ao", "null"),
+            ("audio", "no"),
+            ("sub", "no"),
+            ("hwdec", "no"),
+            ("pause", "yes"),
+            ("idle", "no"),
+        ];
+        let set = options.iter().all(|(name, value)| {
+            let (Ok(name), Ok(value)) = (
+                std::ffi::CString::new(*name),
+                std::ffi::CString::new(*value),
+            ) else {
+                return false;
+            };
+            unsafe { (self.set_option_string)(handle, name.as_ptr(), value.as_ptr()) >= 0 }
+        });
+
+        let size = (set && unsafe { (self.initialize)(handle) } >= 0)
+            .then(|| {
+                let file = std::ffi::CString::new(path.to_string_lossy().as_bytes()).ok()?;
+                let loadfile = std::ffi::CString::new("loadfile").ok()?;
+                let args = [loadfile.as_ptr(), file.as_ptr(), std::ptr::null()];
+                if unsafe { (self.command)(handle, args.as_ptr()) } < 0 {
+                    return None;
+                }
+                let started = std::time::Instant::now();
+                while started.elapsed() < PROBE_TIMEOUT {
+                    let event = unsafe { (self.wait_event)(handle, 0.5) };
+                    if event.is_null() {
+                        continue;
+                    }
+                    match unsafe { (*event).id } {
+                        EVENT_FILE_LOADED => {
+                            let w = self.property_number(handle, "width")?;
+                            let h = self.property_number(handle, "height")?;
+                            return (w > 0 && h > 0).then_some((w, h));
+                        }
+                        EVENT_END_FILE | EVENT_SHUTDOWN => return None,
+                        _ => {}
+                    }
+                }
+                None
+            })
+            .flatten();
+        unsafe { (self.terminate_destroy)(handle) };
+        size
+    }
+
+    fn property_number(&self, handle: Handle, name: &str) -> Option<u32> {
+        let name = std::ffi::CString::new(name).ok()?;
+        let raw = unsafe { (self.get_property_string)(handle, name.as_ptr()) };
+        if raw.is_null() {
+            return None;
+        }
+        let text = unsafe { std::ffi::CStr::from_ptr(raw) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { (self.free)(raw.cast()) };
+        text.trim().parse().ok()
     }
 
     /// Writes one frame of `path`, from `at` in, and reads it back.
@@ -452,6 +545,21 @@ mod tests {
         trim(&dir);
         assert!(shard.join("one.jpg").exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Only where the DLL is to hand, like the frame test below.
+    #[test]
+    fn a_video_size_comes_from_its_header() {
+        let (Ok(dll), Ok(video)) = (
+            std::env::var("BASALT_LIBMPV"),
+            std::env::var("BASALT_TEST_VIDEO"),
+        ) else {
+            eprintln!("skipped: set BASALT_LIBMPV and BASALT_TEST_VIDEO");
+            return;
+        };
+        set_mpv_path(PathBuf::from(dll));
+        assert_eq!(video_size(Path::new(&video)), Some((3840, 2160)));
+        assert_eq!(video_size(Path::new("definitely-not-here.mkv")), None);
     }
 
     /// Only where the DLL is to hand: point `BASALT_LIBMPV` at it.

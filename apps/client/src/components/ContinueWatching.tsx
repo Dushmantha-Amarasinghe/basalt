@@ -1,4 +1,6 @@
 import { motion } from 'framer-motion'
+import { qualityOf, type Quality } from '@/lib/quality'
+import { QualityTag } from './QualityTag'
 import { Play, X } from 'lucide-react'
 import type { LibraryItem, Watched } from '@/lib/api'
 import { Poster } from './Poster'
@@ -10,6 +12,8 @@ export interface Resumable {
   item: LibraryItem
   /** `S01E03`, for an episode. Empty for a film. */
   episode: string
+  /** HD, 4K…: of the episode itself, or the film. */
+  quality: Quality | null
 }
 
 /**
@@ -24,9 +28,12 @@ export interface Resumable {
  * thing to carry on with, not a row of the same show.
  */
 export function resumable(items: LibraryItem[], watched: Watched[]): Resumable[] {
-  const byPath = new Map<string, { item: LibraryItem; episode: string }>()
+  const byPath = new Map<
+    string,
+    { item: LibraryItem; episode: string; quality: Quality | null }
+  >()
   for (const item of items) {
-    if (item.path) byPath.set(item.path, { item, episode: '' })
+    if (item.path) byPath.set(item.path, { item, episode: '', quality: qualityOf(item.resolution) })
     for (const season of item.seasons) {
       for (const episode of season.episodes) {
         byPath.set(episode.path, {
@@ -34,6 +41,7 @@ export function resumable(items: LibraryItem[], watched: Watched[]): Resumable[]
           episode: `S${String(season.number).padStart(2, '0')}E${String(
             episode.number,
           ).padStart(2, '0')}`,
+          quality: qualityOf(episode.resolution),
         })
       }
     }
@@ -47,7 +55,12 @@ export function resumable(items: LibraryItem[], watched: Watched[]): Resumable[]
     const found = byPath.get(entry.path)
     if (!found || seen.has(found.item.id)) continue
     seen.add(found.item.id)
-    out.push({ watched: entry, item: found.item, episode: found.episode })
+    out.push({
+      watched: entry,
+      item: found.item,
+      episode: found.episode,
+      quality: found.quality,
+    })
   }
   return out
 }
@@ -92,7 +105,7 @@ export function ContinueWatching({
           well — so without room made for it the button was sliced in half
           along its top edge. */}
       <div className="flex gap-3 overflow-x-auto pb-1 pt-2">
-        {entries.map(({ watched, item, episode }, index) => (
+        {entries.map(({ watched, item, episode, quality }, index) => (
           <motion.div
             key={watched.path}
             initial={{ opacity: 0, y: 6 }}
@@ -126,8 +139,11 @@ export function ContinueWatching({
               </div>
 
               <div className="flex min-w-0 flex-1 flex-col justify-center py-2.5 pr-2">
-                <div className="truncate text-[12.5px] font-medium text-text">
-                  {item.title}
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="truncate text-[12.5px] font-medium text-text">
+                    {item.title}
+                  </span>
+                  <QualityTag quality={quality} size="sm" />
                 </div>
                 <div className="tnum mt-0.5 truncate font-mono text-[10px] text-textFaint">
                   {episode ? `${episode} · ` : ''}

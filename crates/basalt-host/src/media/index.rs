@@ -602,6 +602,7 @@ impl Grouping {
                 .series
                 .entry(id.clone())
                 .or_insert_with(|| LibraryItem {
+                    resolution: None,
                     id,
                     subtitles: Vec::new(),
                     kind: LibraryKind::Series,
@@ -634,6 +635,7 @@ impl Grouping {
                 }
             };
             season.episodes.push(Episode {
+                resolution: None,
                 number: parsed.episode.unwrap_or(0),
                 subtitles,
                 path: entry.path,
@@ -656,6 +658,7 @@ impl Grouping {
                     }
                 }
                 None => self.films.push(LibraryItem {
+                    resolution: None,
                     id,
                     kind: LibraryKind::Film,
                     title: parsed.title,

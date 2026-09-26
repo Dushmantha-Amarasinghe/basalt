@@ -56,6 +56,10 @@ pub struct Host {
     thumb_gate: tokio::sync::Semaphore,
     /// Thumbnails written, for trimming the cache every so often.
     thumbs_written: std::sync::atomic::AtomicUsize,
+    /// Each film and episode's picture size, once measured.
+    measured: std::sync::Mutex<crate::media::quality::Measured>,
+    /// Whether measuring is under way, so only one runs at a time.
+    measuring: std::sync::atomic::AtomicBool,
     scanning: std::sync::atomic::AtomicBool,
     /// A scan was asked for while one was already running.
     rescan_wanted: std::sync::atomic::AtomicBool,
@@ -149,6 +153,16 @@ impl Host {
             None => Default::default(),
         };
 
+        let measured = match &config.vault_path {
+            Some(root) => {
+                crate::media::quality::Measured::load(&crate::media::quality::Measured::path_for(
+                    config_path.parent().unwrap_or(std::path::Path::new(".")),
+                    root,
+                ))
+            }
+            None => crate::media::quality::Measured::default(),
+        };
+
         let progress = match &config.vault_path {
             Some(root) => crate::media::Progress::load(&crate::media::Progress::path_for(
                 config_path.parent().unwrap_or(std::path::Path::new(".")),
@@ -172,6 +186,8 @@ impl Host {
             collections: std::sync::Mutex::new(collections),
             thumb_gate: tokio::sync::Semaphore::new(2),
             thumbs_written: std::sync::atomic::AtomicUsize::new(0),
+            measured: std::sync::Mutex::new(measured),
+            measuring: std::sync::atomic::AtomicBool::new(false),
             scanning: std::sync::atomic::AtomicBool::new(false),
             rescan_wanted: std::sync::atomic::AtomicBool::new(false),
             arrived_during_scan: std::sync::Mutex::new(Vec::new()),
@@ -908,6 +924,7 @@ impl Host {
             tracing::info!("filed new arrivals without a scan");
             self.announce(basalt_proto::msg::Change::LibraryChanged)
                 .await;
+            self.measure_library();
             return;
         }
     }
@@ -930,6 +947,112 @@ impl Host {
         let have = crate::media::art::cached(&config_dir);
         for item in items.iter_mut() {
             item.has_art = have.contains(&item.id);
+        }
+
+        // Picture sizes: measured where they have been, and from the name
+        // until then. Measuring the rest happens after, in the background.
+        self.measured.lock().expect("measured lock").apply(items);
+    }
+
+    fn measured_path(&self) -> Option<std::path::PathBuf> {
+        Some(crate::media::quality::Measured::path_for(
+            self.config_dir(),
+            &self.vault_path()?,
+        ))
+    }
+
+    /// Measures every film and episode not measured yet, in the background,
+    /// and tells devices as the sizes come in.
+    ///
+    /// Through the thumbnail gate, so it never has more than two files open
+    /// at once alongside whatever is being streamed. A few tenths of a second
+    /// a file: a season is measured in seconds, a large library in minutes,
+    /// and only ever once.
+    pub fn measure_library(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+
+        if !self.library_enabled() || !crate::media::thumbs::mpv_available() {
+            return;
+        }
+        if self.measuring.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let host = Arc::clone(self);
+        tokio::spawn(async move {
+            host.measure_pending().await;
+            host.measuring.store(false, Ordering::SeqCst);
+        });
+    }
+
+    async fn measure_pending(&self) {
+        let Some(vault) = self.vault().await else {
+            return;
+        };
+        let files =
+            crate::media::quality::files_of(&self.library.lock().expect("library lock").items);
+        let pending: Vec<(String, String)> = {
+            let measured = self.measured.lock().expect("measured lock");
+            files
+                .iter()
+                .filter(|(key, _)| !measured.knows(key))
+                .cloned()
+                .collect()
+        };
+        if pending.is_empty() {
+            return;
+        }
+        tracing::info!("measuring {} videos for their picture size", pending.len());
+
+        for (done, (key, path)) in pending.into_iter().enumerate() {
+            let size = match vault.resolve(&path) {
+                Ok(file) => {
+                    let _turn = self.thumb_gate.acquire().await;
+                    tokio::task::spawn_blocking(move || crate::media::thumbs::video_size(&file))
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|(width, height)| basalt_proto::msg::Resolution { width, height })
+                }
+                Err(_) => None,
+            };
+            self.measured
+                .lock()
+                .expect("measured lock")
+                .record(key, size);
+            // Shown as they come, a few at a time, rather than all at the end.
+            if done % 12 == 11 {
+                self.publish_sizes(&files).await;
+            }
+        }
+        self.publish_sizes(&files).await;
+    }
+
+    /// Puts the sizes measured so far onto the library, and tells devices.
+    async fn publish_sizes(&self, files: &[(String, String)]) {
+        {
+            let keep = files.iter().map(|(key, _)| key.clone()).collect();
+            let mut measured = self.measured.lock().expect("measured lock");
+            measured.retain(&keep);
+            if let Some(path) = self.measured_path()
+                && let Err(e) = measured.save(&path)
+            {
+                tracing::warn!("could not save picture sizes: {e}");
+            }
+        }
+        let snapshot = {
+            let mut library = self.library.lock().expect("library lock");
+            let mut items = library.items.clone();
+            self.measured
+                .lock()
+                .expect("measured lock")
+                .apply(&mut items);
+            let scanned_at = library.scanned_at;
+            library.replace(items, scanned_at).then(|| library.clone())
+        };
+        if let Some(snapshot) = snapshot {
+            self.save_library(&snapshot);
+            self.announce(basalt_proto::msg::Change::LibraryChanged)
+                .await;
         }
     }
 
@@ -964,6 +1087,7 @@ impl Host {
         tokio::spawn(async move {
             let outcome = host.scan_once().await;
             host.scanning.store(false, Ordering::SeqCst);
+            host.measure_library();
             match outcome {
                 Ok(true) => {
                     host.announce(basalt_proto::msg::Change::LibraryChanged)
@@ -1172,6 +1296,9 @@ impl Host {
         );
         *self.collections.lock().expect("collections lock") = crate::media::collect::Stored::load(
             &crate::media::collect::stored_path(self.config_dir(), &root),
+        );
+        *self.measured.lock().expect("measured lock") = crate::media::quality::Measured::load(
+            &crate::media::quality::Measured::path_for(self.config_dir(), &root),
         );
         *self.stars.lock().expect("stars lock") = load_stars(&stars_path(self.config_dir(), &root));
 

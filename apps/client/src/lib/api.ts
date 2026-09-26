@@ -101,6 +101,14 @@ export interface LibraryEpisode {
   added: number
   /** Absent rather than empty when there are none — the host omits the field. */
   subtitles?: SubtitleTrack[]
+  /** The picture size, measured by the host. Absent until it knows. */
+  resolution?: Resolution | null
+}
+
+/** A video's picture size in pixels. Mirrors the Rust. */
+export interface Resolution {
+  width: number
+  height: number
 }
 
 export interface LibrarySeason {
@@ -130,6 +138,8 @@ export interface LibraryItem {
    *  is not there — a library of five hundred would otherwise be five hundred
    *  requests that all come back empty. */
   hasArt: boolean
+  /** A film's picture size. For a series, each episode has its own. */
+  resolution?: Resolution | null
 }
 
 export interface LibraryResponse {
@@ -629,6 +639,7 @@ const MOCK_LIBRARY: LibraryItem[] = [
     title: 'Arrival',
     year: 2016,
     path: 'Films/Arrival (2016)/Arrival.2016.2160p.mkv',
+    resolution: { width: 3840, height: 2160 },
     size: 24 * 1024 ** 3,
     added: Math.floor(Date.now() / 1000) - 86_400 * 3,
     seasons: [],
@@ -641,6 +652,7 @@ const MOCK_LIBRARY: LibraryItem[] = [
     title: 'Blade Runner 2049',
     year: 2017,
     path: 'Films/Blade Runner 2049 (2017).mkv',
+    resolution: { width: 1920, height: 800 },
     size: 31 * 1024 ** 3,
     added: Math.floor(Date.now() / 1000) - 86_400 * 30,
     seasons: [],
@@ -673,6 +685,7 @@ const MOCK_LIBRARY: LibraryItem[] = [
         episodes: Array.from({ length: 7 }, (_, i) => ({
           number: i + 1,
           path: `Shows/Breaking Bad/Season 01/S01E0${i + 1}.mkv`,
+          resolution: { width: 1920, height: 1080 },
           title: null,
           size: 3 * 1024 ** 3,
           added: Math.floor(Date.now() / 1000) - 86_400 * 12,
@@ -683,6 +696,7 @@ const MOCK_LIBRARY: LibraryItem[] = [
         episodes: Array.from({ length: 13 }, (_, i) => ({
           number: i + 1,
           path: `Shows/Breaking Bad/Season 02/S02E${String(i + 1).padStart(2, '0')}.mkv`,
+          resolution: { width: 1920, height: 1080 },
           title: null,
           size: 3 * 1024 ** 3,
           added: Math.floor(Date.now() / 1000) - 86_400 * 11,
@@ -706,6 +720,7 @@ const MOCK_LIBRARY: LibraryItem[] = [
         episodes: Array.from({ length: 13 }, (_, i) => ({
           number: i + 1,
           path: `Shows/The Wire/Season 01/S01E${String(i + 1).padStart(2, '0')}.mkv`,
+          resolution: { width: 1920, height: 1080 },
           title: null,
           size: 2 * 1024 ** 3,
           added: Math.floor(Date.now() / 1000) - 86_400 * 60,

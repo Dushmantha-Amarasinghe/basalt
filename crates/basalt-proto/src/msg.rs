@@ -655,6 +655,20 @@ pub struct LibraryItem {
     /// come back empty.
     #[serde(default)]
     pub has_art: bool,
+    /// The film's picture size, for a film. For a series, see each episode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<Resolution>,
+}
+
+/// A video's picture size in pixels, as the host measured it.
+///
+/// Measured from the file itself, not read off its name: names are often
+/// wrong or say nothing. The name is only the fallback for a file the host
+/// could not read. Devices turn this into a tag — HD, FHD, 2K, 4K.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Resolution {
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Below this, a match is a guess worth showing the user.
@@ -689,6 +703,9 @@ pub struct Episode {
     /// Subtitle files on the drive that belong to this episode.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subtitles: Vec<SubtitleTrack>,
+    /// See [`Resolution`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<Resolution>,
 }
 
 /// A subtitle file sitting beside a film or an episode.
@@ -932,6 +949,7 @@ mod tests {
     fn a_film_and_a_series_round_trip() {
         let items = vec![
             LibraryItem {
+                resolution: None,
                 id: "f1".into(),
                 kind: LibraryKind::Film,
                 title: "Arrival".into(),
@@ -945,6 +963,7 @@ mod tests {
                 has_art: false,
             },
             LibraryItem {
+                resolution: None,
                 id: "s1".into(),
                 kind: LibraryKind::Series,
                 title: "Breaking Bad".into(),
@@ -956,6 +975,7 @@ mod tests {
                 seasons: vec![Season {
                     number: 1,
                     episodes: vec![Episode {
+                        resolution: None,
                         number: 1,
                         path: "shows/BB/S01/e1.mkv".into(),
                         title: None,
@@ -984,6 +1004,7 @@ mod tests {
     #[test]
     fn a_film_still_carries_an_empty_seasons_list() {
         let film = LibraryItem {
+            resolution: None,
             id: "f1".into(),
             kind: LibraryKind::Film,
             title: "Arrival".into(),
@@ -1021,6 +1042,7 @@ mod tests {
         }
 
         let item = LibraryItem {
+            resolution: None,
             id: "f1".into(),
             kind: LibraryKind::Film,
             title: "Arrival".into(),
@@ -1032,6 +1054,7 @@ mod tests {
             seasons: vec![Season {
                 number: 1,
                 episodes: vec![Episode {
+                    resolution: None,
                     number: 1,
                     path: "b.mkv".into(),
                     title: Some("Pilot".into()),
