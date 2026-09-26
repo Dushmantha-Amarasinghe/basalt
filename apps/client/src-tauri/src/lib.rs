@@ -1,4 +1,4 @@
-//! Basalt desktop shell.
+//! Basalt client shell, for Windows and Android.
 //!
 //! A thin layer of commands over [`basalt_client::Basalt`]. Everything with
 //! any judgement in it lives in that crate, where it can be tested against a
@@ -593,7 +593,7 @@ async fn open_externally(
     use tauri_plugin_opener::OpenerExt;
 
     let name = remote.rsplit('/').next().unwrap_or(&remote).to_string();
-    let dir = std::env::temp_dir().join("Basalt");
+    let dir = scratch_dir(&app).join("Basalt");
     std::fs::create_dir_all(&dir).map_err(|e| UiError::from(basalt_client::ClientError::Io(e)))?;
     let local = dir.join(&name);
 
@@ -623,6 +623,19 @@ async fn open_externally(
         player: "the default app".into(),
         streamed: false,
     })
+}
+
+/// Somewhere to put a file for a moment.
+///
+/// The system's temporary folder on Windows. On Android that folder belongs
+/// to the shell and an app cannot write there, so it is the app's own cache.
+fn scratch_dir(app: &tauri::AppHandle) -> PathBuf {
+    #[cfg(mobile)]
+    if let Ok(dir) = app.path().app_cache_dir() {
+        return dir;
+    }
+    let _ = app;
+    std::env::temp_dir()
 }
 
 /// Which player took the file, and whether it was streamed or copied first.
@@ -687,7 +700,7 @@ async fn check_update() -> Answer<Option<basalt_update::Release>> {
 /// returns; an installer that fails is deleted rather than handed back.
 #[tauri::command]
 async fn download_update(app: tauri::AppHandle, release: basalt_update::Release) -> Answer<String> {
-    let into = std::env::temp_dir().join("Basalt Updates");
+    let into = scratch_dir(&app).join("Basalt Updates");
     let emitter = app.clone();
     let path = basalt_update::fetch(&release, &into, move |had, total| {
         let _ = emitter.emit("basalt://update-progress", (had, total));
@@ -739,11 +752,19 @@ pub fn run() {
         "--autoplay-policy=no-user-gesture-required",
     );
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_libmpv::init())
+        .plugin(tauri_plugin_opener::init());
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_libmpv::init());
+
+    builder
         .setup(|app| {
+            // A phone has no APPDATA: the store goes in the app's own private
+            // folder, which nothing else on the phone can read.
+            #[cfg(mobile)]
+            let store_path = app.path().app_data_dir()?.join("client.json");
+            #[cfg(desktop)]
             let store_path = basalt_client::store::default_path();
             let client = Arc::new(Basalt::open(store_path)?);
 

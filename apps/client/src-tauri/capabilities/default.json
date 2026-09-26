@@ -22,5 +22,10 @@
     "libmpv:default",
     "core:window:allow-set-fullscreen",
     "core:window:allow-is-fullscreen"
+  ],
+  "platforms": [
+    "windows",
+    "macOS",
+    "linux"
   ]
 }

@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "What the Basalt app is allowed to do on a phone or tablet. Like the desktop window, everything that touches the network or the vault goes through this app's own commands.",
+  "platforms": [
+    "android",
+    "iOS"
+  ],
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "opener:allow-open-url"
+  ]
+}
