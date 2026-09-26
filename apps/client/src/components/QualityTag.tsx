@@ -32,16 +32,23 @@ export function QualityTag({
   return (
     <span
       title={TITLES[quality]}
+      // Centred on the capitals, not the line. A line of text keeps room
+      // below for letters that hang under it, which "4K" has none of, so
+      // centring the line left the letters sitting high in the chip. The
+      // text box is trimmed to the capitals' own height and the chip is a
+      // fixed height around it, so what is centred is exactly the ink. The
+      // trim is on an inner block because it does not apply to a flex
+      // container's own text.
       className={cn(
-        'inline-flex shrink-0 items-center rounded-[4px] font-mono font-semibold leading-none tracking-[0.06em]',
-        size === 'md' ? 'px-1.5 py-[3px] text-[9px]' : 'px-1 py-[2px] text-[8.5px]',
+        'inline-flex shrink-0 items-center justify-center rounded-[4px] font-mono font-semibold leading-none tracking-[0.06em]',
+        size === 'md' ? 'h-[17px] px-[6px] text-[9.5px]' : 'h-[14px] px-1 text-[8.5px]',
         high
           ? 'bg-basalt text-ink'
           : 'bg-black/70 text-text ring-1 ring-inset ring-white/15',
         className,
       )}
     >
-      {quality}
+      <span className="block [text-box:trim-both_cap_alphabetic]">{quality}</span>
     </span>
   )
 }
