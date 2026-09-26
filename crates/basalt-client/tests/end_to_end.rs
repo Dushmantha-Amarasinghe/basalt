@@ -1289,3 +1289,121 @@ async fn a_drive_unplugged_on_the_host_says_so_and_comes_back() {
         "the drive is served again without anything being redone"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Folders
+// ---------------------------------------------------------------------------
+
+/// Dropping a folder used to fail with "access is denied" — it was opened as
+/// a file — and left an empty partial file on the host. A folder now arrives
+/// whole, subfolders and all, as one transfer.
+#[tokio::test]
+async fn a_folder_uploads_with_everything_in_it() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+
+    let source = fixture.dir.join("Night Harbour S01");
+    std::fs::create_dir_all(source.join("Extras/Deleted")).unwrap();
+    std::fs::write(source.join("E01.mkv"), sample_bytes(300_000)).unwrap();
+    std::fs::write(source.join("E02.mkv"), sample_bytes(200_000)).unwrap();
+    std::fs::write(source.join("Extras/Trailer.mkv"), sample_bytes(50_000)).unwrap();
+    std::fs::write(source.join("Extras/Deleted/Scene.mkv"), b"").unwrap();
+
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<(u64, u64)>::new()));
+    let sink = Arc::clone(&seen);
+    let progress: basalt_client::client::ProgressFn =
+        Arc::new(move |p| sink.lock().unwrap().push((p.transferred, p.total)));
+
+    let report = client
+        .upload_tree(&source, "films/Night Harbour S01", Some(progress), None)
+        .await
+        .expect("uploads the folder");
+    assert_eq!(report.files, 4, "failed: {:?}", report.failed);
+    assert!(report.failed.is_empty());
+
+    let base = fixture.vault_path("films/Night Harbour S01");
+    for rel in [
+        "E01.mkv",
+        "E02.mkv",
+        "Extras/Trailer.mkv",
+        "Extras/Deleted/Scene.mkv",
+    ] {
+        assert_eq!(
+            std::fs::read(base.join(rel)).unwrap(),
+            std::fs::read(source.join(rel)).unwrap(),
+            "{rel} arrived intact"
+        );
+    }
+
+    // One bar for the lot: always the same total, never going backwards, and
+    // complete only at the very end.
+    let seen = seen.lock().unwrap();
+    let total = 550_000;
+    assert!(
+        seen.iter().all(|&(_, t)| t == total),
+        "one total throughout"
+    );
+    assert!(
+        seen.windows(2).all(|w| w[0].0 <= w[1].0),
+        "never goes backwards"
+    );
+    let complete = seen.iter().filter(|&&(done, t)| done == t).count();
+    assert_eq!(complete, 1, "done once, at the end");
+    assert_eq!(seen.last(), Some(&(total, total)));
+}
+
+#[tokio::test]
+async fn a_folder_handed_to_a_file_upload_leaves_nothing_behind() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+
+    let source = fixture.dir.join("Just A Folder");
+    std::fs::create_dir_all(&source).unwrap();
+    let err = client
+        .upload(&source, "Just A Folder", false, None, None)
+        .await
+        .expect_err("a folder is not a file");
+    assert!(err.to_string().contains("is a folder"), "got: {err}");
+
+    let leftovers: Vec<String> = std::fs::read_dir(fixture.vault_path(""))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("Just") || name.ends_with(".part"))
+        .collect();
+    assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
+}
+
+#[tokio::test]
+async fn a_folder_uploads_into_one_that_already_exists() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+    std::fs::create_dir_all(fixture.vault_path("films/Season")).unwrap();
+    std::fs::write(fixture.vault_path("films/Season/E01.mkv"), b"already here").unwrap();
+
+    let source = fixture.dir.join("Season");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("E01.mkv"), b"a different one").unwrap();
+    std::fs::write(source.join("E02.mkv"), b"new").unwrap();
+
+    let report = client
+        .upload_tree(&source, "films/Season", None, None)
+        .await
+        .expect("carries on past a file that is already there");
+    assert_eq!(report.files, 1);
+    assert_eq!(
+        report.failed.len(),
+        1,
+        "the clash is reported: {:?}",
+        report.failed
+    );
+    assert_eq!(
+        std::fs::read(fixture.vault_path("films/Season/E01.mkv")).unwrap(),
+        b"already here",
+        "and nothing was overwritten"
+    );
+    assert_eq!(
+        std::fs::read(fixture.vault_path("films/Season/E02.mkv")).unwrap(),
+        b"new"
+    );
+}

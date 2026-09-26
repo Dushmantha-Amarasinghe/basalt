@@ -9,10 +9,12 @@
 //! disappear without any separate bookkeeping to go wrong.
 
 pub mod art;
+pub mod collect;
 pub mod index;
 pub mod parse;
 pub mod progress;
 pub mod subs;
+pub mod thumbs;
 
 pub use index::{Library, scan};
 pub use parse::{Parsed, is_video};

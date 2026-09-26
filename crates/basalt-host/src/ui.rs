@@ -57,6 +57,8 @@ pub struct HostStatus {
     pub library: LibraryStatus,
     /// Whether each device keeps its own watch history.
     pub progress_per_device: bool,
+    /// Which library sections devices show.
+    pub sections: basalt_proto::msg::Sections,
     /// Whether the serving loop is actually accepting connections.
     pub serving: bool,
     /// Why it is not, when it is not.
@@ -285,6 +287,7 @@ mod tests {
                 scanned_at: 0,
             },
             progress_per_device: false,
+            sections: basalt_proto::msg::Sections::default(),
             serving: true,
             problem: None,
         };
@@ -300,6 +303,7 @@ mod tests {
                 "problem",
                 "progressPerDevice",
                 "requirePin",
+                "sections",
                 "serving",
                 "startWithWindows",
                 "vault",

@@ -131,13 +131,15 @@ Neither happens until you turn it on.
 ```
 rustup toolchain install stable          # Rust 1.98+ MSVC
 cd apps/client/src-tauri && pwsh -File fetch-libmpv.ps1
+cd apps/host/src-tauri   && pwsh -File fetch-libmpv.ps1
 cd apps/client && npm install && npx tauri build
 cd apps/host   && npm install && npx tauri build
 ```
 
 `fetch-libmpv.ps1` downloads libmpv and a small wrapper into `src-tauri/lib/`
 and verifies the wrapper's checksum. They are not in the repository because
-`libmpv-2.dll` is 96 MB.
+`libmpv-2.dll` is 96 MB. The host uses the same libmpv to make thumbnails of
+videos; its script copies the client's rather than downloading it again.
 
 The host recognises films against a catalogue of every film and series title
 on Wikidata, bundled so that it works offline and sends nothing anywhere. It is

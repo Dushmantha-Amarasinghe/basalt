@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, type LibraryItem, type LibraryResponse } from './api'
+import { ALL_SECTIONS, api, type LibraryItem, type LibraryResponse, type Sections } from './api'
 
 export interface MediaLibrary {
   /** False when the host has the feature switched off. */
@@ -9,6 +9,8 @@ export interface MediaLibrary {
   series: LibraryItem[]
   loading: boolean
   error: string | null
+  /** Which sections the host's owner wants shown. */
+  sections: Sections
   refresh: () => void
 }
 
@@ -49,7 +51,8 @@ export function useMediaLibrary(connected: boolean): MediaLibrary {
     enabled: boolean
     scanning: boolean
     items: LibraryItem[]
-  }>({ enabled: false, scanning: false, items: [] })
+    sections: Sections
+  }>({ enabled: false, scanning: false, items: [], sections: ALL_SECTIONS })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -77,6 +80,9 @@ export function useMediaLibrary(connected: boolean): MediaLibrary {
         scanning: response.scanning,
         // No items means "you already have them", not "there are none".
         items: response.items ? withEmptyLists(response.items) : previous.items,
+        // Always sent, changed or not: a host that only changed which
+        // sections to show has no new items to send.
+        sections: { ...ALL_SECTIONS, ...(response.sections ?? {}) },
       }))
       setError(null)
     } catch (e) {
@@ -92,7 +98,7 @@ export function useMediaLibrary(connected: boolean): MediaLibrary {
       // A fresh connection may be a different host with a different library,
       // so the revision cannot carry over.
       revision.current = 0
-      setState({ enabled: false, scanning: false, items: [] })
+      setState({ enabled: false, scanning: false, items: [], sections: ALL_SECTIONS })
       return
     }
     void load()
@@ -113,6 +119,7 @@ export function useMediaLibrary(connected: boolean): MediaLibrary {
     series: state.items.filter((item) => item.kind === 'series'),
     loading,
     error,
+    sections: state.sections,
     refresh: useCallback(() => void load(), [load]),
   }
 }

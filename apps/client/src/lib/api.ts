@@ -138,6 +138,61 @@ export interface LibraryResponse {
   scanning: boolean
   /** Absent when the revision asked for is still current. */
   items?: LibraryItem[] | null
+  /** Which sections the host's owner wants shown. Absent from an older host. */
+  sections?: Sections
+}
+
+/** What an upload did. For a folder, some of its files may not have arrived. */
+export interface UploadOutcome {
+  bytes: number
+  files: number
+  /** Vault path and reason, for each file that did not arrive. */
+  failed: Array<[string, string]>
+}
+
+/** The library sections this device shows. Mirrors the Rust. */
+export interface Sections {
+  movies: boolean
+  series: boolean
+  videos: boolean
+  music: boolean
+  photos: boolean
+}
+
+export const ALL_SECTIONS: Sections = {
+  movies: true,
+  series: true,
+  videos: true,
+  music: true,
+  photos: true,
+}
+
+/** One file in a collection. Mirrors the Rust. */
+export interface MediaFile {
+  /** Vault-relative. */
+  path: string
+  size: number
+  /** Unix seconds. */
+  mtime: number
+  /** Photos only: pixels as the photo is meant to be seen. */
+  width?: number | null
+  height?: number | null
+}
+
+/** Media on the drive, sorted by the host, newest first. */
+export interface Collections {
+  videos: MediaFile[]
+  music: MediaFile[]
+  photos: MediaFile[]
+  recent: MediaFile[]
+  truncated: boolean
+}
+
+export interface CollectionsResponse {
+  revision: number
+  scanning: boolean
+  /** Absent when the revision asked for is still current. */
+  collections?: Collections | null
 }
 
 /** Below this, a match is a guess worth showing the user. Mirrors the Rust. */
@@ -275,6 +330,11 @@ export const api = {
 
   library: (knownRevision: number) =>
     call<LibraryResponse>('library', { knownRevision }),
+  /** Every video, song and photo on the drive, sorted by the host. */
+  collections: (knownRevision: number) =>
+    call<CollectionsResponse>('collections', { knownRevision }),
+  /** The start of every media URL. A percent-encoded path goes on the end. */
+  mediaBase: () => call<string>('media_base'),
   /** Poster bytes for one item, as a data URL the interface can hand to an
    *  `<img>`. Null when the host has none. */
   art: (id: string) => call<string | null>('library_art', { id }),
@@ -297,8 +357,9 @@ export const api = {
 
   download: (remote: string, local: string, id: string) =>
     call<number>('download', { remote, local, id }),
+  /** A file, or a folder with everything in it. */
   upload: (local: string, remote: string, overwrite: boolean, id: string) =>
-    call<number>('upload', { local, remote, overwrite, id }),
+    call<UploadOutcome>('upload', { local, remote, overwrite, id }),
   cancelTransfer: (id: string) => call<boolean>('cancel_transfer', { id }),
   /**
    * Hands a file to a player that can decode it — streamed over a local URL
@@ -755,6 +816,16 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return 'VLC' as T
     case 'media_url':
       return '' as T
+    case 'media_base':
+      // No thumbnails in the browser preview: tiles show their placeholder,
+      // which is what a host without pictures looks like too.
+      return '' as T
+    case 'collections':
+      return {
+        revision: 1,
+        scanning: false,
+        collections: args?.knownRevision === 1 ? null : mockCollections(),
+      } as T
     case 'make_dir':
     case 'rename_entry':
     case 'remove_entry':
@@ -762,4 +833,35 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     default:
       return undefined as T
   }
+}
+
+/** A small spread of every kind, so each section has something to show. */
+function mockCollections(): Collections {
+  const now = Math.floor(Date.now() / 1000)
+  const day = 86_400
+  const photos: MediaFile[] = Array.from({ length: 48 }, (_, i) => {
+    const portrait = i % 3 === 1
+    const square = i % 7 === 0
+    return {
+      path: `Photos/${2026 - Math.floor(i / 20)}/Trip/IMG_${String(4100 + i).padStart(4, '0')}.jpg`,
+      size: 2_400_000 + i * 31_000,
+      mtime: now - i * day * 4,
+      width: square ? 3000 : portrait ? 3000 : 4000,
+      height: square ? 3000 : portrait ? 4000 : 3000,
+    }
+  })
+  const videos: MediaFile[] = Array.from({ length: 14 }, (_, i) => ({
+    path: `Home Videos/Clip ${String(i + 1).padStart(2, '0')}.mp4`,
+    size: 180_000_000 + i * 9_000_000,
+    mtime: now - i * day * 6,
+  }))
+  const music: MediaFile[] = Array.from({ length: 24 }, (_, i) => ({
+    path: `Music/The Quiet Coast/Harbour Lights/${String(i + 1).padStart(2, '0')} Track ${i + 1}.flac`,
+    size: 28_000_000 + i * 400_000,
+    mtime: now - i * day,
+  }))
+  const recent = [...photos.slice(0, 6), ...videos.slice(0, 4), ...music.slice(0, 4)].sort(
+    (a, b) => b.mtime - a.mtime,
+  )
+  return { videos, music, photos, recent, truncated: false }
 }

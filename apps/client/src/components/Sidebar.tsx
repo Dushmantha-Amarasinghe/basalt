@@ -50,7 +50,10 @@ export function Sidebar({
   driveTotal,
   connected,
   vaultName = 'Vault',
+  hidden,
 }: {
+  /** Library sections the host's owner has chosen not to show. */
+  hidden?: ReadonlySet<NavKey>
   active: NavKey
   onNavigate: (key: NavKey) => void
   driveUsed: number
@@ -82,9 +85,9 @@ export function Sidebar({
         ))}
       </nav>
 
-      <SectionLabel>Library</SectionLabel>
+      {LIBRARY.some((item) => !hidden?.has(item.key)) && <SectionLabel>Library</SectionLabel>}
       <nav className="flex flex-col gap-1">
-        {LIBRARY.map((item) => (
+        {LIBRARY.filter((item) => !hidden?.has(item.key)).map((item) => (
           <NavItem
             key={item.key}
             navKey={item.key}

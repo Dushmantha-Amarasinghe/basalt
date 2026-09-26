@@ -41,6 +41,15 @@ export interface LibraryStatus {
   scannedAt: number
 }
 
+/** The library sections devices show in their sidebar. */
+export interface Sections {
+  movies: boolean
+  series: boolean
+  videos: boolean
+  music: boolean
+  photos: boolean
+}
+
 export interface HostStatus {
   hostId: string
   hostName: string
@@ -53,6 +62,8 @@ export interface HostStatus {
   library: LibraryStatus
   /** Whether each device sees its own watch history rather than a shared one. */
   progressPerDevice: boolean
+  /** Which library sections devices show. */
+  sections: Sections
   serving: boolean
   /** Why sharing stopped, when it has. */
   problem: string | null
@@ -185,6 +196,8 @@ export const api = {
   setTmdbKey: (key: string): Promise<HostStatus> => call('set_tmdb_key', { key }),
   setProgressPerDevice: (enabled: boolean): Promise<HostStatus> =>
     call('set_progress_per_device', { enabled }),
+  setSections: (sections: Sections): Promise<HostStatus> =>
+    call('set_sections', { sections }),
   openVaultFolder: (): Promise<void> => call('open_vault_folder'),
   /** Which build this is — the commit and the day it was made. */
   buildInfo: (): Promise<string> => call('build_info'),
@@ -233,6 +246,7 @@ const sample: {
       scannedAt: 0,
     },
     progressPerDevice: false,
+    sections: { movies: true, series: true, videos: true, music: true, photos: true },
     serving: true,
     problem: null,
   },
@@ -387,6 +401,9 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return sample.status
       case 'set_progress_per_device':
         sample.status.progressPerDevice = Boolean(args?.enabled)
+        return sample.status
+      case 'set_sections':
+        sample.status.sections = args?.sections as Sections
         return sample.status
       case 'set_tmdb_key':
         sample.status.library.hasKey = String(args?.key ?? '').trim().length > 0

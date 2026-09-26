@@ -80,6 +80,11 @@ pub struct HostConfig {
     #[serde(default)]
     pub progress_per_device: bool,
 
+    /// Which library sections devices show. All of them unless the owner
+    /// unticks some.
+    #[serde(default)]
+    pub sections: basalt_proto::msg::Sections,
+
     #[serde(default)]
     pub devices: Vec<Device>,
 }
@@ -102,6 +107,7 @@ impl HostConfig {
             posters: false,
             tmdb_key: String::new(),
             progress_per_device: false,
+            sections: basalt_proto::msg::Sections::default(),
             devices: Vec::new(),
         })
     }

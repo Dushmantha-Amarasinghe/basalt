@@ -118,6 +118,13 @@ impl MediaProxy {
         )
     }
 
+    /// The start every URL shares: a vault path, percent-encoded, goes on the
+    /// end. Handed to the interface once so a grid of thumbnails needs no
+    /// round trip per tile.
+    pub fn base_url(&self) -> String {
+        format!("http://{}/{}/", self.addr, self.token)
+    }
+
     pub fn addr(&self) -> SocketAddr {
         self.addr
     }
@@ -168,6 +175,19 @@ async fn handle(
         // should not confirm that the right one would have worked.
         return respond_status(&mut stream, 404, "Not Found").await;
     };
+
+    // A thumbnail rather than the file: the same URL with `?thumb=320`, so a
+    // grid of tiles is a grid of plain image URLs the page loads lazily and
+    // caches, instead of a round trip through the app for every one.
+    if let Some(size) = thumb_size(&target) {
+        return match client.thumbnail(&path, size).await {
+            Ok(bytes) => respond_image(&mut stream, &bytes, method == "HEAD").await,
+            Err(e) => {
+                tracing::debug!("no thumbnail for {path}: {e}");
+                respond_status(&mut stream, 404, "Not Found").await
+            }
+        };
+    }
 
     let entry = match client.stat(&path).await {
         Ok(entry) => entry,
@@ -273,6 +293,36 @@ async fn respond_status(stream: &mut TcpStream, code: u16, reason: &str) -> Resu
         format!("HTTP/1.1 {code} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     stream.write_all(head.as_bytes()).await?;
     Ok(())
+}
+
+/// A finished JPEG, cached by the page.
+///
+/// For a week: the URL carries the file's modification time, so a changed
+/// file is a different URL and never meets its old picture.
+async fn respond_image(stream: &mut TcpStream, bytes: &[u8], head_only: bool) -> Result<()> {
+    let head = format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: image/jpeg\r\n\
+         Content-Length: {}\r\n\
+         Cache-Control: private, max-age=604800\r\n\
+         Connection: close\r\n\r\n",
+        bytes.len()
+    );
+    stream.write_all(head.as_bytes()).await?;
+    if !head_only {
+        stream.write_all(bytes).await?;
+    }
+    Ok(())
+}
+
+/// The size in `?thumb=N`, when the request is for a thumbnail.
+fn thumb_size(target: &str) -> Option<u32> {
+    let (_, query) = target.split_once('?')?;
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("thumb="))
+        .and_then(|n| n.parse().ok())
+        .filter(|&n| n > 0)
 }
 
 /// Checks the token and returns the vault path it guards.
@@ -407,6 +457,21 @@ fn percent_decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_thumbnail_is_asked_for_in_the_query() {
+        assert_eq!(
+            super::thumb_size("/tok/Photos%2Fa.jpg?thumb=320&v=17"),
+            Some(320)
+        );
+        assert_eq!(
+            super::thumb_size("/tok/Photos%2Fa.jpg?v=17&thumb=1600"),
+            Some(1600)
+        );
+        assert_eq!(super::thumb_size("/tok/film.mkv"), None);
+        assert_eq!(super::thumb_size("/tok/film.mkv?thumb=0"), None);
+        assert_eq!(super::thumb_size("/tok/film.mkv?thumb=big"), None);
+    }
+
     use super::*;
 
     const TOKEN: &str = "0011223344556677";

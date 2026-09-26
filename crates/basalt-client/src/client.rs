@@ -457,6 +457,25 @@ impl Basalt {
         lease.check(result)
     }
 
+    /// Every video, song and photo on the drive, sorted by the host.
+    pub async fn collections(
+        &self,
+        known_revision: u64,
+    ) -> Result<basalt_proto::msg::CollectionsResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.collections(known_revision).await;
+        lease.check(result)
+    }
+
+    /// A preview image of a video or photo, made by the host. JPEG.
+    pub async fn thumbnail(&self, path: &str, size: u32) -> Result<Vec<u8>> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.thumbnail(path, size).await;
+        lease.check(result)
+    }
+
     pub async fn art(&self, id: &str) -> Result<Vec<u8>> {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
@@ -737,12 +756,26 @@ impl Basalt {
         cancel: Option<Cancel>,
     ) -> Result<u64> {
         let meta = tokio::fs::metadata(local).await?;
+        // A folder has a size and opens as nothing. Handed to `File::open` on
+        // Windows it fails as "access is denied", which is what dropping a
+        // folder used to say. Folders go through `upload_tree`.
+        if meta.is_dir() {
+            return Err(ClientError::Protocol(format!(
+                "{} is a folder",
+                local.display()
+            )));
+        }
         let total = meta.len();
         let mtime = meta
             .modified()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64);
+
+        // Opened before the host is asked for anything. The other way round, a
+        // file that would not open still started an upload on the host, and
+        // left an empty partial file on the drive when this side gave up.
+        let mut file = tokio::fs::File::open(local).await?;
 
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
@@ -751,8 +784,6 @@ impl Basalt {
             let result = lease.write_begin(remote, total, overwrite, None).await;
             lease.check(result)?
         };
-
-        let mut file = tokio::fs::File::open(local).await?;
         let mut buf = vec![0u8; CHUNK_BYTES as usize];
         let mut hasher = blake3::Hasher::new();
 
@@ -839,6 +870,173 @@ impl Basalt {
         let result = lease.write_commit(&begin.upload, &digest, mtime).await;
         lease.check(result)?;
         Ok(total)
+    }
+}
+
+/// What a folder upload did.
+#[derive(Debug, Clone, Default)]
+pub struct TreeUpload {
+    /// Files that arrived.
+    pub files: usize,
+    /// Their bytes.
+    pub bytes: u64,
+    /// Files that did not, with why — vault-relative, as they would have been.
+    pub failed: Vec<(String, String)>,
+}
+
+/// Everything under a local folder, parents before children.
+#[derive(Debug, Default)]
+struct LocalTree {
+    /// Folders, relative to the root, with `/` between parts.
+    dirs: Vec<String>,
+    /// Files: relative path, full local path, size.
+    files: Vec<(String, PathBuf, u64)>,
+    /// Anything that could not be read, and why.
+    unreadable: Vec<(String, String)>,
+}
+
+/// Walks a local folder without following links.
+///
+/// Junctions and symbolic links are skipped rather than followed: Windows
+/// profiles are full of junctions that point back up the tree, and following
+/// one uploads the same files forever.
+fn walk_local(root: &Path) -> LocalTree {
+    let mut tree = LocalTree::default();
+    let mut pending = vec![(root.to_path_buf(), String::new())];
+    while let Some((dir, rel)) = pending.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                tree.unreadable.push((rel.clone(), e.to_string()));
+                continue;
+            }
+        };
+        let mut children: Vec<_> = entries.flatten().collect();
+        children.sort_by_key(|e| e.file_name());
+        for entry in children {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let child = if rel.is_empty() {
+                name
+            } else {
+                format!("{rel}/{name}")
+            };
+            if kind.is_dir() {
+                tree.dirs.push(child.clone());
+                pending.push((entry.path(), child));
+            } else if kind.is_file() {
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                tree.files.push((child, entry.path(), size));
+            }
+        }
+    }
+    // Parents first, so every folder exists before anything is put in it.
+    tree.dirs.sort_by_key(|d| d.matches('/').count());
+    tree.files.sort_by(|a, b| a.0.cmp(&b.0));
+    tree
+}
+
+impl Basalt {
+    /// Uploads a whole folder: its folders, then its files, as one transfer.
+    ///
+    /// Progress is reported across the lot — bytes of every file together —
+    /// so the interface shows one bar for a season of episodes rather than
+    /// ten. One file failing does not stop the rest; each is reported at the
+    /// end. Cancelling stops the file in flight and everything after it.
+    pub async fn upload_tree(
+        &self,
+        local: &Path,
+        remote: &str,
+        progress: Option<ProgressFn>,
+        cancel: Option<Cancel>,
+    ) -> Result<TreeUpload> {
+        let root = local.to_path_buf();
+        let tree = tokio::task::spawn_blocking(move || walk_local(&root))
+            .await
+            .map_err(|e| ClientError::Protocol(format!("could not read the folder: {e}")))?;
+
+        let join = |rel: &str| {
+            if rel.is_empty() {
+                remote.to_string()
+            } else {
+                format!("{remote}/{rel}")
+            }
+        };
+        let mut report = TreeUpload {
+            failed: tree
+                .unreadable
+                .iter()
+                .map(|(rel, why)| (join(rel), why.clone()))
+                .collect(),
+            ..TreeUpload::default()
+        };
+
+        // The folder itself, then its folders. One that is already there is
+        // fine: uploading into an existing folder is how adding to one works.
+        for dir in std::iter::once(String::new()).chain(tree.dirs.iter().cloned()) {
+            match self.mkdir(&join(&dir)).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == "exists" => {}
+                Err(e) => return Err(e),
+            }
+        }
+
+        let total: u64 = tree.files.iter().map(|(_, _, size)| size).sum();
+        let mut done = 0u64;
+        for (rel, path, size) in &tree.files {
+            if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+                return Err(ClientError::Protocol("cancelled".into()));
+            }
+            let target = join(rel);
+            // Each file's progress, placed after everything before it — and
+            // never "complete" until the last file is, because the interface
+            // takes transferred == total as done.
+            let file_progress = progress.as_ref().map(|outer| {
+                let outer = Arc::clone(outer);
+                let base = done;
+                let whole = remote.to_string();
+                let ceiling = total.saturating_sub(1);
+                Arc::new(move |p: Progress| {
+                    outer(Progress {
+                        kind: TransferKind::Upload,
+                        path: whole.clone(),
+                        transferred: (base + p.transferred).min(ceiling),
+                        total,
+                    })
+                }) as ProgressFn
+            });
+            match self
+                .upload(path, &target, false, file_progress, cancel.clone())
+                .await
+            {
+                Ok(bytes) => {
+                    report.files += 1;
+                    report.bytes += bytes;
+                }
+                Err(e) => {
+                    if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+                        return Err(e);
+                    }
+                    report.failed.push((target, e.to_string()));
+                }
+            }
+            done += size;
+        }
+
+        if let Some(outer) = &progress {
+            outer(Progress {
+                kind: TransferKind::Upload,
+                path: remote.to_string(),
+                transferred: total,
+                total,
+            });
+        }
+        Ok(report)
     }
 }
 

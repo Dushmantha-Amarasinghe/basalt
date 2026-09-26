@@ -17,9 +17,19 @@ import { api, joinPath, toEntries } from './api'
  */
 
 const MAX_DIRS = 60
-const VIDEO = new Set(['mp4', 'mkv', 'avi', 'mov', 'm4v', 'webm', 'wmv', 'flv', 'ts'])
-const AUDIO = new Set(['mp3', 'flac', 'wav', 'm4a', 'aac', 'ogg', 'opus', 'wma'])
-const IMAGE = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'heic', 'tiff'])
+// The same lists the host sorts the drive with (`basalt_proto::media`). They
+// used to differ, so a `.m2ts` played but never showed under Videos.
+const VIDEO = new Set([
+  'mp4', 'mkv', 'avi', 'mov', 'm4v', 'webm', 'wmv', 'flv', 'ts', 'm2ts', 'mts', 'mpg', 'mpeg',
+  'vob', 'divx', 'ogv', 'rmvb', 'asf', '3gp',
+])
+const AUDIO = new Set([
+  'mp3', 'flac', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'wma', 'aiff', 'aif', 'alac', 'ape',
+  'wv', 'mka',
+])
+const IMAGE = new Set([
+  'jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'avif', 'bmp', 'heic', 'heif', 'tif', 'tiff',
+])
 
 export type LibraryKind = 'videos' | 'music' | 'photos'
 

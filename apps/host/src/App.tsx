@@ -233,6 +233,9 @@ export function App(): React.JSX.Element {
                     onProgressPerDevice={(enabled) => {
                       void api.setProgressPerDevice(enabled).then(apply)
                     }}
+                    onSections={(sections) => {
+                      void api.setSections(sections).then(apply)
+                    }}
                     build={build}
                     onOpenLog={() => void api.openLogFolder().catch(() => {})}
                     onRename={(name) => {

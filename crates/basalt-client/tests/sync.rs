@@ -595,3 +595,191 @@ async fn a_deleted_film_leaves_the_library_on_its_own() {
     }
     panic!("the deleted film never left the library");
 }
+
+// ---------------------------------------------------------------------------
+// Collections: Videos, Music, Photos and Recent
+// ---------------------------------------------------------------------------
+
+async fn collections_where(
+    client: &Arc<Basalt>,
+    want: impl Fn(&basalt_proto::msg::Collections) -> bool,
+) -> basalt_proto::msg::Collections {
+    let deadline = std::time::Instant::now() + Duration::from_secs(40);
+    let mut last = basalt_proto::msg::Collections::default();
+    while std::time::Instant::now() < deadline {
+        let response = client.collections(0).await.expect("the collections answer");
+        if let Some(collections) = response.collections {
+            if want(&collections) {
+                return collections;
+            }
+            last = collections;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    last
+}
+
+fn names(files: &[basalt_proto::msg::MediaFile]) -> Vec<&str> {
+    files.iter().map(|f| f.path.as_str()).collect()
+}
+
+/// A photo at the top of the drive never reached Photos when it arrived
+/// after the device connected, and one three folders down never did at all.
+/// The host sorts the whole drive, recognition on or off.
+#[tokio::test]
+async fn every_photo_song_and_video_is_found_at_any_depth() {
+    let fixture = start_host().await;
+    std::fs::create_dir_all(fixture.vault_path("Photos/2024/Trip/Day 2")).unwrap();
+    std::fs::create_dir_all(fixture.vault_path("Music/Artist/Album")).unwrap();
+    image::RgbImage::new(40, 30)
+        .save(fixture.vault_path("Photos/2024/Trip/Day 2/beach.png"))
+        .unwrap();
+    std::fs::write(
+        fixture.vault_path("Music/Artist/Album/01 Opening.flac"),
+        b"flac",
+    )
+    .unwrap();
+    std::fs::write(fixture.vault_path("films/clip.m2ts"), b"video").unwrap();
+
+    let client = fixture.paired_client().await;
+    assert!(!fixture.host.library_enabled(), "recognition stays off");
+    let c = collections_where(&client, |c| !c.photos.is_empty()).await;
+
+    assert_eq!(names(&c.photos), ["Photos/2024/Trip/Day 2/beach.png"]);
+    assert_eq!(
+        (c.photos[0].width, c.photos[0].height),
+        (Some(40), Some(30))
+    );
+    assert_eq!(names(&c.music), ["Music/Artist/Album/01 Opening.flac"]);
+    assert_eq!(names(&c.videos), ["films/clip.m2ts"]);
+    assert!(
+        names(&c.recent).contains(&"notes.txt"),
+        "Recent is every kind of file"
+    );
+}
+
+#[tokio::test]
+async fn a_photo_added_or_deleted_shows_without_a_scan() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+    collections_where(&client, |_| true).await;
+    settle().await;
+
+    image::RgbImage::new(8, 8)
+        .save(fixture.vault_path("26_05_12_19_37_04.png"))
+        .unwrap();
+    let c = collections_where(&client, |c| !c.photos.is_empty()).await;
+    assert_eq!(names(&c.photos), ["26_05_12_19_37_04.png"]);
+
+    std::fs::remove_file(fixture.vault_path("26_05_12_19_37_04.png")).unwrap();
+    let c = collections_where(&client, |c| c.photos.is_empty()).await;
+    assert!(c.photos.is_empty(), "the deleted photo is still listed");
+}
+
+/// An upload that never got going left an empty partial file on the drive,
+/// hidden and there for good. The walk tidies those away — but not one that
+/// is recent enough to be resumed.
+#[tokio::test]
+async fn abandoned_partial_uploads_are_swept_and_recent_ones_kept() {
+    let fixture = start_host().await;
+    let old = fixture.vault_path(".basalt-00112233445566778899aabbccddeeff.part");
+    let fresh = fixture.vault_path("films/.basalt-ffeeddccbbaa99887766554433221100.part");
+    std::fs::write(&old, b"").unwrap();
+    std::fs::write(&fresh, b"half a film").unwrap();
+    let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+    std::fs::File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(two_hours_ago)
+        .unwrap();
+
+    let client = fixture.paired_client().await;
+    fixture.host.start_scan();
+    collections_where(&client, |_| true).await;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while old.exists() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!old.exists(), "the abandoned empty upload is still there");
+    assert!(fresh.exists(), "a resumable upload was removed");
+}
+
+#[tokio::test]
+async fn devices_hear_which_sections_to_show() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+    assert_eq!(
+        client.library(0).await.unwrap().sections,
+        basalt_proto::msg::Sections::default()
+    );
+
+    let chosen = basalt_proto::msg::Sections {
+        music: false,
+        photos: false,
+        ..Default::default()
+    };
+    fixture.host.set_sections(chosen).await.unwrap();
+    assert_eq!(client.library(0).await.unwrap().sections, chosen);
+}
+
+#[tokio::test]
+async fn a_photo_thumbnail_is_made_once_and_kept() {
+    let fixture = start_host().await;
+    image::RgbImage::from_pixel(1200, 900, image::Rgb([30, 140, 200]))
+        .save(fixture.vault_path("beach.png"))
+        .unwrap();
+    let client = fixture.paired_client().await;
+
+    let first = client
+        .thumbnail("beach.png", 320)
+        .await
+        .expect("a thumbnail");
+    let picture = image::load_from_memory(&first).expect("a real image");
+    assert_eq!((picture.width(), picture.height()), (320, 240));
+
+    let cached: Vec<_> = walk_files(&fixture.dir.join("thumbs"));
+    assert_eq!(cached.len(), 1, "kept for next time");
+    assert_eq!(client.thumbnail("beach.png", 320).await.unwrap(), first);
+
+    // A bigger picture, for viewing, is a separate one.
+    let big = client.thumbnail("beach.png", 1600).await.unwrap();
+    let picture = image::load_from_memory(&big).unwrap();
+    assert_eq!(
+        (picture.width(), picture.height()),
+        (1200, 900),
+        "never blown up"
+    );
+}
+
+#[tokio::test]
+async fn what_cannot_be_pictured_is_not_found() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+    let err = client
+        .thumbnail("notes.txt", 320)
+        .await
+        .expect_err("not media");
+    assert_eq!(err.kind(), "notfound");
+    let err = client
+        .thumbnail("missing.png", 320)
+        .await
+        .expect_err("not there");
+    assert_eq!(err.kind(), "notfound");
+    // Nor can a path be used to picture something outside the drive.
+    assert!(client.thumbnail("../host.json", 320).await.is_err());
+}
+
+fn walk_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk_files(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
+}

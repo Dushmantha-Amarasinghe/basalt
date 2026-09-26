@@ -323,6 +323,35 @@ impl Session {
         .map_err(Into::into)
     }
 
+    /// Every video, song and photo the host has sorted, unless unchanged.
+    pub async fn collections(
+        &mut self,
+        known_revision: u64,
+    ) -> Result<basalt_proto::msg::CollectionsResponse> {
+        call_json(
+            &mut self.stream,
+            Op::Collections,
+            &basalt_proto::msg::CollectionsRequest { known_revision },
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    /// A preview image of a video or photo, as JPEG bytes.
+    pub async fn thumbnail(&mut self, path: &str, size: u32) -> Result<Vec<u8>> {
+        write_request(
+            &mut self.stream,
+            Op::Thumbnail,
+            &serde_json::to_vec(&basalt_proto::msg::ThumbnailRequest {
+                path: path.to_string(),
+                size,
+            })
+            .map_err(|e| ClientError::Protocol(e.to_string()))?,
+        )
+        .await?;
+        Ok(read_response(&mut self.stream).await?)
+    }
+
     /// Poster bytes for one item.
     pub async fn art(&mut self, id: &str) -> Result<Vec<u8>> {
         write_request(
