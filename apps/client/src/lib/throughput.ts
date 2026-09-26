@@ -61,6 +61,8 @@ const listeners = new Set<() => void>()
 
 let watchdog: ReturnType<typeof setInterval> | null = null
 let lastReportAt = 0
+/** Whether the readout was still counting a transfer at the last tick. */
+let readoutLive = false
 
 function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now()
@@ -71,6 +73,10 @@ function push(bytesPerSecond: number): void {
   samples.copyWithin(0, 1)
   samples[SAMPLE_COUNT - 1] =
     bytesPerSecond < IDLE_FLOOR_RATE ? 0 : bytesPerSecond
+  notify()
+}
+
+function notify(): void {
   for (const listener of listeners) listener()
 }
 
@@ -125,11 +131,19 @@ function start(): void {
   if (watchdog !== null) return
   lastReportAt = now()
   watchdog = setInterval(() => {
-    // Only when the trace still shows something. A permanently idle app must
-    // not repaint the sparkline forever for no reason.
     if (now() - lastReportAt < IDLE_AFTER_MS) return
-    if (getCurrent() === 0) return
-    push(0)
+    // The trace drops to zero once, as soon as reports stop.
+    if (getCurrent() !== 0) push(0)
+    // The readout takes longer: it averages the last two seconds, so it is
+    // still counting the transfer when the trace has already gone flat. It
+    // used to be told nothing after that one zero, and stayed on whatever it
+    // showed then — the last speed, on screen indefinitely with nothing
+    // moving. So it is told on every tick until its window has emptied, and
+    // once more after, to show idle. A permanently idle app still does
+    // nothing at all.
+    const live = getReadoutRate() > 0
+    if (live || readoutLive) notify()
+    readoutLive = live
   }, IDLE_AFTER_MS)
 }
 

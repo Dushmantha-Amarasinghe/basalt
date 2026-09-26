@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   IDLE_AFTER_MS,
   IDLE_FLOOR_RATE,
+  READOUT_WINDOW_MS,
   SAMPLE_COUNT,
   getCurrent,
   getCurrentMbps,
@@ -126,7 +127,9 @@ describe('throughput store', () => {
     vi.useFakeTimers()
     whileSubscribed((listener) => {
       recordWindow(5_000_000, 125)
-      vi.advanceTimersByTime(IDLE_AFTER_MS * 2)
+      // Settled means the readout's window has emptied as well as the trace,
+      // since the readout is told until it reads zero.
+      vi.advanceTimersByTime(READOUT_WINDOW_MS + IDLE_AFTER_MS * 3)
       const afterSettling = listener.mock.calls.length
 
       vi.advanceTimersByTime(IDLE_AFTER_MS * 20)
@@ -219,5 +222,36 @@ describe('the readout', () => {
     feed(20_000_000, 1)
     resetThroughput()
     expect(getReadoutRate()).toBe(0)
+  })
+})
+
+describe('the readout after a transfer stops', () => {
+  /// The header kept showing the last speed with nothing moving: the trace
+  /// went to zero once, while the two-second readout still counted the
+  /// transfer, and nothing told it anything after that.
+  it('keeps being told until it reads zero', () => {
+    vi.useFakeTimers()
+    whileSubscribed((listener) => {
+      recordWindow(4_000_000, 250)
+      expect(getReadoutRate()).toBeGreaterThan(0)
+
+      let lastSeen = -1
+      listener.mockImplementation(() => {
+        lastSeen = getReadoutRate()
+      })
+      vi.advanceTimersByTime(5_000)
+      expect(lastSeen).toBe(0)
+    })
+  })
+
+  it('goes quiet once it has said so', () => {
+    vi.useFakeTimers()
+    whileSubscribed((listener) => {
+      recordWindow(4_000_000, 250)
+      vi.advanceTimersByTime(5_000)
+      listener.mockClear()
+      vi.advanceTimersByTime(10_000)
+      expect(listener).not.toHaveBeenCalled()
+    })
   })
 })
