@@ -1176,9 +1176,17 @@ impl Host {
             )
         };
         let scanning = self.is_scanning();
+        let (videos, music, photos) = {
+            let stored = self.collections.lock().expect("collections lock");
+            let c = &stored.collections;
+            (c.videos.len(), c.music.len(), c.photos.len())
+        };
         let library = self.library.lock().expect("library lock");
 
         crate::ui::LibraryStatus {
+            videos,
+            music,
+            photos,
             enabled,
             scanning,
             films: library

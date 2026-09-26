@@ -92,6 +92,11 @@ pub struct LibraryStatus {
     pub has_key: bool,
     /// Unix seconds of the last completed scan, zero if never.
     pub scanned_at: i64,
+    /// Files in Videos, Music and Photos, found whether or not films are
+    /// being recognised.
+    pub videos: usize,
+    pub music: usize,
+    pub photos: usize,
 }
 
 /// A drive offered on the setup screen.
@@ -285,6 +290,9 @@ mod tests {
                 posters: false,
                 has_key: false,
                 scanned_at: 0,
+                videos: 0,
+                music: 0,
+                photos: 0,
             },
             progress_per_device: false,
             sections: basalt_proto::msg::Sections::default(),
@@ -323,6 +331,9 @@ mod tests {
             posters: true,
             has_key: true,
             scanned_at: 4,
+            videos: 5,
+            music: 6,
+            photos: 7,
         };
         assert_eq!(
             keys(&status),
@@ -330,11 +341,14 @@ mod tests {
                 "enabled",
                 "films",
                 "hasKey",
+                "music",
+                "photos",
                 "posters",
                 "scannedAt",
                 "scanning",
                 "series",
                 "uncertain",
+                "videos",
                 "withArt"
             ]
         );

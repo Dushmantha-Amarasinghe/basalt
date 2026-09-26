@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Check, Image as ImageIcon, Pencil, RefreshCw } from 'lucide-react'
+import { Check, Film, Image as ImageIcon, Music, Pencil, RefreshCw, Tv, Video } from 'lucide-react'
 import type { HostStatus, Sections } from '@/lib/api'
 import { About } from './About'
 import { Switch } from './ui/Switch'
-import { formatAgo } from '@/lib/utils'
+import { cn, formatAgo } from '@/lib/utils'
 
 /**
  * The settings this app has.
@@ -109,7 +109,13 @@ export function SettingsPanel({
       <Row
         title="Sections on your devices"
         detail="What each device lists under Library. Hiding a section only tidies the sidebar; every file stays reachable under Files."
-        extra={<SectionPicker sections={status.sections} onChange={onSections} />}
+        extra={
+          <SectionPicker
+            sections={status.sections}
+            library={status.library}
+            onChange={onSections}
+          />
+        }
       />
 
       <Row
@@ -410,52 +416,138 @@ function Row({
   )
 }
 
-const SECTION_LABELS: Array<[keyof Sections, string]> = [
-  ['movies', 'Movies'],
-  ['series', 'TV Series'],
-  ['videos', 'Videos'],
-  ['music', 'Music'],
-  ['photos', 'Photos'],
+interface SectionCard {
+  key: keyof Sections
+  label: string
+  icon: typeof Film
+  /** How much is in it, in words: "42 films". */
+  amount: (library: HostStatus['library']) => string
+  /** Filled by recognising films and series, which can be switched off. */
+  recognised?: boolean
+}
+
+const SECTION_CARDS: SectionCard[] = [
+  { key: 'movies', label: 'Movies', icon: Film, recognised: true, amount: (l) => count(l.films, 'film') },
+  { key: 'series', label: 'TV Series', icon: Tv, recognised: true, amount: (l) => count(l.series, 'series', 'series') },
+  { key: 'videos', label: 'Videos', icon: Video, amount: (l) => count(l.videos, 'video') },
+  { key: 'music', label: 'Music', icon: Music, amount: (l) => count(l.music, 'song') },
+  { key: 'photos', label: 'Photos', icon: ImageIcon, amount: (l) => count(l.photos, 'photo') },
 ]
 
+function count(n: number, one: string, many = `${one}s`): string {
+  return `${n.toLocaleString()} ${n === 1 ? one : many}`
+}
+
 /**
- * One chip per section, on or off.
+ * One card per section: what it is, how much is in it, and whether devices
+ * show it.
  *
- * Chips rather than five more switches: they are one decision about one
- * sidebar, and a row of five toggles reads as five unrelated settings.
+ * Cards rather than a row of chips, because each carries more than a name —
+ * a section with nothing in it is worth knowing about before deciding to show
+ * it, and Movies and TV Series are empty until films are being recognised.
+ * The whole card is the control; the small switch in its corner only says
+ * which way it is set.
  */
 function SectionPicker({
   sections,
+  library,
   onChange,
 }: {
   sections: Sections
+  library: HostStatus['library']
   onChange: (sections: Sections) => void
 }): React.JSX.Element {
+  const shown = SECTION_CARDS.filter((c) => sections[c.key]).length
+
   return (
-    <div className="mt-3 flex flex-wrap gap-1.5">
-      {SECTION_LABELS.map(([key, label]) => {
-        const on = sections[key]
-        return (
-          <button
-            key={key}
-            type="button"
-            role="switch"
-            aria-checked={on}
-            onClick={() => onChange({ ...sections, [key]: !on })}
-            className={
-              on
-                ? 'flex items-center gap-1.5 rounded-full border border-white/20 bg-white/[0.08] px-3 py-1 text-[11.5px] text-text transition-colors duration-150 hover:bg-white/[0.12]'
-                : 'flex items-center gap-1.5 rounded-full border border-line px-3 py-1 text-[11.5px] text-textFaint transition-colors duration-150 hover:border-white/15 hover:text-textDim'
-            }
-          >
-            <Check
-              size={11}
-              className={on ? 'opacity-100 transition-opacity duration-150' : 'opacity-0 transition-opacity duration-150'}
-            />
-            {label}
-          </button>
-        )
-      })}
+    <div className="mt-3.5">
+      <div className="grid grid-cols-5 gap-2">
+        {SECTION_CARDS.map((card) => {
+          const on = sections[card.key]
+          const waiting = card.recognised && !library.enabled
+          const Icon = card.icon
+          return (
+            <motion.button
+              key={card.key}
+              type="button"
+              role="switch"
+              aria-checked={on}
+              aria-label={`Show ${card.label} on devices`}
+              onClick={() => onChange({ ...sections, [card.key]: !on })}
+              whileTap={{ scale: 0.97 }}
+              transition={{ type: 'spring', stiffness: 600, damping: 32 }}
+              className={cn(
+                'group relative flex flex-col items-start overflow-hidden rounded-xl border px-3 pb-3 pt-3 text-left transition-[background-color,border-color] duration-200',
+                on
+                  ? 'border-white/[0.16] bg-white/[0.055] hover:border-white/25'
+                  : 'border-line bg-transparent hover:border-white/[0.12] hover:bg-white/[0.02]',
+              )}
+            >
+              {/* A soft light from above on the ones that are shown. */}
+              <span
+                aria-hidden
+                className={cn(
+                  'pointer-events-none absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-white/[0.06] to-transparent transition-opacity duration-300',
+                  on ? 'opacity-100' : 'opacity-0',
+                )}
+              />
+
+              <div className="relative flex w-full items-start justify-between">
+                <span
+                  className={cn(
+                    'flex h-8 w-8 items-center justify-center rounded-lg transition-colors duration-200',
+                    on ? 'bg-white/[0.1] text-text' : 'bg-white/[0.03] text-textFaint',
+                  )}
+                >
+                  <Icon size={15} strokeWidth={1.8} />
+                </span>
+                <MiniSwitch on={on} />
+              </div>
+
+              <span
+                className={cn(
+                  'relative mt-3 text-[12.5px] font-medium transition-colors duration-200',
+                  on ? 'text-text' : 'text-textDim',
+                )}
+              >
+                {card.label}
+              </span>
+              <span className="tnum relative mt-0.5 truncate font-mono text-[10px] text-textFaint">
+                {!on ? 'Hidden' : waiting ? 'Recognition off' : card.amount(library)}
+              </span>
+            </motion.button>
+          )
+        })}
+      </div>
+      <p className="mt-2.5 text-[11px] text-textFaint">
+        {shown === SECTION_CARDS.length
+          ? 'Every section is shown.'
+          : shown === 0
+            ? 'Devices show Files, Recent and Starred only.'
+            : `${shown} of ${SECTION_CARDS.length} sections shown. Changes reach connected devices at once.`}
+      </p>
     </div>
+  )
+}
+
+/** The switch in a card's corner: an indicator, not a second control. */
+function MiniSwitch({ on }: { on: boolean }): React.JSX.Element {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        'relative h-[14px] w-[24px] shrink-0 rounded-full border transition-colors duration-200',
+        on ? 'border-transparent bg-basalt/90' : 'border-line bg-panel2',
+      )}
+    >
+      <motion.span
+        layout
+        transition={{ type: 'spring', stiffness: 560, damping: 34 }}
+        className={cn(
+          'absolute top-[2px] h-[8px] w-[8px] rounded-full',
+          on ? 'right-[2px] bg-ink' : 'left-[2px] bg-textFaint',
+        )}
+      />
+    </span>
   )
 }

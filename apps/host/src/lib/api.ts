@@ -37,6 +37,10 @@ export interface LibraryStatus {
   posters: boolean
   /** Whether a TMDb key is set. The key itself never leaves the host. */
   hasKey: boolean
+  /** Files in Videos, Music and Photos. */
+  videos: number
+  music: number
+  photos: number
   /** Unix seconds of the last completed scan, zero if never. */
   scannedAt: number
 }
@@ -244,6 +248,9 @@ const sample: {
       posters: false,
       hasKey: false,
       scannedAt: 0,
+      videos: 14,
+      music: 212,
+      photos: 1840,
     },
     progressPerDevice: false,
     sections: { movies: true, series: true, videos: true, music: true, photos: true },
@@ -306,6 +313,18 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const answer = (): unknown => {
     switch (command) {
       case 'status':
+        // `?shared` starts with a drive already chosen, for looking at the
+        // main screen without clicking through setup each time.
+        if (previewFlag('shared') && !sample.status.vault) {
+          const drive = sample.drives[1]!
+          sample.status.vault = {
+            path: drive.path,
+            name: drive.name,
+            free: drive.free,
+            total: drive.total,
+            available: true,
+          }
+        }
         // `?missing` shows the drive as unplugged, which is otherwise only
         // reachable by pulling a real drive out of a real machine.
         if (previewFlag('missing') && sample.status.vault) {
@@ -371,6 +390,9 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
               posters: sample.status.library.posters,
               hasKey: sample.status.library.hasKey,
               scannedAt: Math.floor(Date.now() / 1000),
+              videos: 14,
+              music: 212,
+              photos: 1840,
             }
           : {
               enabled: false,
@@ -382,6 +404,9 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
               posters: sample.status.library.posters,
               hasKey: sample.status.library.hasKey,
               scannedAt: 0,
+              videos: 14,
+              music: 212,
+              photos: 1840,
             }
         return sample.status
       case 'rescan_library':
