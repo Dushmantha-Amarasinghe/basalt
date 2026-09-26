@@ -156,6 +156,13 @@ export interface MpvTrack {
   label: string
   /** True for a track loaded from a separate file rather than the video. */
   external: boolean
+  /** The file's language tag, as written. */
+  lang: string
+  title: string
+  forced: boolean
+  isDefault: boolean
+  /** Marked for the deaf and hard of hearing. */
+  hearingImpaired: boolean
 }
 
 const OBSERVED = [
@@ -369,16 +376,22 @@ export function useMpv(): Mpv {
       if (kind !== 'sub' && kind !== 'audio') continue
 
       const id = Number(await readProperty(`track-list/${i}/id`, 'int64')) || 0
-      const title = String((await readProperty(`track-list/${i}/title`, 'string')) ?? '')
-      const lang = String((await readProperty(`track-list/${i}/lang`, 'string')) ?? '')
-      const external =
-        String((await readProperty(`track-list/${i}/external`, 'string')) ?? '') === 'yes'
+      const text = async (name: string): Promise<string> =>
+        String((await readProperty(`track-list/${i}/${name}`, 'string')) ?? '')
+      const flag = async (name: string): Promise<boolean> => (await text(name)) === 'yes'
+      const title = await text('title')
+      const lang = await text('lang')
+      const external = await flag('external')
+      const forced = await flag('forced')
+      const isDefault = await flag('default')
+      // Only reported by newer mpv builds; absent reads as not marked.
+      const hearingImpaired = await flag('hearing-impaired')
 
       // Titles are often more useful than codes — a file can carry `English`,
       // `English (SDH)` and `English (forced)`, which `en` three times does
-      // not distinguish.
+      // not distinguish. The menu builds a fuller name from all of this.
       const label = title || lang || `Track ${id}`
-      tracks.push({ id, kind, label, external })
+      tracks.push({ id, kind, label, external, lang, title, forced, isDefault, hearingImpaired })
     }
     if (mine === trackRead.current) setState((s) => ({ ...s, tracks }))
   }, [])

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   AlertCircle,
+  Check,
   ChevronLeft,
   ChevronRight,
   ExternalLink,
@@ -21,8 +22,18 @@ import {
 import type { MediaItem } from '@/lib/mockMedia'
 import { formatDuration } from '@/lib/mockMedia'
 import { api, type SubtitleTrack } from '@/lib/api'
-import { pickSubtitleFile } from '@/lib/dialogs'
-import { useMpv, type Mpv } from '@/lib/useMpv'
+import { onExternalFileDrop, pickSubtitleFile } from '@/lib/dialogs'
+import { useAsyncSubscription, useLatest } from '@/lib/useAsyncSubscription'
+import { useMpv, type Mpv, type MpvTrack } from '@/lib/useMpv'
+import {
+  chooseDriveFile,
+  chooseSubtitle,
+  describeTrack,
+  labelOf,
+  loadPref,
+  prefFor,
+  savePref,
+} from '@/lib/subtitleChoice'
 import { cn } from '@/lib/utils'
 
 /** Motionless for this long and the controls step aside. */
@@ -365,6 +376,117 @@ export function PlayerOverlay({
   }, [onClose])
 
   /**
+   * A subtitle track chosen, or none — and remembered for the next video.
+   */
+  const chooseTrack = useCallback(
+    (id: number | null) => {
+      void mpv.selectSubtitle(id)
+      const track = id === null ? null : mpv.tracks.find((t) => t.id === id)
+      savePref(prefFor(track ? describeSub(track) : null))
+    },
+    [mpv],
+  )
+
+  const addFromDrive = useCallback(
+    async (file: SubtitleTrack) => {
+      // Through the proxy: mpv reaches the host the same way the video does.
+      const url = await api.mediaUrl(file.path)
+      if (url) await mpv.addSubtitle(url)
+      savePref({ ...loadPref(), on: true })
+    },
+    [mpv],
+  )
+
+  const addFromDisk = useCallback(async () => {
+    const path = await pickSubtitleFile()
+    if (path) {
+      await mpv.addSubtitle(path)
+      savePref({ ...loadPref(), on: true })
+    }
+  }, [mpv])
+
+  /**
+   * Subtitles as they were last left, when a video opens.
+   *
+   * Once per video, after its tracks are known, and never again for it — so
+   * whatever is chosen from the menu while watching is not undone.
+   */
+  const settled = useRef<string | null>(null)
+  useEffect(() => {
+    if (!item || !mpv.started || settled.current === item.id) return
+    // The track list arrives just after the picture does.
+    if (mpv.tracks.length === 0) return
+    settled.current = item.id
+    const pref = loadPref()
+    const subs = mpv.tracks.filter((t) => t.kind === 'sub').map(describeSub)
+    const pick = chooseSubtitle(subs, pref)
+    if (pick !== null) {
+      void mpv.selectSubtitle(pick)
+      return
+    }
+    // Nothing in the file: a matching file beside it, if subtitles are on.
+    const beside = subs.length === 0 ? chooseDriveFile(subtitles, pref) : null
+    if (beside) {
+      void api.mediaUrl(beside.path).then((url) => {
+        if (url) void mpv.addSubtitle(url)
+      })
+    } else {
+      void mpv.selectSubtitle(null)
+    }
+  }, [item, mpv, mpv.started, mpv.tracks, subtitles])
+
+  /**
+   * Subtitle files dropped on the video, as any player takes them.
+   *
+   * Only subtitle files: anything else dropped here is said to be the wrong
+   * kind rather than uploaded, which is what the drive underneath would have
+   * done with it — the app's own drop handling stands aside while a video is
+   * open.
+   */
+  const [dropping, setDropping] = useState(false)
+  const [dropNote, setDropNote] = useState<string | null>(null)
+  const dropTarget = useLatest({ mpv })
+  const subscribeToDrops = useCallback(
+    () =>
+      onExternalFileDrop({
+        onEnter: () => setDropping(true),
+        onOver: () => {},
+        onLeave: () => setDropping(false),
+        onDrop: (paths) => {
+          setDropping(false)
+          const subs = paths.filter(isSubtitleFile)
+          if (subs.length === 0) {
+            setDropNote('Only subtitle files can be dropped on a video.')
+            return
+          }
+          void (async () => {
+            for (const path of subs) await dropTarget.current.mpv.addSubtitle(path)
+            savePref({ ...loadPref(), on: true })
+            setDropNote(subs.length === 1 ? 'Subtitles added.' : `${subs.length} subtitle files added.`)
+          })()
+        },
+      }),
+    [dropTarget],
+  )
+  useAsyncSubscription(open, subscribeToDrops)
+  useEffect(() => {
+    if (!dropNote) return undefined
+    const timer = setTimeout(() => setDropNote(null), 2200)
+    return () => clearTimeout(timer)
+  }, [dropNote])
+
+  /** C turns subtitles on and off, as on YouTube. */
+  const toggleSubtitles = useCallback(() => {
+    if (mpv.subtitleId !== null) {
+      chooseTrack(null)
+      return
+    }
+    const subs = mpv.tracks.filter((t) => t.kind === 'sub').map(describeSub)
+    const pick = chooseSubtitle(subs, { ...loadPref(), on: true })
+    if (pick !== null) chooseTrack(pick)
+  }, [mpv, chooseTrack])
+
+  /**
    * The keys, and the one listener that hears them.
    *
    * Every key acts on its first press, controls up or not, and brings the
@@ -426,6 +548,9 @@ export function PlayerOverlay({
         break
       case 'm':
         void mpv.toggleMute()
+        break
+      case 'c':
+        toggleSubtitles()
         break
       case 'f':
         void fullscreen()
@@ -546,6 +671,39 @@ export function PlayerOverlay({
                     <Loader2 size={14} className="animate-spin text-textDim" />
                     <span className="font-mono text-[11px] text-textDim">buffering</span>
                   </span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* A subtitle file on its way in. */}
+            <AnimatePresence>
+              {dropping && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.12 }}
+                  className="pointer-events-none absolute inset-4 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed border-white/40 bg-black/55"
+                >
+                  <div className="flex flex-col items-center gap-2 text-center">
+                    <Subtitles size={26} className="text-text" />
+                    <span className="text-[14px] font-medium text-text">Drop to add subtitles</span>
+                    <span className="text-[11.5px] text-textDim">.srt, .ass, .ssa, .vtt, .sub or .sup</span>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+              {dropNote && (
+                <motion.div
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                  className="pointer-events-none absolute left-1/2 top-12 z-20 -translate-x-1/2 rounded-full bg-black/75 px-4 py-2 text-[12px] text-text backdrop-blur"
+                >
+                  {dropNote}
                 </motion.div>
               )}
             </AnimatePresence>
@@ -683,6 +841,9 @@ export function PlayerOverlay({
                   <SubtitleMenu
                     mpv={mpv}
                     fromDrive={subtitles}
+                    onChoose={chooseTrack}
+                    onAddFromDrive={(file) => void addFromDrive(file)}
+                    onAddFromDisk={() => void addFromDisk()}
                     onClose={() => setMenu(false)}
                   />
                 </>
@@ -806,7 +967,12 @@ export function PlayerOverlay({
 }
 
 /**
- * Which subtitles, and whether they are in time with the sound.
+ * Subtitles, audio, and whether the subtitles are in time with the sound.
+ *
+ * A header with the close button in it, rather than a button floated over the
+ * first row — where it sat on top of "Off" and its highlight. Each track is
+ * named by its language, with SDH and Forced as tags, and the chosen one has a
+ * tick rather than a filled row, so the list reads as a list.
  *
  * The offset is here rather than buried in a settings screen because it is
  * needed *while watching* — a subtitle file from one release against a video
@@ -815,25 +981,27 @@ export function PlayerOverlay({
 function SubtitleMenu({
   mpv,
   fromDrive,
+  onChoose,
+  onAddFromDrive,
+  onAddFromDisk,
   onClose,
 }: {
   mpv: Mpv
   fromDrive: SubtitleTrack[]
+  /** A subtitle track chosen, or null for off. */
+  onChoose: (id: number | null) => void
+  onAddFromDrive: (track: SubtitleTrack) => void
+  onAddFromDisk: () => void
   onClose: () => void
 }): React.JSX.Element {
   const inFile = mpv.tracks.filter((t) => t.kind === 'sub')
   const audio = mpv.tracks.filter((t) => t.kind === 'audio')
-
-  const addFromDrive = async (track: SubtitleTrack): Promise<void> => {
-    // Through the proxy: mpv reaches the host the same way the video does.
-    const url = await api.mediaUrl(track.path)
-    if (url) await mpv.addSubtitle(url)
-  }
-
-  const addFromDisk = async (): Promise<void> => {
-    const path = await pickSubtitleFile()
-    if (path) await mpv.addSubtitle(path)
-  }
+  // A file loaded from the drive shows up as a track once loaded, so it is
+  // offered under "On the drive" only until then.
+  const loadedNames = new Set(inFile.filter((t) => t.external).map((t) => t.title))
+  const notLoaded = fromDrive.filter(
+    (f) => !loadedNames.has(f.path.split('/').pop() ?? f.path),
+  )
 
   const nudge = (by: number): void => {
     void mpv.setSubtitleDelay(Math.round((mpv.subtitleDelay + by) * 100) / 100)
@@ -841,117 +1009,147 @@ function SubtitleMenu({
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: 8 }}
-      transition={{ duration: 0.14 }}
-      // Opaque, not translucent. Over a bright frame the old `/98` plus a
-      // blur washed out to the point where the labels and the offset could
-      // not be read at all — and this is a menu you use *while* watching,
-      // which means it is always over a picture.
-      className="absolute bottom-full right-4 z-10 mb-2 w-[300px] overflow-hidden rounded-lg border border-white/15 bg-[#151517] shadow-lift"
+      initial={{ opacity: 0, y: 8, scale: 0.98 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 6, scale: 0.98 }}
+      transition={{ duration: 0.15, ease: [0.22, 1, 0.36, 1] }}
+      style={{ transformOrigin: 'bottom right' }}
+      // Opaque, not translucent. Over a bright frame a translucent menu washed
+      // out to the point where the labels could not be read — and this is a
+      // menu used *while* watching, so it is always over a picture.
+      className="absolute bottom-full right-4 z-10 mb-3 w-[320px] overflow-hidden rounded-xl border border-white/[0.12] bg-[#141416] shadow-lift"
     >
-      <div className="max-h-[260px] overflow-y-auto py-1.5">
-        <Choice
-          label="Off"
-          active={mpv.subtitleId === null}
-          onClick={() => void mpv.selectSubtitle(null)}
-        />
-        {inFile.map((track) => (
-          <Choice
-            key={track.id}
-            label={track.label}
-            hint={track.external ? 'file' : undefined}
-            active={mpv.subtitleId === track.id}
-            onClick={() => void mpv.selectSubtitle(track.id)}
-          />
-        ))}
+      <div className="flex h-10 items-center justify-between border-b border-white/[0.07] pl-4 pr-2">
+        <span className="text-[12.5px] font-semibold text-text">Subtitles</span>
+        <button
+          onClick={onClose}
+          aria-label="Close subtitle menu"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-textFaint transition-colors duration-150 hover:bg-white/[0.07] hover:text-text"
+        >
+          <X size={14} />
+        </button>
+      </div>
 
-        {/* Files the host found beside the video. Loaded on demand rather
-            than all at once: a season folder can hold a dozen languages and
-            handing every one of them to mpv before anybody asks is work
-            nobody wanted. */}
-        {fromDrive.length > 0 && (
+      <div className="max-h-[280px] overflow-y-auto py-1.5">
+        <Choice label="Off" active={mpv.subtitleId === null} onClick={() => onChoose(null)} />
+        {inFile.map((track) => {
+          const label = labelOf(describeSub(track))
+          return (
+            <Choice
+              key={track.id}
+              label={label.name}
+              detail={label.detail}
+              tags={label.tags}
+              hint={track.external ? 'file' : undefined}
+              active={mpv.subtitleId === track.id}
+              onClick={() => onChoose(track.id)}
+            />
+          )
+        })}
+
+        {notLoaded.length > 0 && (
           <>
-            <div className="mt-1 px-3 py-1 font-mono text-[9.5px] uppercase tracking-[0.14em] text-textFaint">
-              on the drive
-            </div>
-            {fromDrive.map((track) => (
+            <SectionTitle>On the drive</SectionTitle>
+            {notLoaded.map((file) => (
               <Choice
-                key={track.path}
-                label={track.label}
+                key={file.path}
+                label={file.label}
                 hint="load"
                 active={false}
-                onClick={() => void addFromDrive(track)}
+                onClick={() => onAddFromDrive(file)}
               />
             ))}
           </>
         )}
+
+        {/* Only when there is a choice to make. One audio track needs no menu. */}
+        {audio.length > 1 && (
+          <>
+            <SectionTitle>Audio</SectionTitle>
+            {audio.map((track) => {
+              const label = labelOf(describeSub(track))
+              return (
+                <Choice
+                  key={track.id}
+                  label={label.name}
+                  detail={label.detail}
+                  active={mpv.audioId === track.id}
+                  onClick={() => void mpv.selectAudio(track.id)}
+                />
+              )
+            })}
+          </>
+        )}
       </div>
 
-      {/* Only when there is a choice to make. One audio track needs no menu. */}
-      {audio.length > 1 && (
-        <div className="border-t border-white/[0.07] py-1.5">
-          <div className="px-3 py-1 font-mono text-[9.5px] uppercase tracking-[0.14em] text-textFaint">
-            audio
-          </div>
-          {audio.map((track) => (
-            <Choice
-              key={track.id}
-              label={track.label}
-              active={mpv.audioId === track.id}
-              onClick={() => void mpv.selectAudio(track.id)}
-            />
-          ))}
-        </div>
-      )}
-
-      <div className="border-t border-white/[0.07] px-3 py-2.5">
+      <div className="border-t border-white/[0.07] px-4 py-3">
         <button
-          onClick={() => void addFromDisk()}
-          className="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left text-[12px] text-textDim transition-colors hover:text-text"
+          onClick={onAddFromDisk}
+          className="flex w-full items-center gap-2 text-left text-[12px] text-textDim transition-colors duration-150 hover:text-text"
         >
           <Plus size={13} />
-          Add a subtitle file…
+          Add a subtitle file
+          <span className="ml-auto text-[10.5px] text-textFaint">or drop one on the video</span>
         </button>
 
-        <div className="mt-2.5 flex items-center justify-between">
-          <span className="text-[11px] text-textFaint">Sync</span>
-          <div className="flex items-center gap-1">
-            <Nudge label="−0.5s" onClick={() => nudge(-0.5)} />
-            <Nudge label="−0.1s" onClick={() => nudge(-0.1)} />
-            <span className="tnum w-[52px] text-center font-mono text-[11px] text-text">
+        <div className="mt-3 flex items-center gap-2">
+          <span className="w-9 text-[11px] text-textFaint">Sync</span>
+          <div className="flex flex-1 items-center justify-between rounded-lg bg-white/[0.04] p-0.5">
+            <Nudge label="−0.5" onClick={() => nudge(-0.5)} />
+            <Nudge label="−0.1" onClick={() => nudge(-0.1)} />
+            <button
+              onClick={() => void mpv.setSubtitleDelay(0)}
+              title="Back to 0"
+              className="tnum w-[54px] rounded-md py-1 text-center font-mono text-[11px] text-text transition-colors duration-150 hover:bg-white/[0.06]"
+            >
               {mpv.subtitleDelay > 0 ? '+' : ''}
               {mpv.subtitleDelay.toFixed(1)}s
-            </span>
-            <Nudge label="+0.1s" onClick={() => nudge(0.1)} />
-            <Nudge label="+0.5s" onClick={() => nudge(0.5)} />
+            </button>
+            <Nudge label="+0.1" onClick={() => nudge(0.1)} />
+            <Nudge label="+0.5" onClick={() => nudge(0.5)} />
           </div>
         </div>
-        <p className="mt-1.5 text-[10.5px] leading-relaxed text-textFaint">
+        <p className="mt-2 text-[10.5px] leading-relaxed text-textFaint">
           {/* Which way is which is genuinely hard to remember, so it says. */}
           Plus if the subtitles are early, minus if they are late.
         </p>
       </div>
-
-      <button
-        onClick={onClose}
-        aria-label="Close subtitle menu"
-        className="absolute right-1.5 top-1.5 rounded p-1 text-textFaint transition-colors hover:text-text"
-      >
-        <X size={12} />
-      </button>
     </motion.div>
+  )
+}
+
+/** An mpv track as the subtitle rules read one. */
+function describeSub(track: MpvTrack): ReturnType<typeof describeTrack> {
+  return describeTrack({
+    id: track.id,
+    lang: track.lang,
+    title: track.title,
+    forced: track.forced,
+    isDefault: track.isDefault,
+    hearingImpaired: track.hearingImpaired,
+    external: track.external,
+  })
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }): React.JSX.Element {
+  return (
+    <div className="mt-1.5 px-4 pb-1 pt-2 font-mono text-[9.5px] uppercase tracking-[0.16em] text-textFaint">
+      {children}
+    </div>
   )
 }
 
 function Choice({
   label,
+  detail,
+  tags = [],
   hint,
   active,
   onClick,
 }: {
   label: string
+  detail?: string
+  tags?: string[]
   hint?: string
   active: boolean
   onClick: () => void
@@ -960,12 +1158,27 @@ function Choice({
     <button
       onClick={onClick}
       className={cn(
-        'flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-[12px] transition-colors',
-        active ? 'bg-white/[0.07] text-text' : 'text-textDim hover:bg-white/[0.04]',
+        'flex w-full items-center gap-2.5 px-4 py-[7px] text-left text-[12.5px] transition-colors duration-100',
+        active ? 'text-text' : 'text-textDim hover:bg-white/[0.04] hover:text-text',
       )}
     >
+      <Check
+        size={13}
+        className={cn('shrink-0 transition-opacity duration-150', active ? 'opacity-100' : 'opacity-0')}
+      />
       <span className="min-w-0 truncate">{label}</span>
-      {hint && <span className="shrink-0 font-mono text-[9.5px] text-textFaint">{hint}</span>}
+      {detail && <span className="min-w-0 truncate text-[11.5px] text-textFaint">{detail}</span>}
+      {tags.map((tag) => (
+        <span
+          key={tag}
+          className="shrink-0 rounded border border-white/[0.12] px-1 py-px font-mono text-[9px] tracking-wide text-textDim"
+        >
+          {tag}
+        </span>
+      ))}
+      {hint && (
+        <span className="ml-auto shrink-0 font-mono text-[9.5px] text-textFaint">{hint}</span>
+      )}
     </button>
   )
 }
@@ -980,7 +1193,7 @@ function Nudge({
   return (
     <button
       onClick={onClick}
-      className="rounded px-1.5 py-1 font-mono text-[10.5px] text-textDim transition-colors hover:bg-white/[0.07] hover:text-text"
+      className="rounded-md px-2 py-1 font-mono text-[10.5px] text-textDim transition-colors duration-150 hover:bg-white/[0.07] hover:text-text"
     >
       {label}
     </button>
@@ -1077,4 +1290,11 @@ function ControlButton({
       <Icon size={16} />
     </button>
   )
+}
+
+const SUBTITLE_EXTENSIONS = new Set(['srt', 'ass', 'ssa', 'vtt', 'sub', 'sup', 'idx'])
+
+function isSubtitleFile(path: string): boolean {
+  const dot = path.lastIndexOf('.')
+  return dot > 0 && SUBTITLE_EXTENSIONS.has(path.slice(dot + 1).toLowerCase())
 }
