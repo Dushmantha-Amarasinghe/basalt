@@ -104,7 +104,10 @@ export function Poster({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.25 }}
-        className="aspect-[2/3] w-full object-cover"
+        // Block, not the inline default: an inline image leaves a strip under
+        // itself for text descenders, and anything laid over the poster —
+        // the hover tint — covered that strip instead of the picture's edge.
+        className="block aspect-[2/3] w-full object-cover"
         draggable={false}
       />
     )
