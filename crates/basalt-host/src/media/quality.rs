@@ -157,10 +157,10 @@ mod tests {
     #[test]
     fn reads_what_release_names_say() {
         assert_eq!(
-            from_name("Landman.S01E01.2160p.AMZN.WEB-DL.x265.mkv"),
+            from_name("Night.Harbour.S01E01.2160p.WEB-DL.x265.mkv"),
             res(3840, 2160)
         );
-        assert_eq!(from_name("From_1080P_S01_E01.mp4"), res(1920, 1080));
+        assert_eq!(from_name("Coastline_1080P_S01_E01.mp4"), res(1920, 1080));
         assert_eq!(from_name("Arrival (2016) [720p].mkv"), res(1280, 720));
         assert_eq!(from_name("Film.UHD.BluRay.mkv"), res(3840, 2160));
         assert_eq!(from_name("Recording_1920x1080.mp4"), res(1920, 1080));
