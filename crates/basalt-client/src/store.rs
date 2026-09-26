@@ -186,9 +186,61 @@ pub fn new_device_id() -> Result<String> {
 
 /// This device's name, as it will appear on the host.
 pub fn device_name() -> String {
+    #[cfg(target_os = "android")]
+    if let Some(name) = android::device_name() {
+        return name;
+    }
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| "Basalt Client".to_string())
+}
+
+/// A phone has no computer name. What it does have is its maker and model,
+/// which is how people tell phones apart in a list: "Google Pixel 7 Pro".
+#[cfg(target_os = "android")]
+mod android {
+    unsafe extern "C" {
+        fn __system_property_get(
+            name: *const std::ffi::c_char,
+            value: *mut std::ffi::c_char,
+        ) -> i32;
+    }
+
+    fn property(name: &str) -> Option<String> {
+        let name = std::ffi::CString::new(name).ok()?;
+        // PROP_VALUE_MAX is 92 bytes, terminator included.
+        let mut value = [0 as std::ffi::c_char; 92];
+        let len = unsafe { __system_property_get(name.as_ptr(), value.as_mut_ptr()) };
+        if len <= 0 {
+            return None;
+        }
+        let text = unsafe { std::ffi::CStr::from_ptr(value.as_ptr()) }
+            .to_string_lossy()
+            .trim()
+            .to_string();
+        (!text.is_empty()).then_some(text)
+    }
+
+    pub fn device_name() -> Option<String> {
+        let model = property("ro.product.model")?;
+        let maker = property("ro.product.manufacturer").unwrap_or_default();
+        // "Pixel 7 Pro" from Google, but "SM-S918B" from Samsung: the maker
+        // goes in front unless the model already says it.
+        let maker = capitalise(&maker);
+        if maker.is_empty() || model.to_lowercase().starts_with(&maker.to_lowercase()) {
+            Some(model)
+        } else {
+            Some(format!("{maker} {model}"))
+        }
+    }
+
+    fn capitalise(word: &str) -> String {
+        let mut chars = word.chars();
+        match chars.next() {
+            Some(first) => first.to_uppercase().chain(chars).collect(),
+            None => String::new(),
+        }
+    }
 }
 
 /// Tokens at rest, encrypted with Windows' own per-user protection (DPAPI).

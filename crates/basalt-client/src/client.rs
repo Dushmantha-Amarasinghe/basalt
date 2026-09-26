@@ -887,9 +887,64 @@ impl Basalt {
                 .unwrap_or_default()
         ));
 
+        let mut file = tokio::fs::File::create(&temp).await?;
+        let done = match self
+            .download_into(remote, total, &mut file, progress, cancel)
+            .await
+        {
+            Ok(done) => done,
+            Err(e) => {
+                drop(file);
+                tokio::fs::remove_file(&temp).await.ok();
+                return Err(e);
+            }
+        };
+
+        file.flush().await?;
+        drop(file);
+        // `rename` refuses to replace an existing file on Windows, so an
+        // overwrite has to remove the old one first.
+        if local.exists() {
+            tokio::fs::remove_file(local).await?;
+        }
+        tokio::fs::rename(&temp, local).await?;
+        Ok(done)
+    }
+
+    /// Downloads into a file somebody else has already opened.
+    ///
+    /// For Android, where a download is saved through the system — into
+    /// Downloads, or a folder the user picked — and what the app gets is an
+    /// open file rather than a path. Whoever opened it decides what happens
+    /// to it if this fails; nothing here deletes it.
+    pub async fn download_to_file(
+        &self,
+        remote: &str,
+        file: std::fs::File,
+        progress: Option<ProgressFn>,
+        cancel: Option<Cancel>,
+    ) -> Result<u64> {
+        let total = self.stat(remote).await?.size;
+        let mut file = tokio::fs::File::from_std(file);
+        let done = self
+            .download_into(remote, total, &mut file, progress, cancel)
+            .await?;
+        file.flush().await?;
+        file.sync_all().await.ok();
+        Ok(done)
+    }
+
+    /// The download itself: every byte of `remote`, written to `file`.
+    async fn download_into(
+        &self,
+        remote: &str,
+        total: u64,
+        file: &mut tokio::fs::File,
+        progress: Option<ProgressFn>,
+        cancel: Option<Cancel>,
+    ) -> Result<u64> {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
-        let mut file = tokio::fs::File::create(&temp).await?;
 
         let outcome: Result<u64> = async {
             // Ranges asked for and not yet read back, oldest first.
@@ -909,7 +964,7 @@ impl Basalt {
                 }
 
                 let expected = asked.pop_front().expect("a range is always in flight here");
-                let got = lease.receive_read_into(&mut file).await?;
+                let got = lease.receive_read_into(&mut *file).await?;
                 self.count(got);
                 // The ranges after this one were asked for assuming this one
                 // was whole. A short answer means the file changed underneath
@@ -935,28 +990,13 @@ impl Basalt {
         }
         .await;
 
-        let done = match outcome {
-            Ok(done) => done,
-            Err(e) => {
-                // Answers may still be on their way down this connection, and
-                // nothing can tell them apart from the next request's. It
-                // cannot be used again.
-                lease.discard();
-                drop(file);
-                tokio::fs::remove_file(&temp).await.ok();
-                return Err(e);
-            }
-        };
-
-        file.flush().await?;
-        drop(file);
-        // `rename` refuses to replace an existing file on Windows, so an
-        // overwrite has to remove the old one first.
-        if local.exists() {
-            tokio::fs::remove_file(local).await?;
+        if outcome.is_err() {
+            // Answers may still be on their way down this connection, and
+            // nothing can tell them apart from the next request's. It cannot
+            // be used again.
+            lease.discard();
         }
-        tokio::fs::rename(&temp, local).await?;
-        Ok(done)
+        outcome
     }
 
     /// Uploads a file, resuming if the host already holds part of it.
@@ -992,8 +1032,57 @@ impl Basalt {
         // Opened before the host is asked for anything. The other way round, a
         // file that would not open still started an upload on the host, and
         // left an empty partial file on the drive when this side gave up.
-        let mut file = tokio::fs::File::open(local).await?;
+        let file = tokio::fs::File::open(local).await?;
+        self.upload_open(
+            file,
+            total,
+            mtime,
+            &local.display().to_string(),
+            remote,
+            overwrite,
+            progress,
+            cancel,
+        )
+        .await
+    }
 
+    /// Uploads a file somebody else has already opened.
+    ///
+    /// For Android, where a file chosen from the phone — the gallery, the
+    /// file picker, something shared from another app — arrives as an open
+    /// file with no path. Its size is given rather than read from it: some
+    /// sources hand over a stream that cannot say how long it is.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upload_file(
+        &self,
+        file: std::fs::File,
+        size: u64,
+        mtime: Option<i64>,
+        remote: &str,
+        overwrite: bool,
+        progress: Option<ProgressFn>,
+        cancel: Option<Cancel>,
+    ) -> Result<u64> {
+        let file = tokio::fs::File::from_std(file);
+        self.upload_open(
+            file, size, mtime, remote, remote, overwrite, progress, cancel,
+        )
+        .await
+    }
+
+    /// The upload itself, from an open file of a known size.
+    #[allow(clippy::too_many_arguments)]
+    async fn upload_open(
+        &self,
+        mut file: tokio::fs::File,
+        total: u64,
+        mtime: Option<i64>,
+        label: &str,
+        remote: &str,
+        overwrite: bool,
+        progress: Option<ProgressFn>,
+        cancel: Option<Cancel>,
+    ) -> Result<u64> {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
 
@@ -1012,8 +1101,7 @@ impl Basalt {
             let n = file.read(&mut buf[..want]).await?;
             if n == 0 {
                 return Err(ClientError::Protocol(format!(
-                    "{} is shorter than the part already uploaded",
-                    local.display()
+                    "{label} is shorter than the part already uploaded"
                 )));
             }
             hasher.update(&buf[..n]);
@@ -1035,8 +1123,7 @@ impl Basalt {
                     let n = read_full(&mut file, &mut buf[..want]).await?;
                     if n == 0 {
                         return Err(ClientError::Protocol(format!(
-                            "{} is shorter than it said it was",
-                            local.display()
+                            "{label} is shorter than it said it was"
                         )));
                     }
                     hasher.update(&buf[..n]);

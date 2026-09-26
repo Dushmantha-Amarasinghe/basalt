@@ -1407,3 +1407,58 @@ async fn a_folder_uploads_into_one_that_already_exists() {
         b"new"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Open files, as Android hands them over
+// ---------------------------------------------------------------------------
+
+/// A file picked on a phone arrives as an open file with no path, and its
+/// size is told rather than read. It has to arrive exactly as a path would.
+#[tokio::test]
+async fn an_open_file_uploads_like_a_path_does() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+
+    let bytes = sample_bytes(basalt_client::client::CHUNK_BYTES as usize * 2 + 12_345);
+    let source = fixture.dir.join("picked.bin");
+    std::fs::write(&source, &bytes).unwrap();
+    let file = std::fs::File::open(&source).unwrap();
+
+    let sent = client
+        .upload_file(
+            file,
+            bytes.len() as u64,
+            Some(1_700_000_000),
+            "films/picked.bin",
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("uploads");
+    assert_eq!(sent, bytes.len() as u64);
+    assert_eq!(
+        std::fs::read(fixture.vault_path("films/picked.bin")).unwrap(),
+        bytes
+    );
+}
+
+/// And a download into a file the system opened — Downloads, on a phone —
+/// writes every byte into it and leaves it where it is.
+#[tokio::test]
+async fn a_download_fills_a_file_it_was_handed() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+
+    let bytes = sample_bytes(basalt_client::client::CHUNK_BYTES as usize * 3 + 7);
+    std::fs::write(fixture.vault_path("films/big.bin"), &bytes).unwrap();
+
+    let target = fixture.dir.join("saved-by-the-system.bin");
+    let file = std::fs::File::create(&target).unwrap();
+    let got = client
+        .download_to_file("films/big.bin", file, None, None)
+        .await
+        .expect("downloads");
+    assert_eq!(got, bytes.len() as u64);
+    assert_eq!(std::fs::read(&target).unwrap(), bytes);
+}

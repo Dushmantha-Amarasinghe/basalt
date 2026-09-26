@@ -41,6 +41,31 @@ impl Product {
     }
 }
 
+/// What kind of file installs this build: an installer on Windows, a
+/// package on Android. One release carries both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Platform {
+    Windows,
+    Android,
+}
+
+impl Platform {
+    const HERE: Platform = if cfg!(target_os = "android") {
+        Platform::Android
+    } else {
+        Platform::Windows
+    };
+}
+
+/// The marker and extension of this app's file on a platform. The Android
+/// app is the client; there is no Android host.
+fn wanted(product: Product, platform: Platform) -> (&'static str, &'static str) {
+    match platform {
+        Platform::Windows => (product.marker(), ".exe"),
+        Platform::Android => ("android", ".apk"),
+    }
+}
+
 /// Where releases are published.
 pub const OWNER: &str = "Dushmantha-Amarasinghe";
 pub const REPO: &str = "basalt";
@@ -129,7 +154,15 @@ fn client() -> Result<reqwest::Client> {
     // beyond a `Once`.
     basalt_net::tls::init_crypto();
 
-    reqwest::Client::builder()
+    let builder = reqwest::Client::builder();
+    // Android: the certificates the system trusts, read from where it keeps
+    // them. reqwest otherwise asks the platform to verify, which on Android
+    // needs a Java component set up before any request — and without it the
+    // update check panics rather than failing.
+    #[cfg(target_os = "android")]
+    let builder = builder.tls_certs_only(android_roots());
+
+    builder
         .connect_timeout(CONNECT_TIMEOUT)
         .user_agent(concat!("Basalt/", env!("CARGO_PKG_VERSION")))
         .build()
@@ -190,11 +223,41 @@ fn newer_than(release: GhRelease, product: Product, current: &str) -> Option<Rel
     })
 }
 
+/// The certificate authorities Android trusts, from the system's own store.
+///
+/// The updatable copy first — since Android 14 it lives in the Conscrypt
+/// module and is refreshed by the Play system updates — then the one baked
+/// into the system image.
+#[cfg(target_os = "android")]
+fn android_roots() -> Vec<reqwest::Certificate> {
+    for dir in [
+        "/apex/com.android.conscrypt/cacerts",
+        "/system/etc/security/cacerts",
+    ] {
+        let certs: Vec<reqwest::Certificate> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| std::fs::read(entry.path()).ok())
+            .filter_map(|pem| reqwest::Certificate::from_pem(&pem).ok())
+            .collect();
+        if !certs.is_empty() {
+            return certs;
+        }
+    }
+    Vec::new()
+}
+
 /// The installer in this release that belongs to this app.
 fn pick(assets: &[GhAsset], product: Product) -> Option<&GhAsset> {
+    pick_for(assets, product, Platform::HERE)
+}
+
+fn pick_for(assets: &[GhAsset], product: Product, platform: Platform) -> Option<&GhAsset> {
+    let (marker, extension) = wanted(product, platform);
     assets.iter().find(|asset| {
         let name = asset.name.to_ascii_lowercase();
-        name.ends_with(".exe") && name.contains(product.marker())
+        name.ends_with(extension) && name.contains(marker)
     })
 }
 
@@ -351,6 +414,31 @@ mod tests {
             pick(&assets, Product::Host).unwrap().name,
             "Basalt-Host-1.1.0-setup.exe"
         );
+    }
+
+    /// The Android app takes the package, and the Windows apps never do.
+    #[test]
+    fn the_android_app_takes_the_package() {
+        let assets = [
+            asset("Basalt-Client-1.4.0-setup.exe"),
+            asset("Basalt-Host-1.4.0-setup.exe"),
+            asset("Basalt-Android-1.4.0.apk"),
+            asset("Basalt-Android-1.4.0.apk.sha256"),
+        ];
+        assert_eq!(
+            pick_for(&assets, Product::Client, Platform::Android)
+                .unwrap()
+                .name,
+            "Basalt-Android-1.4.0.apk"
+        );
+        assert_eq!(
+            pick_for(&assets, Product::Client, Platform::Windows)
+                .unwrap()
+                .name,
+            "Basalt-Client-1.4.0-setup.exe"
+        );
+        let windows_only = [asset("Basalt-Client-1.4.0-setup.exe")];
+        assert!(pick_for(&windows_only, Product::Client, Platform::Android).is_none());
     }
 
     #[test]
