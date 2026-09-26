@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { POPOVER } from '@/lib/motion'
 import { motion } from 'framer-motion'
 import { Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -99,7 +100,7 @@ export function Menu<T extends string>({
             <motion.div
               initial={{ opacity: 0, y: flipUp ? 4 : -4, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              transition={{ duration: 0.11, ease: 'easeOut' }}
+              transition={POPOVER.transition}
               style={{
                 position: 'fixed',
                 left,

@@ -1,5 +1,6 @@
 import { memo, useCallback, useState } from 'react'
 import { VList } from 'virtua'
+import { MarqueeBox, useMarquee, type MarqueeGrid } from './useMarquee'
 import {
   Download,
   File as FileIcon,
@@ -40,12 +41,25 @@ export interface RowHandlers {
   onDragStart: (entry: Entry) => string[]
   /** Something was dropped onto a folder row. */
   onDropInto: (entry: Entry, paths: string[]) => void
+  /** The selection, replaced whole: by a drag box, or cleared by a click on
+   *  empty space. */
+  onSelectSet: (ids: Set<string>) => void
 }
 
 /** The drag payload type. Internal, so Explorer drops are not confused for it. */
 export const DRAG_MIME = 'application/x-basalt-paths'
 
 const ROW_HEIGHT = 34
+
+/** Where rows sit, for the drag box: one full-width column. */
+const DETAILS_GRID: MarqueeGrid = {
+  rowStride: ROW_HEIGHT,
+  itemHeight: ROW_HEIGHT,
+  columns: 1,
+  colStride: 0,
+  itemWidth: 1_000_000,
+  left: 0,
+}
 
 /** Maps an extension to an icon. Cheap lookup, called once per visible row. */
 export function iconFor(entry: Entry): typeof FileIcon {
@@ -102,6 +116,7 @@ const Row = memo(function Row({
     <div
       role="row"
       aria-selected={selected}
+      data-entry=""
       draggable
       // Advertises this row as a drop destination for files dragged in
       // from outside. The position of an external drag arrives as a bare
@@ -146,10 +161,16 @@ const Row = memo(function Row({
       }
       style={{ height: ROW_HEIGHT }}
       className={cn(
-        'row-contain group flex cursor-default items-center gap-3 rounded-md px-3 text-sm',
-        // Colour only. Animating anything here would cost frames during scroll.
+        // The transparent border above and below, with the fill and outline
+        // kept inside it, is a 2px gap between rows — selected neighbours
+        // used to draw their outlines on top of each other. The row keeps its
+        // full height, so there is no dead strip between rows to click into.
+        'row-contain group flex cursor-default items-center gap-3 rounded-lg border-y border-transparent bg-clip-padding px-3 text-sm',
+        // Colour only, and briefly. Animating anything else here would cost
+        // frames during a scroll.
+        'transition-colors duration-100',
         selected
-          ? 'bg-basalt/[0.09] text-text ring-1 ring-inset ring-basalt/20'
+          ? 'bg-white/[0.075] text-text ring-1 ring-inset ring-white/[0.12]'
           : 'text-textDim hover:bg-white/[0.035] hover:text-text',
         dropTarget && 'bg-basalt/[0.14] ring-1 ring-inset ring-basalt/45',
         cut && 'opacity-45',
@@ -274,12 +295,21 @@ export function FileList({
     [entries, selected, cutPaths, dropTarget, dropHighlight, handlers],
   )
 
+  const marquee = useMarquee({
+    grid: DETAILS_GRID,
+    count: entries.length,
+    idAt: (index) => entries[index]?.id,
+    selected,
+    onChange: handlers.onSelectSet,
+  })
+
   if (entries.length === 0) return <EmptyState />
 
   return (
     <div
-      className="h-full px-2 pb-2"
+      className="relative h-full px-2 pb-2"
       role="grid"
+      onPointerDown={marquee.onPointerDown}
       onContextMenu={(e) => {
         // Only when the click missed every row; a row handles its own and
         // stops this from firing by preventing the default first.
@@ -296,6 +326,7 @@ export function FileList({
         100,000 rows than the virtualisation itself.
       */}
       <VList
+        className="marquee-scroll"
         style={{ height: 'calc(100% - 28px)' }}
         count={entries.length}
         itemSize={ROW_HEIGHT}
@@ -303,6 +334,7 @@ export function FileList({
       >
         {renderRow}
       </VList>
+      <MarqueeBox style={marquee.box} />
     </div>
   )
 }
