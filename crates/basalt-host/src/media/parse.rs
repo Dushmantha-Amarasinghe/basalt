@@ -779,7 +779,7 @@ mod tests {
         assert_eq!(year_in("Day 23 [2025-06-17]"), None);
         assert_eq!(year_in("2026-06-01"), None);
         assert_eq!(year_in("Project Management Day 01 (2026-05-04)"), None);
-        assert_eq!(year_in("bandicam 2025-12-03 13-59-35-420"), None);
+        assert_eq!(year_in("bandicam 2024-03-11 09-12-44-108"), None);
         assert_eq!(year_in("AIEngineer Day 19 [2026-05-02]"), None);
     }
 

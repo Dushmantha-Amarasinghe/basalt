@@ -313,7 +313,11 @@ mod tests {
             ("26_05_12_19_37_04.png", 5_300_000, 300),
             ("Photos/2024/Trip/IMG_0001.HEIC", 3_000_000, 100),
             ("Music/Album/01 Opening.flac", 30_000_000, 200),
-            ("Landman/S01/Landman.S01E01.mkv", 3_000_000_000, 150),
+            (
+                "Night Harbour/S01/Night.Harbour.S01E01.mkv",
+                3_000_000_000,
+                150,
+            ),
             ("Concert.m2ts", 9_000_000, 400),
             ("notes.docx", 15_000, 500),
         ]);
@@ -324,7 +328,7 @@ mod tests {
         assert_eq!(paths(&c.music), ["Music/Album/01 Opening.flac"]);
         assert_eq!(
             paths(&c.videos),
-            ["Concert.m2ts", "Landman/S01/Landman.S01E01.mkv"]
+            ["Concert.m2ts", "Night Harbour/S01/Night.Harbour.S01E01.mkv"]
         );
         // Recent is everything, whatever it is.
         assert_eq!(c.recent[0].path, "notes.docx");
