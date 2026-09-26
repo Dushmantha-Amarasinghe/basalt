@@ -556,8 +556,15 @@ export function useMpv(): Mpv {
         // survives `loadfile`, so without this the next episode after a
         // paused one opened paused, looking like it had not loaded.
         await set('pause', 'no')
-        const options = startAt > 1 ? `start=${startAt.toFixed(3)}` : ''
-        await mpv.command('loadfile', options ? [url, 'replace', '0', options] : [url])
+        // Unpaused as part of the load, not only before it. A file that had
+        // played to its end is still sitting paused there, and mpv re-applies
+        // that end-of-file pause for as long as it is — so an unpause sent
+        // first was undone before the next file started, and the next track
+        // or episode arrived paused.
+        const options = ['pause=no', startAt > 1 ? `start=${startAt.toFixed(3)}` : '']
+          .filter(Boolean)
+          .join(',')
+        await mpv.command('loadfile', [url, 'replace', '0', options])
         loaded.current = true
       } catch (e) {
         if (generation.current === mine) setState((s) => ({ ...s, loadFailed: String(e) }))

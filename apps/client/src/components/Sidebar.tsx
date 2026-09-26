@@ -206,9 +206,9 @@ function DriveStatus({
         />
       </div>
 
-      <div className="mt-2 flex items-baseline justify-between">
+      <div className="mt-2 flex items-baseline justify-between gap-2 whitespace-nowrap">
         <span className="tnum font-mono text-[10px] text-textFaint">
-          {formatBytes(used)} / {formatBytes(total)}
+          {usedOfTotal(used, total)}
         </span>
         {/* Free space rather than a speed. The speed lives in the title bar;
             two readouts of one number were two chances to disagree. */}
@@ -220,4 +220,17 @@ function DriveStatus({
       </div>
     </div>
   )
+}
+
+/**
+ * `439 / 500 GB` rather than `439 GB / 500 GB` when both share a unit — the
+ * card is narrow, and the longer form pushed the free space onto a second
+ * line.
+ */
+function usedOfTotal(used: number, total: number): string {
+  const u = formatBytes(used)
+  const t = formatBytes(total)
+  const [uNumber, uUnit] = u.split(' ')
+  const [, tUnit] = t.split(' ')
+  return uUnit && uUnit === tUnit ? `${uNumber} / ${t}` : `${u} / ${t}`
 }

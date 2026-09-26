@@ -13,7 +13,7 @@ itself, and keeps finding it after the router hands out a different address.
 Run the installer:
 
 ```
-apps\host\src-tauri\target\release\bundle\nsis\Basalt Host_1.1.0_x64-setup.exe
+apps\host\src-tauri\target\release\bundle\nsis\Basalt Host_1.2.0_x64-setup.exe
 ```
 
 It installs for your account only, so Windows does not ask for an
@@ -66,7 +66,7 @@ sharing settings, nothing on any other machine.
 Run the installer:
 
 ```
-apps\client\src-tauri\target\release\bundle\nsis\Basalt_1.1.0_x64-setup.exe
+apps\client\src-tauri\target\release\bundle\nsis\Basalt_1.2.0_x64-setup.exe
 ```
 
 It opens on the pairing screen.

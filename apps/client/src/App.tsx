@@ -541,9 +541,18 @@ export function App(): React.JSX.Element {
       // A photo opens in the viewer, stepping through the photos beside it.
       // It used to be downloaded, like any file the app did not play.
       if (isKind(entry.name, 'photos')) {
+        // Sizes from the host's sort where it has them: a folder listing
+        // does not carry them, and the viewer lays a photo out by its shape.
+        const known = new Map(collections.collections.photos.map((p) => [p.path, p]))
         const photos = entries
           .filter((e) => e.kind === 'file' && isKind(e.name, 'photos'))
-          .map((e) => ({ path: e.id, size: e.size, mtime: Math.floor(e.modified / 1000) }))
+          .map((e) => ({
+            path: e.id,
+            size: e.size,
+            mtime: Math.floor(e.modified / 1000),
+            width: known.get(e.id)?.width,
+            height: known.get(e.id)?.height,
+          }))
         const index = Math.max(0, photos.findIndex((p) => p.path === entry.id))
         setViewer({ photos, index })
         return
@@ -552,7 +561,7 @@ export function App(): React.JSX.Element {
       if (isMediaFile(entry.name)) setPlaying(media ?? null)
       else void downloadOne(entry)
     },
-    [vault, downloadOne, entries],
+    [vault, downloadOne, entries, collections],
   )
 
   /**
@@ -575,7 +584,13 @@ export function App(): React.JSX.Element {
             modified: entry.mtime * 1000,
           },
         ])[0]
-        if (item) setPlaying({ ...item, ...namesByPath.get(path) })
+        // A song — the next track, played on from the last — is named the
+        // way the music list names it, not by its file name.
+        if (item && isKind(entry.name, 'music')) {
+          setPlaying(musicItem({ path, size: entry.size, mtime: entry.mtime }))
+        } else if (item) {
+          setPlaying({ ...item, ...namesByPath.get(path) })
+        }
       } catch {
         setNotice(`${nameOf(path)} is not on the drive any more.`)
         media.refresh()

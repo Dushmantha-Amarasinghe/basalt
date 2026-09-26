@@ -910,7 +910,7 @@ export function PlayerOverlay({
                   title={nextUp.label}
                   className="flex h-8 items-center gap-1 rounded-md px-2 text-[11px] text-textDim transition-colors hover:bg-white/[0.06] hover:text-text"
                 >
-                  Next episode
+                  {mpv.started && !mpv.picture ? 'Next track' : 'Next episode'}
                   <ChevronRight size={14} />
                 </button>
               )}

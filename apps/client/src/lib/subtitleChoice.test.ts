@@ -65,7 +65,12 @@ describe('choosing a track', () => {
 
   it('shows subtitles the first time a file has them', () => {
     expect(chooseSubtitle(tracks, FIRST_TIME)).not.toBeNull()
-    expect(chooseSubtitle([track(9, { lang: 'fre' })], FIRST_TIME)).toBe(9)
+    expect(chooseSubtitle([track(9, { lang: 'fre' })], FIRST_TIME, 'en-US')).toBe(9)
+  })
+
+  it('opens in the language the computer is set to, before anything is chosen', () => {
+    expect(chooseSubtitle(tracks, FIRST_TIME, 'en-GB')).toBe(3)
+    expect(chooseSubtitle(tracks, FIRST_TIME, 'es-MX')).toBe(1)
   })
 
   it('follows the last choice: language, then SDH or plain', () => {
