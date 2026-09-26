@@ -296,7 +296,79 @@ function HostList({
         <RefreshCw size={11} className={cn(scanning && 'animate-spin')} />
         {scanning ? 'Looking…' : 'Look again'}
       </button>
+
+      <AddressEntry busy={busy} onChoose={onChoose} />
     </div>
+  )
+}
+
+/**
+ * The host by its address, for when looking for it finds nothing.
+ *
+ * Some networks do not pass the broadcasts hosts announce themselves with —
+ * guest Wi-Fi, some mesh systems, a phone emulator. The address is shown in
+ * Basalt Host's own window. Pairing goes on exactly as it would have: the PIN,
+ * and then the host's key, are what is trusted, never the address.
+ */
+function AddressEntry({
+  busy,
+  onChoose,
+}: {
+  busy: boolean
+  onChoose: (host: DiscoveredHost) => void
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [address, setAddress] = useState('')
+  const trimmed = address.trim()
+  const withPort = trimmed && !/:\d+$/.test(trimmed) ? `${trimmed}:7742` : trimmed
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="mt-1 flex w-full items-center justify-center py-2 text-[11px] text-textFaint underline decoration-white/15 underline-offset-4 transition-colors hover:text-textDim"
+      >
+        Enter the address instead
+      </button>
+    )
+  }
+  return (
+    <form
+      className="mt-3 flex gap-2"
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (!withPort || busy) return
+        onChoose({
+          hostId: '',
+          hostName: trimmed,
+          vault: '',
+          address: withPort,
+          requiresPin: true,
+          hasVault: true,
+          paired: false,
+        })
+      }}
+    >
+      <input
+        autoFocus
+        inputMode="url"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        value={address}
+        onChange={(e) => setAddress(e.target.value)}
+        placeholder="192.168.1.20"
+        aria-label="Host address"
+        className="min-w-0 flex-1 rounded-md border border-line bg-panel px-3 py-2.5 font-mono text-[13px] text-text placeholder:text-textFaint focus:border-white/25"
+      />
+      <button
+        type="submit"
+        disabled={!withPort || busy}
+        className="shrink-0 rounded-md bg-basalt px-4 text-[12.5px] font-medium text-ink transition-opacity disabled:opacity-40"
+      >
+        Connect
+      </button>
+    </form>
   )
 }
 

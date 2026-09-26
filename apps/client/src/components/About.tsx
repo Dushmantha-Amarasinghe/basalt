@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { android } from '@/lib/android'
+import { isAndroid } from '@/lib/platform'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AlertCircle, ArrowUpCircle, Check, ExternalLink, Github, Loader2 } from 'lucide-react'
 import { api, inTauri, type Release } from '@/lib/api'
@@ -21,6 +23,26 @@ export const ISSUES = `${REPO}/issues/new`
  * to install; running an installer is the last thing this app does before it
  * closes, so it should never happen as a side effect of a check.
  */
+/**
+ * Starts a downloaded, verified update.
+ *
+ * On Windows the installer runs and the app steps aside. On Android the
+ * package goes to the system's own installer, which asks the user — once
+ * this app has been allowed to install updates at all, a switch Android keeps
+ * per app and only the user can turn on.
+ */
+async function install(path: string): Promise<void> {
+  if (isAndroid()) {
+    if (!(await android.canInstallApks())) {
+      await android.openInstallSettings()
+      return
+    }
+    await android.installApk(path).catch(() => {})
+    return
+  }
+  await api.installUpdate(path).catch(() => {})
+}
+
 export function About({ product }: { product: string }): React.JSX.Element {
   const [version, setVersion] = useState('')
   const [state, setState] = useState<State>({ kind: 'idle' })
@@ -130,7 +152,7 @@ export function About({ product }: { product: string }): React.JSX.Element {
               release={state.release}
               state={state}
               onDownload={() => void download(state.release)}
-              onInstall={(path) => void api.installUpdate(path).catch(() => {})}
+              onInstall={(path) => void install(path)}
             />
           )}
         </motion.div>
@@ -150,7 +172,7 @@ export function About({ product }: { product: string }): React.JSX.Element {
         </div>
 
         <p className="mt-3 font-mono text-[10px] text-textFaint">
-          Windows · GPLv3 · Refora Technologies
+          {isAndroid() ? 'Android' : 'Windows'} · GPLv3 · Refora Technologies
         </p>
         <p className="mt-1 font-mono text-[10px] text-textFaint">
           © 2026 Refora Technologies

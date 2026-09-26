@@ -301,7 +301,10 @@ export function MusicList({
   files,
   playing,
   onPlay,
+  compact,
 }: {
+  /** A phone's width: title with artist and album beneath, no columns. */
+  compact?: boolean
   /** Already in playing order. */
   files: MediaFile[]
   /** The path playing now, to mark it. */
@@ -310,6 +313,7 @@ export function MusicList({
 }): React.JSX.Element {
   return (
     <div className="flex h-full flex-col px-3">
+      {compact ? null : (
       <div className="grid h-8 shrink-0 grid-cols-[40px_minmax(0,2.2fr)_minmax(0,1.3fr)_minmax(0,1.3fr)_64px_72px] items-center gap-3 border-b border-line px-2 font-mono text-[9.5px] uppercase tracking-[0.16em] text-textFaint">
         <span className="text-right">#</span>
         <span>Title</span>
@@ -318,11 +322,35 @@ export function MusicList({
         <span>Format</span>
         <span className="text-right">Size</span>
       </div>
-      <VList style={{ flex: 1 }} count={files.length} itemSize={TRACK_ROW}>
+      )}
+      <VList style={{ flex: 1 }} count={files.length} itemSize={compact ? 60 : TRACK_ROW}>
         {(i) => {
           const file = files[i]!
           const info = trackInfo(file.path)
           const current = file.path === playing
+          if (compact) {
+            return (
+              <button
+                key={file.path}
+                onClick={() => onPlay(file)}
+                style={{ height: 60 }}
+                className={cn(
+                  'flex w-full items-center gap-3.5 rounded-lg px-2 text-left transition-colors duration-150',
+                  current ? 'bg-white/[0.07]' : 'active:bg-white/[0.05]',
+                )}
+              >
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] bg-white/[0.05] font-mono text-[12px] text-textFaint">
+                  {current ? <Volume2 size={16} className="text-text" /> : (info.number ?? i + 1)}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[15px] text-text">{info.title}</span>
+                  <span className="mt-0.5 block truncate text-[12px] text-textFaint">
+                    {[info.artist, info.album].filter(Boolean).join(' · ') || formatOf(file.path)}
+                  </span>
+                </span>
+              </button>
+            )
+          }
           return (
             <button
               key={file.path}

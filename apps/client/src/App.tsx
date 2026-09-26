@@ -64,6 +64,7 @@ import { ProfileGate } from '@/components/ProfileGate'
 import { stemOf, trackInfo } from '@/lib/mediaInfo'
 import { useVault } from '@/lib/useVault'
 import { isMobileShell } from '@/lib/platform'
+import { android, type PhoneFile } from '@/lib/android'
 import { MobileApp } from '@/mobile/MobileApp'
 import { filterKind, isKind, recentOf, useLibraryScan } from '@/lib/useLibrary'
 import { transferId, useTransfers } from '@/lib/useTransfers'
@@ -410,8 +411,47 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
 
   // --- transfers -----------------------------------------------------------
 
+  /**
+   * Where each download on the phone landed, by transfer, so the Transfers
+   * sheet can open or share it afterwards.
+   */
+  const [savedOnPhone, setSavedOnPhone] = useState<Record<string, { uri: string; shownAs: string }>>(
+    {},
+  )
+
+  /**
+   * Downloads on the phone: straight into Downloads/Basalt, no dialog.
+   *
+   * A save dialog for every file is a desktop habit; on a phone the question
+   * "where" has one sensible answer, and it is the folder every other app
+   * already looks in.
+   */
+  const downloadToPhone = useCallback(
+    async (files: Entry[]) => {
+      if (files.length === 0) return
+      for (const entry of files) {
+        const id = transferId()
+        transfers.start({ id, kind: 'download', name: entry.name, path: entry.id, total: entry.size })
+        try {
+          const saved = await api.downloadToPhone(entry.id, id)
+          setSavedOnPhone((all) => ({ ...all, [id]: saved }))
+          transfers.finish(id)
+          if (files.length === 1) setNotice(`Saved to ${saved.shownAs}`)
+        } catch (e) {
+          transfers.finish(id, e instanceof Error ? e.message : String(e))
+        }
+      }
+      if (files.length > 1) setNotice(`${files.length} files saved to Download/Basalt`)
+    },
+    [transfers],
+  )
+
   const downloadOne = useCallback(
     async (entry: Entry) => {
+      if (mobile) {
+        await downloadToPhone([entry])
+        return
+      }
       const destination = await pickSaveLocation(entry.name)
       if (!destination) return
       setTransfersOpen(true)
@@ -431,7 +471,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         transfers.finish(id, e instanceof Error ? e.message : String(e))
       }
     },
-    [transfers],
+    [downloadToPhone, mobile, transfers],
   )
 
   const downloadMany = useCallback(
@@ -439,6 +479,10 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
       const files = chosen.filter((e) => e.kind === 'file')
       if (files.length === 0) {
         setNotice('Folders cannot be downloaded yet — open one and take the files.')
+        return
+      }
+      if (mobile) {
+        await downloadToPhone(files)
         return
       }
       if (files.length === 1) {
@@ -470,7 +514,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         }
       }
     },
-    [downloadOne, transfers],
+    [downloadOne, downloadToPhone, mobile, transfers],
   )
 
   /**
@@ -531,9 +575,73 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     [transfers, vault],
   )
 
+  /**
+   * Files from the phone, as one upload: picked, shared in from another
+   * app, or everything in a picked folder.
+   */
+  const uploadFromPhone = useCallback(
+    async (files: PhoneFile[], folders: string[], into: string, label: string) => {
+      if (files.length === 0 && folders.length === 0) return
+      const id = transferId()
+      const total = files.reduce((sum, f) => sum + Math.max(0, f.size), 0)
+      transfers.start({ id, kind: 'upload', name: label, path: joinPath(into, label), total })
+      try {
+        const outcome = await api.uploadFromPhone(
+          files.map((f) => ({ uri: f.uri, rel: f.rel ?? f.name, size: f.size, mtime: f.mtime })),
+          folders,
+          into,
+          label,
+          id,
+        )
+        const failed = outcome?.failed ?? []
+        if (failed.length > 0) {
+          const [first, why] = failed[0]!
+          transfers.finish(
+            id,
+            `${failed.length} of ${outcome.files + failed.length} did not upload. ${nameOf(first)}: ${why}`,
+          )
+        } else {
+          transfers.finish(id)
+        }
+      } catch (e) {
+        transfers.finish(id, e instanceof Error ? e.message : String(e))
+      }
+      vault.refresh()
+    },
+    [transfers, vault],
+  )
+
+  /** The phone's picker: photos and videos, or any file. */
+  const uploadPicked = useCallback(
+    async (kind: 'media' | 'any', into: string) => {
+      const files = await android.pickFiles(kind)
+      if (files.length === 0) return
+      const label = files.length === 1 ? files[0]!.name : `${files.length} files`
+      await uploadFromPhone(files, [], into, label)
+    },
+    [uploadFromPhone],
+  )
+
+  /** A folder from the phone, recreated on the drive with everything in it. */
+  const uploadPickedFolder = useCallback(
+    async (into: string) => {
+      const folder = await android.pickFolder()
+      if (!folder) return
+      const listing = await android.listFolder(folder.uri)
+      const files = listing.files.map((f) => ({ ...f, rel: `${folder.name}/${f.rel ?? f.name}` }))
+      const folders = [folder.name, ...listing.folders.map((f) => `${folder.name}/${f}`)]
+      await uploadFromPhone(files, folders, into, folder.name)
+    },
+    [uploadFromPhone],
+  )
+
   const uploadHere = useCallback(async () => {
+    if (mobile) {
+      await uploadPicked('any', vault.dir)
+      return
+    }
     await uploadPaths(await pickFiles(), vault.dir)
-  }, [uploadPaths, vault.dir])
+  }, [mobile, uploadPicked, uploadPaths, vault.dir])
 
   // --- opening -------------------------------------------------------------
 
@@ -547,6 +655,20 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
    */
   const openExternally = useCallback(
     async (path: string) => {
+      // On a phone: the stream, handed to whichever player the phone has —
+      // VLC, MX Player — which reads it from this app's media proxy. The app
+      // stays running while it does; the proxy is inside it.
+      if (mobile) {
+        try {
+          const url = await api.mediaUrl(path)
+          const name = nameOf(path)
+          await android.keepAlive('playback', `Streaming ${name}`, 'To another player on this phone')
+          await android.openWith(url, mimeOf(name), name)
+        } catch (e) {
+          setNotice(e instanceof Error ? e.message : String(e))
+        }
+        return
+      }
       const id = transferId()
       try {
         const result = await api.openExternally(path, id)
@@ -560,7 +682,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         setNotice(e instanceof Error ? e.message : String(e))
       }
     },
-    [transfers],
+    [mobile, transfers],
   )
 
   const openEntry = useCallback(
@@ -1069,6 +1191,11 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
 
   return {
     mobile,
+    savedOnPhone,
+    uploadFromPhone,
+    uploadPicked,
+    uploadPickedFolder,
+    downloadToPhone,
     vault,
     transfers,
     menu,
@@ -1895,7 +2022,7 @@ function StatusBar({
 }
 
 /** A song as the player shows it: its title, and who and what it is from. */
-function musicItem(file: MediaFile): MediaItem {
+export function musicItem(file: MediaFile): MediaItem {
   const base = entriesToMedia([fileToEntry(file)])[0]!
   const info = trackInfo(file.path)
   return {
@@ -1903,4 +2030,14 @@ function musicItem(file: MediaFile): MediaItem {
     title: info.title || stemOf(file.path),
     subtitle: [info.artist, info.album].filter(Boolean).join(' · ') || 'Music',
   }
+}
+
+/** A type for a file, from its extension, for handing to another app. */
+function mimeOf(name: string): string {
+  const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase()
+  const video = ['mp4', 'm4v', 'mkv', 'avi', 'mov', 'webm', 'wmv', 'ts', 'm2ts', 'mpg', 'mpeg', 'flv', '3gp']
+  const audio = ['mp3', 'flac', 'wav', 'm4a', 'aac', 'ogg', 'opus', 'wma']
+  if (video.includes(ext)) return ext === 'mkv' ? 'video/x-matroska' : `video/${ext === 'm4v' ? 'mp4' : ext}`
+  if (audio.includes(ext)) return `audio/${ext === 'mp3' ? 'mpeg' : ext}`
+  return '*/*'
 }
