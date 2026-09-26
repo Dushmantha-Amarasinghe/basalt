@@ -6,6 +6,7 @@ import { usePoll } from '@/lib/usePoll'
 import { DeviceList } from './components/DeviceList'
 import { PairingRequests } from './components/PairingRequests'
 import { SettingsPanel } from './components/SettingsPanel'
+import { ProfileList } from './components/ProfileList'
 import { Setup } from './components/Setup'
 import { TitleBar } from './components/TitleBar'
 import { VaultCard } from './components/VaultCard'
@@ -204,6 +205,50 @@ export function App(): React.JSX.Element {
                 </section>
 
                 <section>
+                  <div className="mb-2.5 flex items-baseline justify-between">
+                    <h3 className="font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">
+                      Profiles
+                    </h3>
+                    {current.profiles.length > 0 && (
+                      <span className="tnum font-mono text-[10px] text-textFaint">
+                        {current.profiles.length}{' '}
+                        {current.profiles.length === 1 ? 'profile' : 'profiles'}
+                      </span>
+                    )}
+                  </div>
+                  <ProfileList
+                    profiles={current.profiles}
+                    onResetPin={(profile) =>
+                      setPrompt({
+                        title: `Reset ${profile.name}'s PIN?`,
+                        value: profile.name,
+                        confirmLabel: 'Reset PIN',
+                        select: 'all',
+                        // The dialog is the confirmation: every device signed
+                        // in to this profile is signed out, and the next
+                        // sign-in chooses a new PIN.
+                        onConfirm: () => {
+                          void api.resetProfilePin(profile.id).then(apply)
+                        },
+                      })
+                    }
+                    onRemove={(profile) =>
+                      setPrompt({
+                        title: `Remove ${profile.name}?`,
+                        value: profile.name,
+                        confirmLabel: 'Remove',
+                        select: 'all',
+                        // With its watch history and stars. The files on the
+                        // drive are not touched.
+                        onConfirm: () => {
+                          void api.removeProfile(profile.id).then(apply)
+                        },
+                      })
+                    }
+                  />
+                </section>
+
+                <section>
                   <h3 className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">
                     Settings
                   </h3>
@@ -229,9 +274,6 @@ export function App(): React.JSX.Element {
                     }}
                     onTmdbKey={(key) => {
                       void api.setTmdbKey(key).then(apply)
-                    }}
-                    onProgressPerDevice={(enabled) => {
-                      void api.setProgressPerDevice(enabled).then(apply)
                     }}
                     onSections={(sections) => {
                       void api.setSections(sections).then(apply)

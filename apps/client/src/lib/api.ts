@@ -142,6 +142,34 @@ export interface LibraryResponse {
   sections?: Sections
 }
 
+/** A profile, as any device sees it: never its PIN. Mirrors the Rust. */
+export interface ProfileView {
+  id: string
+  name: string
+  /** Which avatar colour, 0 to 7. */
+  color: number
+  /** False after the host reset the PIN: signing in chooses a new one. */
+  hasPin: boolean
+  lastUsed: number
+}
+
+/** Who is using this device. */
+export interface IdentityState {
+  profile: ProfileView | null
+  /** Ask who is using the device. */
+  choose: boolean
+  /** Signed out by the host since the app last looked. */
+  ended: boolean
+  /** The profile last signed in to here, shown first. */
+  lastProfile: string | null
+}
+
+export interface Star {
+  path: string
+  name: string
+  kind: 'file' | 'dir'
+}
+
 /** What an upload did. For a folder, some of its files may not have arrived. */
 export interface UploadOutcome {
   bytes: number
@@ -242,6 +270,9 @@ export type ErrorKind =
   | 'wronghost'
   | 'incompatible'
   | 'pairing'
+  /** A profile sign-in the host has ended. */
+  | 'signedout'
+  | 'unsupported'
   | 'error'
 
 export class ApiError extends Error {
@@ -330,6 +361,16 @@ export const api = {
 
   library: (knownRevision: number) =>
     call<LibraryResponse>('library', { knownRevision }),
+  identity: () => call<IdentityState>('identity'),
+  profiles: () => call<ProfileView[]>('profiles'),
+  createProfile: (name: string, pin: string, color: number, remember: boolean) =>
+    call<ProfileView>('create_profile', { name, pin, color, remember }),
+  signInProfile: (id: string, pin: string, remember: boolean) =>
+    call<ProfileView>('sign_in_profile', { id, pin, remember }),
+  signOutProfile: () => call<void>('sign_out_profile'),
+  continueAsDevice: (always: boolean) => call<void>('continue_as_device', { always }),
+  /** The signed-in profile's stars, replaced first when `set` is given. */
+  profileStars: (set?: Star[]) => call<Star[]>('profile_stars', { set: set ?? null }),
   /** Every video, song and photo on the drive, sorted by the host. */
   collections: (knownRevision: number) =>
     call<CollectionsResponse>('collections', { knownRevision }),
@@ -820,6 +861,48 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       // No thumbnails in the browser preview: tiles show their placeholder,
       // which is what a host without pictures looks like too.
       return '' as T
+    case 'identity':
+      return { ...mockIdentity } as T
+    case 'profiles':
+      return mockProfiles.map((p) => ({ ...p })) as T
+    case 'create_profile': {
+      const profile: ProfileView = {
+        id: `p${mockProfiles.length + 1}`,
+        name: String(args?.name ?? '').trim(),
+        color: Number(args?.color ?? 0),
+        hasPin: true,
+        lastUsed: Math.floor(Date.now() / 1000),
+      }
+      mockProfiles.push(profile)
+      mockPins.set(profile.id, String(args?.pin ?? ''))
+      mockIdentity = { profile, choose: false, ended: false, lastProfile: profile.id }
+      return profile as T
+    }
+    case 'sign_in_profile': {
+      const profile = mockProfiles.find((p) => p.id === args?.id)
+      const pin = String(args?.pin ?? '')
+      if (!profile) throw new ApiError('notfound', 'that profile is not there any more')
+      if (profile.hasPin && mockPins.get(profile.id) !== pin) {
+        throw new ApiError('denied', 'that PIN is not right')
+      }
+      if (!profile.hasPin) {
+        mockPins.set(profile.id, pin)
+        profile.hasPin = true
+      }
+      mockIdentity = { profile, choose: false, ended: false, lastProfile: profile.id }
+      return profile as T
+    }
+    case 'sign_out_profile':
+      mockIdentity = { profile: null, choose: true, ended: false, lastProfile: mockIdentity.lastProfile }
+      return undefined as T
+    case 'continue_as_device':
+      mockIdentity = { profile: null, choose: false, ended: false, lastProfile: mockIdentity.lastProfile }
+      return undefined as T
+    case 'profile_stars': {
+      const set = args?.set as Star[] | null | undefined
+      if (set) mockProfileStars = set
+      return mockProfileStars as T
+    }
     case 'collections':
       return {
         revision: 1,
@@ -864,4 +947,19 @@ function mockCollections(): Collections {
     (a, b) => b.mtime - a.mtime,
   )
   return { videos, music, photos, recent, truncated: false }
+}
+
+// Preview profiles. The PIN for both is 1234; Sam's was reset, so signing in
+// as Sam chooses a new one. `?device` opens as the device, skipping the choice.
+const mockProfiles: ProfileView[] = [
+  { id: 'p1', name: 'Maya', color: 0, hasPin: true, lastUsed: 0 },
+  { id: 'p2', name: 'Sam', color: 4, hasPin: false, lastUsed: 0 },
+]
+const mockPins = new Map<string, string>([['p1', '1234']])
+let mockProfileStars: Star[] = []
+let mockIdentity: IdentityState = {
+  profile: null,
+  choose: !(typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('device')),
+  ended: false,
+  lastProfile: 'p1',
 }

@@ -495,6 +495,109 @@ pub struct MediaFile {
     pub height: Option<u32>,
 }
 
+// ---------------------------------------------------------------------------
+// Profiles
+// ---------------------------------------------------------------------------
+
+/// A profile as any device may see it: a name and a colour, never its PIN.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileView {
+    pub id: String,
+    pub name: String,
+    /// Which of the avatar colours, 0 to 7.
+    pub color: u8,
+    /// False after the host's owner reset the PIN: the next sign-in sets one.
+    pub has_pin: bool,
+    /// Unix seconds of the last sign-in anywhere, zero if never.
+    pub last_used: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfilesResponse {
+    pub profiles: Vec<ProfileView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileCreateRequest {
+    pub name: String,
+    pub pin: String,
+    #[serde(default)]
+    pub color: u8,
+    /// Keep this device signed in. Otherwise the sign-in lasts until the app
+    /// closes.
+    #[serde(default)]
+    pub remember: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSignInRequest {
+    pub id: String,
+    /// The PIN, or the new one for a profile whose PIN was reset.
+    pub pin: String,
+    #[serde(default)]
+    pub remember: bool,
+}
+
+/// A sign-in: the profile, and the token that stands for it from now on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSession {
+    pub profile: ProfileView,
+    /// 32 random bytes, hex. Presented with [`ProfileUseRequest`].
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileUseRequest {
+    /// None to act as the device itself.
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileUseResponse {
+    #[serde(default)]
+    pub profile: Option<ProfileView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSignOutRequest {
+    pub token: String,
+}
+
+/// One starred file or folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Star {
+    /// Vault-relative.
+    pub path: String,
+    pub name: String,
+    /// `file` or `dir`.
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StarsRequest {
+    /// Replaces the list first, when given. The list is small, so it goes
+    /// whole rather than as additions and removals that could cross.
+    #[serde(default)]
+    pub set: Option<Vec<Star>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StarsResponse {
+    pub stars: Vec<Star>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThumbnailRequest {

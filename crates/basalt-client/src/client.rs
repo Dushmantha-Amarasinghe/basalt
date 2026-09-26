@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use basalt_proto::msg::{
-    Change, DirEntry, HelloResponse, LibraryResponse, ProgressRequest, Watched,
+    Change, DirEntry, HelloResponse, LibraryResponse, ProfileCreateRequest, ProfileSignInRequest,
+    ProfileView, ProgressRequest, Watched,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -89,6 +90,8 @@ pub struct Basalt {
     /// The host generated its PIN when the first step arrived and is showing
     /// it now; reconnecting for the second step would produce a different one.
     pending: tokio::sync::Mutex<Option<(Session, PairChallenge)>>,
+    /// Who is using the device right now: a profile, or the device itself.
+    identity: std::sync::Mutex<Current>,
     /// Every payload byte that has crossed the link since the app started.
     ///
     /// One counter in one place rather than reporting from each call site,
@@ -124,6 +127,7 @@ impl Basalt {
             info: std::sync::Mutex::new(None),
             me: Me::new(device_name, device_id),
             pending: tokio::sync::Mutex::new(None),
+            identity: std::sync::Mutex::new(Current::default()),
             bytes_moved: std::sync::atomic::AtomicU64::new(0),
         })
     }
@@ -272,6 +276,7 @@ impl Basalt {
                 host_name: info.host_name.clone(),
                 last_address: Some(addr.to_string()),
                 paired_at: unix_now(),
+                identity: Default::default(),
             });
             store.device_name = Some(self.me.name.clone());
         }
@@ -363,6 +368,31 @@ impl Basalt {
         let _ = self.save_store();
 
         let pool = Pool::with_session(addr, &known.host_id, &known.token, &self.me, session);
+        // Straight back in as whoever was here last time, when that was
+        // remembered. Checked with the host on first use; one that has ended
+        // leaves the device on its own and the app asks who is watching.
+        let current = match &known.identity.profile {
+            Some(saved) => {
+                pool.set_profile(Some(saved.token.clone()));
+                Current {
+                    profile: Some(ProfileView {
+                        id: saved.id.clone(),
+                        name: saved.name.clone(),
+                        color: saved.color,
+                        has_pin: true,
+                        last_used: 0,
+                    }),
+                    chosen: true,
+                    ended: false,
+                }
+            }
+            None => Current {
+                profile: None,
+                chosen: known.identity.always_device,
+                ended: false,
+            },
+        };
+        *self.identity.lock().expect("identity lock") = current;
         *self.pool.write().await = Some(pool);
         *self.info.lock().expect("info lock") = Some(info.clone());
         Ok(info)
@@ -410,6 +440,193 @@ impl Basalt {
         }
         self.store.lock().expect("store lock").forget(host_id);
         self.save_store()
+    }
+
+    // -----------------------------------------------------------------------
+    // Profiles
+    // -----------------------------------------------------------------------
+
+    /// Who is using the device, and whether that still needs asking.
+    ///
+    /// Asks the host once when a remembered sign-in has not been checked
+    /// yet, so a profile removed or signed out elsewhere is noticed here
+    /// rather than on the first thing somebody tries to do.
+    pub async fn identity(&self) -> IdentityState {
+        if let Ok(pool) = self.pool().await {
+            // Asked outright, not left to the pool: a connection already told
+            // which profile it is for does not ask again by itself.
+            if let Some(token) = pool.profile_token()
+                && let Ok(mut lease) = pool.acquire().await
+            {
+                let result = lease.profile_use(Some(&token)).await;
+                let _ = lease.check(result);
+            }
+            if pool.take_profile_ended() {
+                let mut current = self.identity.lock().expect("identity lock");
+                current.profile = None;
+                current.chosen = false;
+                current.ended = true;
+                drop(current);
+                self.update_identity(|identity| identity.profile = None);
+            }
+        }
+        let current = self.identity.lock().expect("identity lock").clone();
+        let last_profile = self
+            .current_host()
+            .and_then(|host| host.identity.last_profile);
+        IdentityState {
+            profile: current.profile,
+            choose: !current.chosen,
+            ended: current.ended,
+            last_profile,
+        }
+    }
+
+    /// The household's profiles.
+    pub async fn profiles(&self) -> Result<Vec<ProfileView>> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.profiles().await;
+        Ok(lease.check(result)?.profiles)
+    }
+
+    /// Makes a profile and signs in to it.
+    pub async fn create_profile(
+        &self,
+        name: &str,
+        pin: &str,
+        color: u8,
+        remember: bool,
+    ) -> Result<ProfileView> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease
+            .profile_create(&ProfileCreateRequest {
+                name: name.to_string(),
+                pin: pin.to_string(),
+                color,
+                remember,
+            })
+            .await;
+        let session = lease.check(result)?;
+        drop(lease);
+        self.adopt_profile(&pool, session, remember)
+    }
+
+    /// Signs in to a profile with its PIN.
+    pub async fn sign_in_profile(
+        &self,
+        id: &str,
+        pin: &str,
+        remember: bool,
+    ) -> Result<ProfileView> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease
+            .profile_sign_in(&ProfileSignInRequest {
+                id: id.to_string(),
+                pin: pin.to_string(),
+                remember,
+            })
+            .await;
+        let session = lease.check(result)?;
+        drop(lease);
+        self.adopt_profile(&pool, session, remember)
+    }
+
+    fn adopt_profile(
+        &self,
+        pool: &Pool,
+        session: basalt_proto::msg::ProfileSession,
+        remember: bool,
+    ) -> Result<ProfileView> {
+        pool.set_profile(Some(session.token.clone()));
+        let profile = session.profile;
+        *self.identity.lock().expect("identity lock") = Current {
+            profile: Some(profile.clone()),
+            chosen: true,
+            ended: false,
+        };
+        let saved = remember.then(|| crate::store::SavedProfile {
+            id: profile.id.clone(),
+            name: profile.name.clone(),
+            color: profile.color,
+            token: session.token,
+        });
+        let id = profile.id.clone();
+        self.update_identity(move |identity| {
+            identity.profile = saved;
+            identity.last_profile = Some(id);
+            identity.always_device = false;
+        });
+        Ok(profile)
+    }
+
+    /// Signs out of the profile, here. The device carries on as itself, and
+    /// the app asks who is watching.
+    pub async fn sign_out_profile(&self) -> Result<()> {
+        let pool = self.pool().await?;
+        if let Some(token) = pool.profile_token()
+            && let Ok(mut lease) = pool.acquire().await
+        {
+            let result = lease.profile_sign_out(&token).await;
+            // Best effort: signed out here whatever the host said.
+            let _ = lease.check(result);
+        }
+        pool.set_profile(None);
+        *self.identity.lock().expect("identity lock") = Current::default();
+        self.update_identity(|identity| identity.profile = None);
+        Ok(())
+    }
+
+    /// Carries on as the device itself, and with `always`, stops asking.
+    pub async fn continue_as_device(&self, always: bool) -> Result<()> {
+        let pool = self.pool().await?;
+        if pool.profile_token().is_some() {
+            pool.set_profile(None);
+        }
+        *self.identity.lock().expect("identity lock") = Current {
+            profile: None,
+            chosen: true,
+            ended: false,
+        };
+        self.update_identity(move |identity| {
+            identity.profile = None;
+            identity.always_device = always;
+        });
+        Ok(())
+    }
+
+    /// The signed-in profile's stars, replaced first when `set` is given.
+    pub async fn stars(
+        &self,
+        set: Option<Vec<basalt_proto::msg::Star>>,
+    ) -> Result<Vec<basalt_proto::msg::Star>> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.stars(set).await;
+        Ok(lease.check(result)?.stars)
+    }
+
+    fn current_host(&self) -> Option<KnownHost> {
+        let id = self.status()?.host_id;
+        self.store.lock().expect("store lock").find(&id).cloned()
+    }
+
+    /// Changes what is remembered for the connected host, and saves it.
+    fn update_identity(&self, change: impl FnOnce(&mut crate::store::Identity)) {
+        let Some(id) = self.status().map(|info| info.host_id) else {
+            return;
+        };
+        {
+            let mut store = self.store.lock().expect("store lock");
+            if let Some(host) = store.find_mut(&id) {
+                change(&mut host.identity);
+            }
+        }
+        if let Err(e) = self.save_store() {
+            tracing::warn!("could not save who is signed in: {e}");
+        }
     }
 
     async fn pool(&self) -> Result<Pool> {
@@ -871,6 +1088,30 @@ impl Basalt {
         lease.check(result)?;
         Ok(total)
     }
+}
+
+/// Who is using the device, as this run knows it.
+#[derive(Debug, Clone, Default)]
+struct Current {
+    profile: Option<ProfileView>,
+    /// Whether somebody has chosen — a profile, or the device — or it was
+    /// remembered. Until then the app asks.
+    chosen: bool,
+    /// The host ended the profile's sign-in since the app last looked.
+    ended: bool,
+}
+
+/// Who is using the device, for the app.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityState {
+    pub profile: Option<ProfileView>,
+    /// Ask who is watching.
+    pub choose: bool,
+    /// Signed out by the host: removed, reset, or signed out elsewhere.
+    pub ended: bool,
+    /// The profile last signed in to here, to show first.
+    pub last_profile: Option<String>,
 }
 
 /// What a folder upload did.

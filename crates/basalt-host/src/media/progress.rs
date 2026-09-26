@@ -57,7 +57,24 @@ impl Progress {
     /// Where this lives: beside the host's config, keyed by drive.
     pub fn path_for(config_dir: &Path, vault_root: &Path) -> PathBuf {
         let key = blake3::hash(vault_root.to_string_lossy().as_bytes()).to_hex();
-        config_dir.join(format!("progress-{}.json", &key[..16]))
+        // `watched-`, not the `progress-` of 1.2 and before: profiles began
+        // every history afresh, and the old files are cleared away by
+        // [`Progress::clear_legacy`] rather than read.
+        config_dir.join(format!("watched-{}.json", &key[..16]))
+    }
+
+    /// Deletes histories from before profiles. Returns how many went.
+    pub fn clear_legacy(config_dir: &Path) -> usize {
+        std::fs::read_dir(config_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                name.starts_with("progress-") && (name.ends_with(".json") || name.ends_with(".bak"))
+            })
+            .filter(|e| std::fs::remove_file(e.path()).is_ok())
+            .count()
     }
 
     pub fn load(path: &Path) -> Self {
@@ -115,6 +132,39 @@ impl Progress {
     }
 
     /// Forgets a file in the shared history.
+    /// Records to one owner's history only — a device's, or a profile's.
+    ///
+    /// Since profiles there is no shared history: a device keeps its own, and
+    /// a profile's follows it from device to device.
+    pub fn record_owned(&mut self, owner: &str, mut update: Watched, now: i64) {
+        if update.path.trim().is_empty() {
+            return;
+        }
+        update.fraction = update.fraction.clamp(0.0, 1.0);
+        update.position = update.position.max(0.0);
+        update.duration = update.duration.max(0.0);
+        update.updated_at = now;
+        if !self.devices.contains_key(owner) {
+            self.make_room_for_a_device();
+        }
+        self.devices
+            .entry(owner.to_string())
+            .or_default()
+            .record(update);
+    }
+
+    /// Forgets one file in one owner's history.
+    pub fn forget_owned(&mut self, owner: &str, path: &str) -> bool {
+        self.devices
+            .get_mut(owner)
+            .is_some_and(|history| history.0.remove(path).is_some())
+    }
+
+    /// Drops a whole history: a profile removed.
+    pub fn drop_owner(&mut self, owner: &str) -> bool {
+        self.devices.remove(owner).is_some()
+    }
+
     pub fn forget(&mut self, path: &str) -> bool {
         self.forget_for(None, path)
     }
@@ -573,5 +623,45 @@ mod tests {
         assert_eq!(back.get_for("laptop", "a.mkv").unwrap().fraction, 0.4);
         assert_eq!(back.get("a.mkv").unwrap().fraction, 0.4);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod owned_tests {
+    use super::*;
+
+    fn seen(path: &str, fraction: f64) -> Watched {
+        Watched {
+            path: path.into(),
+            position: fraction * 100.0,
+            duration: 100.0,
+            fraction,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn each_owner_has_a_history_of_its_own_and_nothing_is_shared() {
+        let mut p = Progress::default();
+        p.record_owned("profile:maya", seen("a.mkv", 0.5), 1);
+        p.record_owned("device-1", seen("b.mkv", 0.2), 2);
+        assert_eq!(p.all_for("profile:maya").len(), 1);
+        assert_eq!(p.all_for("device-1")[0].path, "b.mkv");
+        assert!(p.all().is_empty(), "no shared history any more");
+        assert!(p.forget_owned("profile:maya", "a.mkv"));
+        assert!(p.drop_owner("device-1"));
+        assert!(p.all_for("device-1").is_empty());
+    }
+
+    #[test]
+    fn histories_from_before_profiles_are_cleared() {
+        let dir = std::env::temp_dir().join(format!("basalt-legacy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("progress-0123456789abcdef.json"), b"{}").unwrap();
+        std::fs::write(dir.join("progress-x.json.before-player-fixes.bak"), b"{}").unwrap();
+        std::fs::write(dir.join("library-0123456789abcdef.json"), b"{}").unwrap();
+        assert_eq!(Progress::clear_legacy(&dir), 2);
+        assert!(dir.join("library-0123456789abcdef.json").exists());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -45,6 +45,26 @@ export interface LibraryStatus {
   scannedAt: number
 }
 
+/** A profile as the host shows it. Never its PIN. */
+export interface ProfileSummary {
+  id: string
+  name: string
+  /** Which avatar colour, 0 to 7. */
+  color: number
+  /** False after the PIN was reset, until the next sign-in sets one. */
+  hasPin: boolean
+  createdAt: number
+  lastUsed: number
+  devices: ProfileDevice[]
+}
+
+export interface ProfileDevice {
+  name: string
+  /** Stays signed in, rather than until the app closes. */
+  remembered: boolean
+  lastUsed: number
+}
+
 /** The library sections devices show in their sidebar. */
 export interface Sections {
   movies: boolean
@@ -64,8 +84,8 @@ export interface HostStatus {
   addresses: string[]
   deviceCount: number
   library: LibraryStatus
-  /** Whether each device sees its own watch history rather than a shared one. */
-  progressPerDevice: boolean
+  /** The household's profiles, with the devices signed in to each. */
+  profiles: ProfileSummary[]
   /** Which library sections devices show. */
   sections: Sections
   serving: boolean
@@ -198,8 +218,8 @@ export const api = {
   setPosters: (enabled: boolean): Promise<HostStatus> =>
     call('set_posters', { enabled }),
   setTmdbKey: (key: string): Promise<HostStatus> => call('set_tmdb_key', { key }),
-  setProgressPerDevice: (enabled: boolean): Promise<HostStatus> =>
-    call('set_progress_per_device', { enabled }),
+  resetProfilePin: (id: string): Promise<HostStatus> => call('reset_profile_pin', { id }),
+  removeProfile: (id: string): Promise<HostStatus> => call('remove_profile', { id }),
   setSections: (sections: Sections): Promise<HostStatus> =>
     call('set_sections', { sections }),
   openVaultFolder: (): Promise<void> => call('open_vault_folder'),
@@ -252,7 +272,29 @@ const sample: {
       music: 212,
       photos: 1840,
     },
-    progressPerDevice: false,
+    profiles: [
+      {
+        id: 'p1',
+        name: 'Maya',
+        color: 0,
+        hasPin: true,
+        createdAt: Math.floor(Date.now() / 1000) - 86400 * 30,
+        lastUsed: Math.floor(Date.now() / 1000) - 120,
+        devices: [
+          { name: 'LIVING-ROOM', remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 120 },
+          { name: 'STUDY-LAPTOP', remembered: false, lastUsed: Math.floor(Date.now() / 1000) - 7200 },
+        ],
+      },
+      {
+        id: 'p2',
+        name: 'Sam',
+        color: 4,
+        hasPin: false,
+        createdAt: Math.floor(Date.now() / 1000) - 86400 * 12,
+        lastUsed: Math.floor(Date.now() / 1000) - 86400 * 3,
+        devices: [],
+      },
+    ],
     sections: { movies: true, series: true, videos: true, music: true, photos: true },
     serving: true,
     problem: null,
@@ -424,8 +466,13 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
           ? sample.status.library.films + sample.status.library.series
           : 0
         return sample.status
-      case 'set_progress_per_device':
-        sample.status.progressPerDevice = Boolean(args?.enabled)
+      case 'reset_profile_pin':
+        sample.status.profiles = sample.status.profiles.map((p) =>
+          p.id === args?.id ? { ...p, hasPin: false, devices: [] } : p,
+        )
+        return sample.status
+      case 'remove_profile':
+        sample.status.profiles = sample.status.profiles.filter((p) => p.id !== args?.id)
         return sample.status
       case 'set_sections':
         sample.status.sections = args?.sections as Sections

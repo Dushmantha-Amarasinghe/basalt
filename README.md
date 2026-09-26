@@ -70,10 +70,14 @@ be today.
   frame at a time, and `C` for subtitles. Subtitles are named by language,
   remembered on or off from one video to the next, found beside the video on
   the drive or dropped onto it, and nudged into sync when they drift.
-- **Carries on where you left off.** Resume points live on the host, not on the
-  device, so you can start something on one machine and finish it on another —
-  or, if the household prefers, each device keeps a history of its own.
-  Episodes play on to the next one by themselves.
+- **Profiles, if you want them.** Pick a profile after connecting and its
+  watch history and stars follow you to every device in the house: start
+  something on the laptop, finish it on the television. A profile is a name, a
+  colour and a PIN, stored hashed on the host, and "keep me signed in" means
+  typing it once per device. Or skip it and carry on as the device, with a
+  history of its own, as before.
+- **Carries on where you left off.** Resume points live on the host, and
+  episodes play on to the next one by themselves.
 - **Live, both ways.** The host watches the drive itself, so a file added,
   renamed or deleted — by Basalt, by Explorer, or by anything else — reaches
   every connected device at once, and a new film or episode is filed under
