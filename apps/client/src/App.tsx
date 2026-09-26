@@ -1302,7 +1302,6 @@ export function App(): React.JSX.Element {
                 status={vault.status}
                 space={vault.space}
                 onForget={forgetVault}
-                onRepair={forgetVault}
               />
             ) : isMedia ? (
               <LibraryView
