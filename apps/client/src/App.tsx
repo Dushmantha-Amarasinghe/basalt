@@ -63,6 +63,8 @@ import { useIdentity } from '@/lib/useIdentity'
 import { ProfileGate } from '@/components/ProfileGate'
 import { stemOf, trackInfo } from '@/lib/mediaInfo'
 import { useVault } from '@/lib/useVault'
+import { isMobileShell } from '@/lib/platform'
+import { MobileApp } from '@/mobile/MobileApp'
 import { filterKind, isKind, recentOf, useLibraryScan } from '@/lib/useLibrary'
 import { transferId, useTransfers } from '@/lib/useTransfers'
 import { nameOf, useFileActions } from '@/lib/useFileActions'
@@ -98,7 +100,14 @@ const TITLES: Record<NavKey, string> = {
   settings: 'Settings',
 }
 
-export function App(): React.JSX.Element {
+/**
+ * Everything the app knows and does, apart from how it looks.
+ *
+ * Shared by the desktop window and the phone and tablet app, so the two
+ * cannot drift: an upload, a download, what plays next, which actions a
+ * file offers — each is decided here once, and each screen only draws it.
+ */
+export function useAppModel({ mobile }: { mobile: boolean }) {
   const vault = useVault()
   const transfers = useTransfers()
   const menu = useContextMenu()
@@ -997,7 +1006,9 @@ export function App(): React.JSX.Element {
     [latestUpload, latestDir, latestPlaying],
   )
 
-  useAsyncSubscription(writable, subscribeToDrops)
+  // Files dragged in from Explorer: the desktop only. A phone shares files
+  // into the app instead, which arrives as an upload of its own.
+  useAsyncSubscription(writable && !mobile, subscribeToDrops)
 
   // --- effects -------------------------------------------------------------
 
@@ -1055,6 +1066,183 @@ export function App(): React.JSX.Element {
     for (const e of entries) if (selected.has(e.id)) total += e.size
     return total
   }, [selected, entries])
+
+  return {
+    mobile,
+    vault,
+    transfers,
+    menu,
+    nav,
+    setNav,
+    query,
+    setQuery,
+    selected,
+    setSelected,
+    paletteOpen,
+    setPaletteOpen,
+    transfersOpen,
+    setTransfersOpen,
+    playing,
+    setPlaying,
+    viewer,
+    setViewer,
+    viewingIndex,
+    view,
+    setView,
+    sortField,
+    setSortField,
+    sortDirection,
+    setSortDirection,
+    notice,
+    setNotice,
+    prompt,
+    setPrompt,
+    properties,
+    setProperties,
+    dropActive,
+    setDropActive,
+    dropInto,
+    setDropInto,
+    connected,
+    writable,
+    confirm,
+    confirmDialog,
+    actions,
+    identity,
+    profileId,
+    signingIn,
+    setSigningIn,
+    stars,
+    collections,
+    mediaBase,
+    needsScan,
+    scan,
+    media,
+    hiddenSections,
+    isMedia,
+    watched,
+    watchedByPath,
+    nextByPath,
+    subtitlesByPath,
+    namesByPath,
+    subtitlesFor,
+    resumeFor,
+    nextTrack,
+    nextAfter,
+    previousByPath,
+    refreshLibrary,
+    sectionEntries,
+    entries,
+    isLibrary,
+    libraryFiles,
+    libraryScanning,
+    mediaItems,
+    targetsFor,
+    anchor,
+    handleSelect,
+    downloadOne,
+    downloadMany,
+    inFlight,
+    uploadPaths,
+    uploadHere,
+    openExternally,
+    openEntry,
+    playPath,
+    askRename,
+    askNewFolder,
+    backgroundActions,
+    entryActions,
+    handlers,
+    cutPaths,
+    closeMenu,
+    latestUpload,
+    latestDir,
+    latestPlaying,
+    subscribeToDrops,
+    forgetVault,
+    selectedSize,
+  }
+}
+
+export type AppModel = ReturnType<typeof useAppModel>
+
+export function App(): React.JSX.Element {
+  const mobile = isMobileShell()
+  const model = useAppModel({ mobile })
+  return mobile ? <MobileApp model={model} /> : <DesktopApp model={model} />
+}
+
+function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
+  const {
+    vault,
+    transfers,
+    menu,
+    nav,
+    setNav,
+    query,
+    setQuery,
+    selected,
+    setSelected,
+    paletteOpen,
+    setPaletteOpen,
+    transfersOpen,
+    setTransfersOpen,
+    playing,
+    setPlaying,
+    viewer,
+    setViewer,
+    viewingIndex,
+    view,
+    setView,
+    sortField,
+    setSortField,
+    sortDirection,
+    setSortDirection,
+    notice,
+    setNotice,
+    prompt,
+    setPrompt,
+    properties,
+    setProperties,
+    dropActive,
+    dropInto,
+    connected,
+    writable,
+    confirmDialog,
+    actions,
+    identity,
+    signingIn,
+    setSigningIn,
+    stars,
+    mediaBase,
+    scan,
+    media,
+    hiddenSections,
+    isMedia,
+    watched,
+    watchedByPath,
+    subtitlesFor,
+    resumeFor,
+    nextAfter,
+    previousByPath,
+    entries,
+    isLibrary,
+    libraryFiles,
+    libraryScanning,
+    mediaItems,
+    downloadOne,
+    downloadMany,
+    uploadHere,
+    openExternally,
+    openEntry,
+    playPath,
+    askNewFolder,
+    backgroundActions,
+    handlers,
+    cutPaths,
+    forgetVault,
+    selectedSize,
+  } = model
 
   // --- screens -------------------------------------------------------------
 
