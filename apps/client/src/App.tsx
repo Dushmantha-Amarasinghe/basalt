@@ -917,16 +917,23 @@ export function App(): React.JSX.Element {
   // app opened.
   const latestUpload = useLatest(uploadPaths)
   const latestDir = useLatest(vault.dir)
+  // While a video plays, a drop belongs to the player — subtitles — and is
+  // not an upload into the folder hidden behind it.
+  const latestPlaying = useLatest(playing !== null)
 
   const subscribeToDrops = useCallback(
     () =>
       onExternalFileDrop({
-        onEnter: () => setDropActive(true),
+        onEnter: () => {
+          if (!latestPlaying.current) setDropActive(true)
+        },
         // Hovering a folder aims at that folder; anywhere else means the
         // folder currently open. Both are shown before letting go, because
         // "which folder did that just go into" is not a question anyone should
         // have to answer by going and looking.
-        onOver: (x, y) => setDropInto(folderUnder(x, y)),
+        onOver: (x, y) => {
+          if (!latestPlaying.current) setDropInto(folderUnder(x, y))
+        },
         onLeave: () => {
           setDropActive(false)
           setDropInto(null)
@@ -935,13 +942,14 @@ export function App(): React.JSX.Element {
           // Read from the drop's own position rather than from the last `over`:
           // they are normally the same, but a drop that arrives without a
           // preceding hover would otherwise use a stale target.
-          const into = folderUnder(x, y) ?? latestDir.current
           setDropActive(false)
           setDropInto(null)
+          if (latestPlaying.current) return
+          const into = folderUnder(x, y) ?? latestDir.current
           void latestUpload.current(paths, into)
         },
       }),
-    [latestUpload, latestDir],
+    [latestUpload, latestDir, latestPlaying],
   )
 
   useAsyncSubscription(writable, subscribeToDrops)
