@@ -276,6 +276,24 @@ export function App(): React.JSX.Element {
     [nextByPath, nextTrack],
   )
 
+  /** The same chains read backwards, for the previous button. */
+  const previousByPath = useMemo(() => {
+    const before = new Map<string, { path: string; label: string }>()
+    const labels = new Map<string, string>()
+    for (const [, to] of [...nextByPath, ...nextTrack]) labels.set(to.path, to.label)
+    // The first of a run has nothing pointing at it, so no label yet.
+    const labelOf = (path: string): string => {
+      const known = labels.get(path)
+      if (known) return known
+      const named = namesByPath.get(path)
+      return named ? `${named.title} · ${named.subtitle}` : trackInfo(path).title
+    }
+    for (const [from, to] of [...nextByPath, ...nextTrack]) {
+      before.set(to.path, { path: from, label: labelOf(from) })
+    }
+    return before
+  }, [nextByPath, nextTrack, namesByPath])
+
   // The drive is the truth: whatever changes it, the folder on screen reloads
   // and the index is asked again. Nothing here polls.
   const refreshLibrary = useCallback(() => {
@@ -1369,6 +1387,7 @@ export function App(): React.JSX.Element {
         resumeAt={playing ? resumeFor(playing.id) : 0}
         onProgress={watched.report}
         nextUp={playing ? nextAfter(playing.id) : null}
+        previous={playing ? (previousByPath.get(playing.id) ?? null) : null}
         onPlayNext={(path) => void playPath(path)}
         subtitles={playing ? subtitlesFor(playing.id) : []}
       />

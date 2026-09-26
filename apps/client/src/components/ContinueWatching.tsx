@@ -108,13 +108,21 @@ export function ContinueWatching({
               onClick={() => onPlay(watched.path)}
               className="flex w-full items-stretch gap-3 overflow-hidden rounded-md border border-line bg-panel text-left transition-colors hover:bg-panel2"
             >
-              <div className="w-[56px] shrink-0">
+              {/* The play affordance sits over the poster on hover, matching
+                  the grid below it — inside the poster's own box, so it
+                  covers the picture exactly. Positioned against the whole
+                  card, it sat across the card's border and missed the
+                  poster's right edge. */}
+              <div className="relative w-[56px] shrink-0 self-center overflow-hidden">
                 <Poster
                   title={item.title}
                   year={item.year ?? undefined}
                   id={item.id}
                   hasArt={item.hasArt}
                 />
+                <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/55 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+                  <Play size={13} className="ml-0.5 text-basalt" fill="currentColor" />
+                </span>
               </div>
 
               <div className="flex min-w-0 flex-1 flex-col justify-center py-2.5 pr-2">
@@ -134,11 +142,6 @@ export function ContinueWatching({
                 </div>
               </div>
 
-              {/* The play affordance sits over the poster on hover, matching
-                  the grid below it. */}
-              <span className="pointer-events-none absolute left-0 top-0 flex h-full w-[56px] items-center justify-center bg-black/55 opacity-0 transition-opacity group-hover:opacity-100">
-                <Play size={13} className="ml-0.5 text-basalt" fill="currentColor" />
-              </span>
             </button>
 
             <button

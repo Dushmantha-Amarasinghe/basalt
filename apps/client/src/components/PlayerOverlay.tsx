@@ -3,8 +3,6 @@ import { AnimatePresence, motion } from 'framer-motion'
 import {
   AlertCircle,
   Check,
-  ChevronLeft,
-  ChevronRight,
   ExternalLink,
   Loader2,
   Maximize2,
@@ -18,6 +16,8 @@ import {
   Volume2,
   VolumeX,
   X,
+  RotateCcw,
+  RotateCw,
 } from 'lucide-react'
 import type { MediaItem } from '@/lib/mockMedia'
 import { formatDuration } from '@/lib/mockMedia'
@@ -63,6 +63,7 @@ export function PlayerOverlay({
   onProgress,
   nextUp,
   onPlayNext,
+  previous,
   subtitles = [],
 }: {
   item: MediaItem | null
@@ -76,6 +77,8 @@ export function PlayerOverlay({
   /** The episode after this one, when there is one. */
   nextUp?: { path: string; label: string } | null
   onPlayNext?: (path: string) => void
+  /** The episode or track before this one, when there is one. */
+  previous?: { path: string; label: string } | null
   /** Subtitle files the host found beside this file. */
   subtitles?: SubtitleTrack[]
 }): React.JSX.Element {
@@ -475,6 +478,25 @@ export function PlayerOverlay({
     return () => clearTimeout(timer)
   }, [dropNote])
 
+  /** On to the next episode or track, when there is one. */
+  const goNext = useCallback(() => {
+    if (nextUp && onPlayNext) onPlayNext(nextUp.path)
+  }, [nextUp, onPlayNext])
+
+  /**
+   * Back: to the start of this one, or — near its start already — to the
+   * one before. What every player's previous button does, so a single press
+   * never throws away the place in something half watched.
+   */
+  const goPrevious = useCallback(() => {
+    if (mpv.position > RESTART_WITHIN && mpv.duration > 0) {
+      void mpv.seekTo(0)
+      return
+    }
+    if (previous && onPlayNext) onPlayNext(previous.path)
+    else void mpv.seekTo(0)
+  }, [mpv, previous, onPlayNext])
+
   /** C turns subtitles on and off, as on YouTube. */
   const toggleSubtitles = useCallback(() => {
     if (mpv.subtitleId !== null) {
@@ -551,6 +573,12 @@ export function PlayerOverlay({
         break
       case 'c':
         toggleSubtitles()
+        break
+      case 'N':
+        goNext()
+        break
+      case 'P':
+        goPrevious()
         break
       case 'f':
         void fullscreen()
@@ -736,6 +764,13 @@ export function PlayerOverlay({
               )}
             </AnimatePresence>
 
+            {/* What is paused, and what is next. */}
+            <AnimatePresence>
+              {mpv.paused && mpv.picture && !mpv.buffering && !menu && (
+                <PausedPanel item={item} mpv={mpv} nextUp={nextUp} onPlayNext={onPlayNext} />
+              )}
+            </AnimatePresence>
+
             {/* A paused film shows nothing else; this says it is paused. */}
             <AnimatePresence>
               {mpv.paused && mpv.picture && !mpv.buffering && (
@@ -856,17 +891,25 @@ export function PlayerOverlay({
               disabled={mpv.duration === 0}
             />
 
-            <div className="mt-3 flex items-center gap-4">
+            <div className="mt-3 flex items-center gap-2">
+              {/* Previous and next beside play, the way every player has
+                  them. Previous restarts this one first; next is only there
+                  to press when there is something after this. */}
               <ControlButton
                 icon={SkipBack}
-                label="Back 10s"
-                onClick={() => void mpv.seekBy(-10)}
+                label={
+                  previous && mpv.position <= RESTART_WITHIN
+                    ? `Previous: ${previous.label} (Shift+P)`
+                    : 'Back to the start (Shift+P)'
+                }
+                onClick={goPrevious}
               />
               <button
                 onClick={() => void mpv.togglePause()}
                 disabled={mpv.duration === 0}
                 aria-label={mpv.paused ? 'Play' : 'Pause'}
-                className="flex h-10 w-10 items-center justify-center rounded-full bg-basalt text-ink transition-transform hover:scale-105 disabled:opacity-30 disabled:hover:scale-100"
+                title={mpv.paused ? 'Play (Space)' : 'Pause (Space)'}
+                className="mx-1 flex h-10 w-10 items-center justify-center rounded-full bg-basalt text-ink transition-transform duration-150 hover:scale-105 disabled:opacity-30 disabled:hover:scale-100"
               >
                 {mpv.paused ? (
                   <Play size={17} className="ml-0.5 fill-ink" />
@@ -876,44 +919,22 @@ export function PlayerOverlay({
               </button>
               <ControlButton
                 icon={SkipForward}
-                label="Forward 10s"
-                onClick={() => void mpv.seekBy(10)}
+                label={nextUp ? `Next: ${nextUp.label} (Shift+N)` : 'Nothing after this'}
+                onClick={goNext}
+                disabled={!nextUp || !onPlayNext}
               />
 
-              {/* Frame stepping, which is the thing a `<video>` element could
-                  only ever approximate by nudging `currentTime`. */}
-              <div className="ml-1 flex items-center">
-                <ControlButton
-                  icon={ChevronLeft}
-                  label="Previous frame (,)"
-                  onClick={() => void mpv.stepFrame(-1)}
-                />
-                <ControlButton
-                  icon={ChevronRight}
-                  label="Next frame (.)"
-                  onClick={() => void mpv.stepFrame(1)}
-                />
-              </div>
+              <div className="mx-1.5 h-4 w-px bg-white/[0.1]" />
 
-              <span className="tnum ml-1 font-mono text-[11px] text-textDim">
+              <SeekButton direction={-1} onClick={() => void mpv.seekBy(-10)} />
+              <SeekButton direction={1} onClick={() => void mpv.seekBy(10)} />
+
+              <span className="tnum ml-2 font-mono text-[11px] text-textDim">
                 {formatDuration(mpv.position)}
                 <span className="text-textFaint"> / {formatDuration(mpv.duration)}</span>
               </span>
 
               <div className="flex-1" />
-
-              {/* Straight on to the next episode, without waiting for the
-                  end of this one — the credits, most of the time. */}
-              {nextUp && onPlayNext && (
-                <button
-                  onClick={() => onPlayNext(nextUp.path)}
-                  title={nextUp.label}
-                  className="flex h-8 items-center gap-1 rounded-md px-2 text-[11px] text-textDim transition-colors hover:bg-white/[0.06] hover:text-text"
-                >
-                  {mpv.started && !mpv.picture ? 'Next track' : 'Next episode'}
-                  <ChevronRight size={14} />
-                </button>
-              )}
 
               <button
                 onClick={() => setMenu((open) => !open)}
@@ -1272,23 +1293,143 @@ function ControlButton({
   icon: Icon,
   label,
   onClick,
+  disabled,
 }: {
   icon: typeof Play
   label: string
   onClick?: () => void
+  disabled?: boolean
 }): React.JSX.Element {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      className={cn(
+        'flex h-8 w-8 items-center justify-center rounded-md text-textDim',
+        'transition-colors duration-150 hover:bg-white/[0.06] hover:text-text',
+        'disabled:pointer-events-none disabled:opacity-30',
+      )}
+    >
+      <Icon size={16} />
+    </button>
+  )
+}
+
+/** How far into something "previous" restarts it rather than going back. */
+const RESTART_WITHIN = 5
+
+/** Ten seconds back or forward: a turning arrow with the number inside. */
+function SeekButton({
+  direction,
+  onClick,
+}: {
+  direction: 1 | -1
+  onClick: () => void
+}): React.JSX.Element {
+  const Icon = direction === 1 ? RotateCw : RotateCcw
+  const label = direction === 1 ? 'Forward 10 seconds (→ is 5)' : 'Back 10 seconds (← is 5)'
   return (
     <button
       onClick={onClick}
       aria-label={label}
       title={label}
-      className={cn(
-        'flex h-8 w-8 items-center justify-center rounded-md text-textDim',
-        'transition-colors hover:bg-white/[0.06] hover:text-text',
-      )}
+      className="relative flex h-8 w-8 items-center justify-center rounded-md text-textDim transition-colors duration-150 hover:bg-white/[0.06] hover:text-text"
     >
-      <Icon size={16} />
+      <Icon size={20} strokeWidth={1.6} />
+      <span className="absolute inset-0 flex items-center justify-center pt-[1px] font-mono text-[7.5px] font-semibold">
+        10
+      </span>
     </button>
+  )
+}
+
+/**
+ * What is paused, and what comes next: over the top of a paused picture,
+ * like a streaming service's pause screen.
+ *
+ * Only when paused. While playing, the picture is the point and nothing sits
+ * over it but the bar; paused is when somebody looks up and wants to know
+ * where they are. "Up next" is only for something with a next — an episode —
+ * and never for a film.
+ */
+function PausedPanel({
+  item,
+  mpv,
+  nextUp,
+  onPlayNext,
+}: {
+  item: MediaItem
+  mpv: Mpv
+  nextUp?: { path: string; label: string } | null
+  onPlayNext?: (path: string) => void
+}): React.JSX.Element {
+  const sub = mpv.tracks.find((t) => t.kind === 'sub' && t.id === mpv.subtitleId)
+  const audio = mpv.tracks.filter((t) => t.kind === 'audio')
+  const playingAudio = audio.find((t) => t.id === mpv.audioId)
+  const left = Math.max(0, mpv.duration - mpv.position)
+  const details = [
+    item.subtitle,
+    audio.length > 1 && playingAudio ? labelOf(describeSub(playingAudio)).name : '',
+    sub ? `${labelOf(describeSub(sub)).name} subtitles` : '',
+    mpv.duration > 0 ? (left >= 60 ? `${Math.ceil(left / 60)} min left` : 'Almost done') : '',
+  ].filter(Boolean)
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+      className="pointer-events-none absolute inset-x-0 top-0 z-[1] bg-gradient-to-b from-black/80 via-black/40 to-transparent px-8 pb-24 pt-9"
+    >
+      <div className="flex items-start gap-6">
+        <motion.div
+          initial={{ y: -6 }}
+          animate={{ y: 0 }}
+          transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+          className="min-w-0 flex-1"
+        >
+          <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-textFaint">
+            Paused
+          </div>
+          <div className="mt-2 truncate text-[26px] font-semibold leading-tight tracking-tight text-text">
+            {item.title}
+          </div>
+          {details.length > 0 && (
+            <div className="mt-1.5 truncate text-[12.5px] text-textDim">
+              {details.join('  ·  ')}
+            </div>
+          )}
+        </motion.div>
+
+        {nextUp && onPlayNext && (
+          <motion.button
+            initial={{ y: -6, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            transition={{ duration: 0.25, delay: 0.05, ease: [0.22, 1, 0.36, 1] }}
+            onClick={(e) => {
+              e.stopPropagation()
+              onPlayNext(nextUp.path)
+            }}
+            className="no-drag pointer-events-auto mr-12 flex shrink-0 items-center gap-3 rounded-xl border border-white/[0.12] bg-black/60 py-2.5 pl-4 pr-3 text-left backdrop-blur transition-colors duration-150 hover:border-white/25 hover:bg-black/75"
+          >
+            <span className="min-w-0">
+              <span className="block font-mono text-[9.5px] uppercase tracking-[0.18em] text-textFaint">
+                Up next
+              </span>
+              <span className="mt-0.5 block max-w-[240px] truncate text-[12.5px] font-medium text-text">
+                {nextUp.label}
+              </span>
+            </span>
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/[0.1]">
+              <SkipForward size={12} className="text-text" />
+            </span>
+          </motion.button>
+        )}
+      </div>
+    </motion.div>
   )
 }
 
