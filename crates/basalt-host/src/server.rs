@@ -68,8 +68,13 @@ pub struct Host {
     /// When the last scan finished and how long it took, so the next one can
     /// be held off in proportion to what scanning this drive actually costs.
     last_scan: std::sync::Mutex<Option<(std::time::Instant, std::time::Duration)>>,
-    /// Where each file has been watched to, shared by every device.
+    /// Where each file has been watched to: each device's, and each
+    /// profile's, own history.
     progress: std::sync::Mutex<crate::media::Progress>,
+    /// The household's profiles and who is signed in to them.
+    profiles: std::sync::Mutex<crate::profiles::ProfileBook>,
+    /// Each profile's starred files, by profile id.
+    stars: std::sync::Mutex<std::collections::HashMap<String, Vec<Star>>>,
 }
 
 impl Host {
@@ -125,6 +130,25 @@ impl Host {
             None => crate::media::collect::Stored::default(),
         };
 
+        let config_dir = config_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
+        // Histories from before profiles began afresh: cleared, not read.
+        let cleared = crate::media::Progress::clear_legacy(&config_dir);
+        if cleared > 0 {
+            tracing::info!("cleared {cleared} watch histories from before profiles");
+        }
+        let mut profiles = crate::profiles::ProfileBook::new(
+            config.profiles.clone(),
+            config.profile_tokens.clone(),
+        );
+        profiles.prune(unix_now());
+        let stars = match &config.vault_path {
+            Some(root) => load_stars(&stars_path(&config_dir, root)),
+            None => Default::default(),
+        };
+
         let progress = match &config.vault_path {
             Some(root) => crate::media::Progress::load(&crate::media::Progress::path_for(
                 config_path.parent().unwrap_or(std::path::Path::new(".")),
@@ -153,6 +177,8 @@ impl Host {
             arrived_during_scan: std::sync::Mutex::new(Vec::new()),
             last_scan: std::sync::Mutex::new(None),
             progress: std::sync::Mutex::new(progress),
+            profiles: std::sync::Mutex::new(profiles),
+            stars: std::sync::Mutex::new(stars),
         });
         if abandoned > 0 {
             tracing::info!("let go of {abandoned} devices that never came back");
@@ -436,35 +462,31 @@ impl Host {
     /// wants the current list — and doing both in one round trip means it sees
     /// its own update rather than a stale answer that races it.
     ///
-    /// `device` is the key of the device asking (see `Device::key`). Updates go
-    /// into its own history as well as the shared one either way; the host's
-    /// setting only decides which of the two it is answered with.
+    /// `owner` is whose history this is: the signed-in profile's, or the
+    /// device's own (see [`owner_of`]). There is no shared history any more —
+    /// a profile is what carries a place from one device to another.
     pub fn progress(
         &self,
         request: basalt_proto::msg::ProgressRequest,
-        device: Option<&str>,
+        owner: Option<&str>,
     ) -> basalt_proto::msg::ProgressResponse {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-
-        let per_device = self.config.lock().expect("config lock").progress_per_device;
+        let Some(owner) = owner else {
+            return basalt_proto::msg::ProgressResponse {
+                entries: Vec::new(),
+            };
+        };
+        let now = unix_now();
         let (entries, changed) = {
             let mut progress = self.progress.lock().expect("progress lock");
             let mut changed = false;
             if let Some(update) = request.update {
-                progress.record_for(device, update, now);
+                progress.record_owned(owner, update, now);
                 changed = true;
             }
             if let Some(path) = request.forget {
-                changed |= progress.forget_for(device, &path);
+                changed |= progress.forget_owned(owner, &path);
             }
-            let entries = match (per_device, device) {
-                (true, Some(device)) => progress.all_for(device),
-                _ => progress.all(),
-            };
-            (entries, changed)
+            (progress.all_for(owner), changed)
         };
 
         if changed {
@@ -512,13 +534,183 @@ impl Host {
         self.config.lock().expect("config lock").library_enabled = true;
     }
 
-    /// Whether each device sees its own watch history.
+    // -----------------------------------------------------------------------
+    // Profiles
+    // -----------------------------------------------------------------------
+
+    pub fn profile_views(&self) -> Vec<ProfileView> {
+        self.profiles.lock().expect("profiles lock").views()
+    }
+
+    /// Every profile with the devices signed in to it, for the host's window.
+    pub fn profiles_overview(&self) -> Vec<crate::ui::ProfileSummary> {
+        let devices = self.devices();
+        let book = self.profiles.lock().expect("profiles lock");
+        book.profiles()
+            .iter()
+            .map(|profile| {
+                let mut signed_in: Vec<crate::ui::ProfileDevice> = book
+                    .tokens()
+                    .iter()
+                    .filter(|t| t.profile_id == profile.id)
+                    .map(|t| crate::ui::ProfileDevice {
+                        name: devices
+                            .iter()
+                            .find(|d| d.key() == t.device_key)
+                            .map(|d| d.name.clone())
+                            .unwrap_or_else(|| "A device no longer paired".into()),
+                        remembered: t.remembered,
+                        last_used: t.last_used,
+                    })
+                    .collect();
+                signed_in.sort_by_key(|d| std::cmp::Reverse(d.last_used));
+                crate::ui::ProfileSummary {
+                    id: profile.id.clone(),
+                    name: profile.name.clone(),
+                    color: profile.color,
+                    has_pin: profile.pin_hash.is_some(),
+                    created_at: profile.created_at,
+                    last_used: profile.last_used,
+                    devices: signed_in,
+                }
+            })
+            .collect()
+    }
+
+    fn create_profile(
+        &self,
+        request: ProfileCreateRequest,
+        device_key: &str,
+    ) -> Result<(ProfileView, String)> {
+        let (profile, token) = self.profiles.lock().expect("profiles lock").create(
+            &request.name,
+            &request.pin,
+            request.color,
+            device_key,
+            request.remember,
+            unix_now(),
+        )?;
+        self.persist()?;
+        Ok((profile.view(), token))
+    }
+
+    fn sign_in_profile(
+        &self,
+        request: ProfileSignInRequest,
+        device_key: &str,
+    ) -> Result<(ProfileView, String)> {
+        let (profile, token) = self.profiles.lock().expect("profiles lock").sign_in(
+            &request.id,
+            &request.pin,
+            device_key,
+            request.remember,
+            unix_now(),
+        )?;
+        self.persist()?;
+        Ok((profile.view(), token))
+    }
+
+    fn resolve_profile(&self, token: &str) -> Option<ProfileView> {
+        self.profiles
+            .lock()
+            .expect("profiles lock")
+            .resolve(token, unix_now())
+            .map(|p| p.view())
+    }
+
+    /// Whether the profile a connection acts for is still signed in.
     ///
-    /// Nothing is moved or lost either way: every update was already written to
-    /// both, so this only changes which one each device is shown from now on.
-    pub fn set_progress_per_device(&self, enabled: bool) -> Result<()> {
-        self.config.lock().expect("config lock").progress_per_device = enabled;
-        self.persist()
+    /// A connection is told once which profile it works for, and holds on to
+    /// that — so a profile removed on the host, or its PIN reset, would have
+    /// gone on being used by every connection already open. Checked before
+    /// anything that reads or writes a profile's history or stars.
+    fn check_profile(&self, session: &mut Session) -> Result<()> {
+        let Some((id, hash)) = &session.profile else {
+            return Ok(());
+        };
+        let standing = self
+            .profiles
+            .lock()
+            .expect("profiles lock")
+            .still_signed_in(id, hash);
+        if standing {
+            Ok(())
+        } else {
+            session.profile = None;
+            Err(HostError::SignedOut)
+        }
+    }
+
+    fn sign_out_profile(&self, token: &str) -> Result<bool> {
+        let ended = self.profiles.lock().expect("profiles lock").sign_out(token);
+        if ended {
+            self.persist()?;
+        }
+        Ok(ended)
+    }
+
+    /// Clears a profile's PIN from the host's window, for a forgotten one.
+    /// Every device is signed out, and the next sign-in chooses a new PIN.
+    pub fn reset_profile_pin(&self, id: &str) -> Result<bool> {
+        let done = self.profiles.lock().expect("profiles lock").reset_pin(id);
+        if done {
+            self.persist()?;
+        }
+        Ok(done)
+    }
+
+    /// Removes a profile with its history and stars.
+    pub fn remove_profile(&self, id: &str) -> Result<bool> {
+        let removed = self.profiles.lock().expect("profiles lock").remove(id);
+        if removed {
+            self.persist()?;
+            if self
+                .progress
+                .lock()
+                .expect("progress lock")
+                .drop_owner(&format!("profile:{id}"))
+            {
+                self.save_progress();
+            }
+            if self.stars.lock().expect("stars lock").remove(id).is_some() {
+                self.save_stars();
+            }
+        }
+        Ok(removed)
+    }
+
+    /// A profile's stars, replaced first when `set` is given.
+    fn stars_of(&self, profile: &str, set: Option<Vec<Star>>) -> Vec<Star> {
+        let (stars, changed) = {
+            let mut all = self.stars.lock().expect("stars lock");
+            let changed = set.is_some();
+            if let Some(mut list) = set {
+                list.truncate(MAX_STARS);
+                all.insert(profile.to_string(), list);
+            }
+            (all.get(profile).cloned().unwrap_or_default(), changed)
+        };
+        if changed {
+            self.save_stars();
+        }
+        stars
+    }
+
+    fn save_stars(&self) {
+        let snapshot = self.stars.lock().expect("stars lock").clone();
+        if let Some(root) = self.vault_path() {
+            let path = stars_path(self.config_dir(), &root);
+            let written = serde_json::to_vec(&snapshot)
+                .map_err(std::io::Error::other)
+                .and_then(|json| {
+                    let temp = path.with_extension("tmp");
+                    std::fs::write(&temp, json)?;
+                    std::fs::rename(&temp, &path)
+                });
+            if let Err(e) = written {
+                tracing::warn!("could not save stars: {e}");
+            }
+        }
     }
 
     /// Turns poster downloads on or off.
@@ -981,6 +1173,7 @@ impl Host {
         *self.collections.lock().expect("collections lock") = crate::media::collect::Stored::load(
             &crate::media::collect::stored_path(self.config_dir(), &root),
         );
+        *self.stars.lock().expect("stars lock") = load_stars(&stars_path(self.config_dir(), &root));
 
         self.start_scan();
         self.announce(basalt_proto::msg::Change::Resynchronise)
@@ -1110,16 +1303,16 @@ impl Host {
             }
         };
 
-        let (host_name, port, require_pin, progress_per_device, sections) = {
+        let (host_name, port, require_pin, sections) = {
             let config = self.config.lock().expect("config lock");
             (
                 config.host_name.clone(),
                 config.port,
                 config.require_pin,
-                config.progress_per_device,
                 config.sections,
             )
         };
+        let profiles = self.profiles_overview();
 
         // Both taken before the struct is built, for the reason spelled out on
         // `library_status`: a guard written inline as a field value is a
@@ -1144,7 +1337,7 @@ impl Host {
             addresses,
             device_count,
             library,
-            progress_per_device,
+            profiles,
             sections,
             serving,
             problem: None,
@@ -1299,11 +1492,18 @@ impl Host {
     }
 
     pub fn revoke(&self, token_hash: &str) -> Result<bool> {
-        let removed = self
-            .registry
-            .lock()
-            .expect("registry lock")
-            .revoke(token_hash);
+        let removed = {
+            let mut registry = self.registry.lock().expect("registry lock");
+            let key = registry.device(token_hash).map(|d| d.key().to_string());
+            let removed = registry.revoke(token_hash);
+            if let Some(key) = key.filter(|_| removed) {
+                self.profiles
+                    .lock()
+                    .expect("profiles lock")
+                    .forget_device(&key);
+            }
+            removed
+        };
         if removed {
             self.traffic.forget(token_hash);
             self.persist()?;
@@ -1320,8 +1520,14 @@ impl Host {
                 .expect("registry lock")
                 .devices()
                 .to_vec();
+            let (profiles, tokens) = {
+                let book = self.profiles.lock().expect("profiles lock");
+                (book.profiles().to_vec(), book.tokens().to_vec())
+            };
             let mut config = self.config.lock().expect("config lock");
             config.devices = devices;
+            config.profiles = profiles;
+            config.profile_tokens = tokens;
             config.clone()
         };
         snapshot.save(&self.config_path)
@@ -1371,6 +1577,22 @@ impl Host {
             None => HostError::Denied("this host has not been given a drive to share yet".into()),
         })
     }
+}
+
+/// Starred items a profile may keep.
+const MAX_STARS: usize = 5_000;
+
+/// Where stars live: beside `host.json`, keyed by drive.
+fn stars_path(config_dir: &std::path::Path, vault_root: &std::path::Path) -> std::path::PathBuf {
+    let key = blake3::hash(vault_root.to_string_lossy().as_bytes()).to_hex();
+    config_dir.join(format!("stars-{}.json", &key[..16]))
+}
+
+fn load_stars(path: &std::path::Path) -> std::collections::HashMap<String, Vec<Star>> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
 }
 
 fn unix_now() -> i64 {
@@ -1555,6 +1777,9 @@ pub async fn serve(server: BoundServer) -> Result<()> {
 #[derive(Default)]
 struct Session {
     device: Option<Device>,
+    /// The profile this connection acts for, when it has signed in to one,
+    /// and the hash of the sign-in it acts on.
+    profile: Option<(String, String)>,
     /// What the device said about itself when it connected: its name and id.
     hello: Option<HelloRequest>,
 }
@@ -1567,6 +1792,16 @@ impl Session {
 }
 
 impl Session {
+    /// Whose history and stars this connection works with: the profile's
+    /// when signed in to one, the device's own otherwise.
+    fn owner(&self) -> Option<String> {
+        match (&self.profile, &self.device) {
+            (Some((profile, _)), _) => Some(format!("profile:{profile}")),
+            (None, Some(device)) => Some(device.key().to_string()),
+            (None, None) => None,
+        }
+    }
+
     fn writable(&self) -> bool {
         self.device.as_ref().is_some_and(|d| d.writable)
     }
@@ -1938,8 +2173,8 @@ where
 
         Op::Progress => {
             let request: ProgressRequest = decode(payload).unwrap_or_default();
-            let device = session.device.as_ref().map(|d| d.key().to_string());
-            reply(stream, &host.progress(request, device.as_deref())).await?;
+            host.check_profile(session)?;
+            reply(stream, &host.progress(request, session.owner().as_deref())).await?;
         }
 
         Op::Unpair => {
@@ -1948,6 +2183,67 @@ where
             };
             host.revoke(&device.token_hash)?;
             write_ok(stream, &[]).await?;
+        }
+
+        Op::Profiles => {
+            reply(
+                stream,
+                &ProfilesResponse {
+                    profiles: host.profile_views(),
+                },
+            )
+            .await?;
+        }
+
+        Op::ProfileCreate | Op::ProfileSignIn => {
+            let device_key = session
+                .device
+                .as_ref()
+                .map(|d| d.key().to_string())
+                .ok_or(HostError::Unauthenticated)?;
+            let (profile, token) = if op == Op::ProfileCreate {
+                host.create_profile(decode(payload)?, &device_key)?
+            } else {
+                host.sign_in_profile(decode(payload)?, &device_key)?
+            };
+            session.profile = Some((profile.id.clone(), crate::profiles::hash_token(&token)));
+            reply(stream, &ProfileSession { profile, token }).await?;
+        }
+
+        Op::ProfileUse => {
+            let req: ProfileUseRequest = decode(payload).unwrap_or_default();
+            let (profile, hash) = match req.token {
+                None => (None, None),
+                Some(token) => (
+                    Some(host.resolve_profile(&token).ok_or(HostError::SignedOut)?),
+                    Some(crate::profiles::hash_token(&token)),
+                ),
+            };
+            session.profile = profile.as_ref().zip(hash).map(|(p, h)| (p.id.clone(), h));
+            reply(stream, &ProfileUseResponse { profile }).await?;
+        }
+
+        Op::ProfileSignOut => {
+            let req: ProfileSignOutRequest = decode(payload)?;
+            host.sign_out_profile(&req.token)?;
+            session.profile = None;
+            write_ok(stream, &[]).await?;
+        }
+
+        Op::Stars => {
+            let req: StarsRequest = decode(payload).unwrap_or_default();
+            // A device on its own keeps its stars itself, as it always has.
+            host.check_profile(session)?;
+            let profile = session.profile.clone().map(|(id, _)| id).ok_or_else(|| {
+                HostError::Denied("stars are kept on the host for profiles only".into())
+            })?;
+            reply(
+                stream,
+                &StarsResponse {
+                    stars: host.stars_of(&profile, req.set),
+                },
+            )
+            .await?;
         }
 
         Op::Collections => {

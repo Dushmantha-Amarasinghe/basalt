@@ -26,7 +26,6 @@ export function SettingsPanel({
   onRescan,
   onPosters,
   onTmdbKey,
-  onProgressPerDevice,
   onSections,
   onRename,
   build,
@@ -39,7 +38,6 @@ export function SettingsPanel({
   onRescan: () => void
   onPosters: (enabled: boolean) => void
   onTmdbKey: (key: string) => void
-  onProgressPerDevice: (enabled: boolean) => void
   onSections: (sections: Sections) => void
   onRename: (name: string) => void
   /** Which build this is, for telling one install from another. */
@@ -114,22 +112,6 @@ export function SettingsPanel({
             sections={status.sections}
             library={status.library}
             onChange={onSections}
-          />
-        }
-      />
-
-      <Row
-        title="Separate watch history for each device"
-        detail={
-          status.progressPerDevice
-            ? 'Each device keeps its own place and its own Continue watching. The shared history is kept too, and comes back if you turn this off.'
-            : 'Every device shares one history, so something started on one can be finished on another.'
-        }
-        control={
-          <Switch
-            checked={status.progressPerDevice}
-            onChange={onProgressPerDevice}
-            label="Separate watch history for each device"
           />
         }
       />

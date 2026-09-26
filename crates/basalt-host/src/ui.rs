@@ -55,8 +55,8 @@ pub struct HostStatus {
     pub device_count: usize,
     /// The media index, always present so the switch can be drawn.
     pub library: LibraryStatus,
-    /// Whether each device keeps its own watch history.
-    pub progress_per_device: bool,
+    /// The household's profiles, with the devices signed in to each.
+    pub profiles: Vec<ProfileSummary>,
     /// Which library sections devices show.
     pub sections: basalt_proto::msg::Sections,
     /// Whether the serving loop is actually accepting connections.
@@ -67,6 +67,30 @@ pub struct HostStatus {
     /// running, most likely — would otherwise sit there looking healthy while
     /// no client could ever reach it.
     pub problem: Option<String>,
+}
+
+/// A profile as the host's window shows it: never its PIN.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSummary {
+    pub id: String,
+    pub name: String,
+    pub color: u8,
+    /// False after its PIN was reset, until someone signs in and sets one.
+    pub has_pin: bool,
+    pub created_at: i64,
+    pub last_used: i64,
+    pub devices: Vec<ProfileDevice>,
+}
+
+/// One device signed in to a profile.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileDevice {
+    pub name: String,
+    /// Stays signed in, rather than until the app closes.
+    pub remembered: bool,
+    pub last_used: i64,
 }
 
 /// How the media index is getting on.
@@ -294,7 +318,7 @@ mod tests {
                 music: 0,
                 photos: 0,
             },
-            progress_per_device: false,
+            profiles: Vec::new(),
             sections: basalt_proto::msg::Sections::default(),
             serving: true,
             problem: None,
@@ -309,7 +333,7 @@ mod tests {
                 "library",
                 "port",
                 "problem",
-                "progressPerDevice",
+                "profiles",
                 "requirePin",
                 "sections",
                 "serving",

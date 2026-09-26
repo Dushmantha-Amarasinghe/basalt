@@ -71,15 +71,52 @@ export interface Stars {
   refresh: () => Promise<void>
 }
 
-export function useStars(hostId: string | null | undefined, active: boolean): Stars {
-  const [records, setRecords] = useState<StarRecord[]>(() => load(hostId))
+/**
+ * Stars are kept on the host for a profile, so they follow the person from
+ * device to device, and on the device for a device on its own, as before.
+ * `profileId` says which.
+ */
+export function useStars(
+  hostId: string | null | undefined,
+  active: boolean,
+  profileId: string | null = null,
+): Stars {
+  const [records, setRecords] = useState<StarRecord[]>(() => (profileId ? [] : load(hostId)))
   const [entries, setEntries] = useState<Entry[]>([])
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    setRecords(load(hostId))
     setEntries([])
-  }, [hostId])
+    if (!profileId) {
+      setRecords(load(hostId))
+      return undefined
+    }
+    setRecords([])
+    let cancelled = false
+    void api
+      .profileStars()
+      .then((stars) => {
+        if (!cancelled) setRecords(stars)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [hostId, profileId])
+
+  /** Keeps a changed list wherever this identity keeps it. */
+  const persist = useCallback(
+    (next: StarRecord[]) => {
+      if (profileId) {
+        void api
+          .profileStars(next.map((r) => ({ path: r.path, name: r.name, kind: r.kind })))
+          .catch(() => {})
+      } else {
+        save(hostId, next)
+      }
+    },
+    [hostId, profileId],
+  )
 
   const paths = new Set(records.map((r) => r.path))
 
@@ -102,13 +139,13 @@ export function useStars(hostId: string | null | undefined, active: boolean): St
             ]
           : prev.filter((r) => !chosen.some((e) => e.id === r.path))
 
-        save(hostId, next)
+        persist(next)
         return next
       })
       // The starred view is rebuilt from the host next time it opens.
       setEntries([])
     },
-    [hostId],
+    [persist],
   )
 
   const refresh = useCallback(async () => {
@@ -138,13 +175,13 @@ export function useStars(hostId: string | null | undefined, active: boolean): St
       }
       if (alive.length !== records.length) {
         setRecords(alive)
-        save(hostId, alive)
+        persist(alive)
       }
       setEntries(found)
     } finally {
       setLoading(false)
     }
-  }, [records, hostId])
+  }, [records, persist])
 
   // Fetched when the section is opened, not before: nobody should pay for a
   // round trip per star while browsing files.

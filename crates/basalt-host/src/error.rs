@@ -34,6 +34,10 @@ pub enum HostError {
     #[error("{0}")]
     Unavailable(String),
 
+    /// A profile sign-in that has ended.
+    #[error("signed out of this profile")]
+    SignedOut,
+
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 
@@ -60,6 +64,7 @@ impl HostError {
             HostError::Proto(basalt_proto::ProtoError::UnsafePath(_)) => ErrorCode::Denied,
             HostError::Proto(_) | HostError::Net(_) => ErrorCode::BadRequest,
             HostError::Unavailable(_) => ErrorCode::Unavailable,
+            HostError::SignedOut => ErrorCode::SignedOut,
             HostError::Io(_) => ErrorCode::Io,
         }
     }

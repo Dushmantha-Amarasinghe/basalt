@@ -73,12 +73,17 @@ pub struct HostConfig {
     #[serde(default)]
     pub tmdb_key: String,
 
-    /// Whether each device sees its own watch history rather than the one
-    /// they all share. Off by default: one history is what lets a film started
-    /// on one screen be finished on another, which is the point of keeping it
-    /// on the host at all.
-    #[serde(default)]
+    /// No longer used: since profiles, a device keeps a history of its own and
+    /// a profile's follows it. Still read, so an older config loads.
+    #[serde(default, skip_serializing)]
     pub progress_per_device: bool,
+
+    /// The household's profiles. See [`crate::profiles`].
+    #[serde(default)]
+    pub profiles: Vec<crate::profiles::Profile>,
+    /// Devices signed in to them, by token hash.
+    #[serde(default)]
+    pub profile_tokens: Vec<crate::profiles::ProfileToken>,
 
     /// Which library sections devices show. All of them unless the owner
     /// unticks some.
@@ -107,6 +112,8 @@ impl HostConfig {
             posters: false,
             tmdb_key: String::new(),
             progress_per_device: false,
+            profiles: Vec::new(),
+            profile_tokens: Vec::new(),
             sections: basalt_proto::msg::Sections::default(),
             devices: Vec::new(),
         })

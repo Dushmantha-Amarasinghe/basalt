@@ -59,6 +59,8 @@ import {
 } from '@/lib/api'
 import { fileToEntry, useCollections } from '@/lib/useCollections'
 import { useMediaBase } from '@/lib/thumbs'
+import { useIdentity } from '@/lib/useIdentity'
+import { ProfileGate } from '@/components/ProfileGate'
 import { stemOf, trackInfo } from '@/lib/mediaInfo'
 import { useVault } from '@/lib/useVault'
 import { filterKind, isKind, recentOf, useLibraryScan } from '@/lib/useLibrary'
@@ -130,7 +132,12 @@ export function App(): React.JSX.Element {
     confirm,
   })
 
-  const stars = useStars(vault.status?.hostId, nav === 'starred')
+  const identity = useIdentity(connected)
+  const profileId = identity.state?.profile?.id ?? null
+  /** "Sign in to a profile" from the sidebar, while carrying on as the device. */
+  const [signingIn, setSigningIn] = useState(false)
+
+  const stars = useStars(vault.status?.hostId, nav === 'starred', profileId)
 
   const collections = useCollections(connected)
   const mediaBase = useMediaBase(connected)
@@ -159,7 +166,7 @@ export function App(): React.JSX.Element {
   }, [hiddenSections, nav])
   const isMedia = MEDIA_KEYS.includes(nav)
 
-  const watched = useWatched(connected)
+  const watched = useWatched(connected, profileId ?? '')
   const watchedByPath = useMemo(
     () => new Map(watched.all.map((entry) => [entry.path, entry])),
     [watched.all],
@@ -1065,6 +1072,38 @@ export function App(): React.JSX.Element {
     )
   }
 
+  // Who is using the device, once connected — unless that is remembered.
+  // Held back until known, so the app does not flash up behind the question.
+  if (connected && identity.supported && !identity.loaded) {
+    return <Splash failed={false} />
+  }
+  if (
+    connected &&
+    identity.supported &&
+    identity.state &&
+    (identity.state.choose || signingIn)
+  ) {
+    return (
+      <div className="relative flex h-full flex-col">
+        <TitleBar vaultName={vault.status.vault ?? 'Basalt'} connected={connected} />
+        <div className="min-h-0 flex-1">
+          <ProfileGate
+            vaultName={vault.status.vault ?? 'the drive'}
+            deviceName={vault.status.deviceName}
+            profiles={identity.profiles}
+            lastProfile={identity.state.lastProfile}
+            ended={identity.state.ended}
+            onDone={() => {
+              setSigningIn(false)
+              void identity.refresh()
+              void identity.reloadProfiles()
+            }}
+          />
+        </div>
+      </div>
+    )
+  }
+
   const path = vault.dir ? vault.dir.split('/') : []
   const crumbs = [vault.status.vault ?? 'Vault', ...path]
   const chosenEntries = entries.filter((e) => selected.has(e.id))
@@ -1112,6 +1151,29 @@ export function App(): React.JSX.Element {
 
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <Sidebar
+          who={
+            identity.supported && identity.state
+              ? {
+                  profile: identity.state.profile,
+                  onSignIn: () => {
+                    void identity.reloadProfiles()
+                    setSigningIn(true)
+                  },
+                  onSwitch: () => {
+                    void api.signOutProfile().then(async () => {
+                      await identity.reloadProfiles()
+                      await identity.refresh()
+                    })
+                  },
+                  onSignOut: () => {
+                    void api.signOutProfile().then(async () => {
+                      await identity.reloadProfiles()
+                      await identity.refresh()
+                    })
+                  },
+                }
+              : undefined
+          }
           hidden={hiddenSections}
           active={nav}
           onNavigate={setNav}

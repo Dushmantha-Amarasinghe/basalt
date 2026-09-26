@@ -243,8 +243,14 @@ async fn set_sections(
 }
 
 #[tauri::command]
-async fn set_progress_per_device(state: State<'_, AppState>, enabled: bool) -> Answer<HostStatus> {
-    state.host.set_progress_per_device(enabled)?;
+async fn reset_profile_pin(state: State<'_, AppState>, id: String) -> Answer<HostStatus> {
+    state.host.reset_profile_pin(&id)?;
+    status(state).await
+}
+
+#[tauri::command]
+async fn remove_profile(state: State<'_, AppState>, id: String) -> Answer<HostStatus> {
+    state.host.remove_profile(&id)?;
     status(state).await
 }
 
@@ -688,7 +694,8 @@ pub fn run() {
             rescan_library,
             set_posters,
             set_tmdb_key,
-            set_progress_per_device,
+            reset_profile_pin,
+            remove_profile,
             set_sections,
             build_info,
             open_log_folder,

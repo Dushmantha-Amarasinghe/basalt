@@ -1,10 +1,16 @@
-import { motion } from 'framer-motion'
+import { useState } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import {
   Clapperboard,
   Clock,
   FolderOpen,
+  ChevronsUpDown,
   HardDrive,
   Image,
+  Laptop,
+  LogOut,
+  Repeat,
+  UserRound,
   Music,
   Settings2,
   Star,
@@ -12,6 +18,7 @@ import {
   Video,
 } from 'lucide-react'
 import { cn, formatBytes } from '@/lib/utils'
+import { Avatar } from './ProfileGate'
 
 export type NavKey =
   | 'files'
@@ -51,9 +58,12 @@ export function Sidebar({
   connected,
   vaultName = 'Vault',
   hidden,
+  who,
 }: {
   /** Library sections the host's owner has chosen not to show. */
   hidden?: ReadonlySet<NavKey>
+  /** Who is using the device, when the host has profiles to offer. */
+  who?: WhoProps
   active: NavKey
   onNavigate: (key: NavKey) => void
   driveUsed: number
@@ -100,6 +110,8 @@ export function Sidebar({
       </nav>
       <div className="min-h-4 flex-1" />
       </div>
+
+      {who && <WhoChip {...who} />}
 
       <DriveStatus
         connected={connected}
@@ -233,4 +245,99 @@ function usedOfTotal(used: number, total: number): string {
   const [uNumber, uUnit] = u.split(' ')
   const [, tUnit] = t.split(' ')
   return uUnit && uUnit === tUnit ? `${uNumber} / ${t}` : `${u} / ${t}`
+}
+
+export interface WhoProps {
+  profile: { name: string; color: number } | null
+  onSignIn: () => void
+  onSwitch: () => void
+  onSignOut: () => void
+}
+
+/**
+ * Who is using the device, and the way to change it.
+ *
+ * Above the drive card, where the eye goes to see where it is: a profile's
+ * avatar and name, or the device on its own. The menu opens upwards, the only
+ * way there is room for it.
+ */
+function WhoChip({ profile, onSignIn, onSwitch, onSignOut }: WhoProps): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const choose = (action: () => void) => () => {
+    setOpen(false)
+    action()
+  }
+  return (
+    <div className="relative mb-2">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          'flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors duration-150',
+          open ? 'bg-white/[0.06]' : 'hover:bg-white/[0.04]',
+        )}
+      >
+        {profile ? (
+          <Avatar name={profile.name} color={profile.color} size={26} />
+        ) : (
+          <span className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-textDim">
+            <Laptop size={13} />
+          </span>
+        )}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[12.5px] font-medium text-text">
+            {profile ? profile.name : 'This device'}
+          </span>
+          <span className="block truncate font-mono text-[9.5px] text-textFaint">
+            {profile ? 'profile' : 'not signed in'}
+          </span>
+        </span>
+        <ChevronsUpDown size={13} className="shrink-0 text-textFaint" />
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <>
+            <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+            <motion.div
+              initial={{ opacity: 0, y: 4, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 4, scale: 0.98 }}
+              transition={{ duration: 0.13, ease: [0.22, 1, 0.36, 1] }}
+              style={{ transformOrigin: 'bottom left' }}
+              className="absolute bottom-full left-0 right-0 z-40 mb-1.5 overflow-hidden rounded-lg border border-white/10 bg-panel2 p-1 shadow-lift"
+            >
+              {profile ? (
+                <>
+                  <WhoItem icon={Repeat} label="Switch profile" onClick={choose(onSwitch)} />
+                  <WhoItem icon={LogOut} label="Sign out" onClick={choose(onSignOut)} />
+                </>
+              ) : (
+                <WhoItem icon={UserRound} label="Sign in to a profile" onClick={choose(onSignIn)} />
+              )}
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
+
+function WhoItem({
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  icon: typeof Laptop
+  label: string
+  onClick: () => void
+}): React.JSX.Element {
+  return (
+    <button
+      onClick={onClick}
+      className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[12px] text-textDim transition-colors duration-100 hover:bg-white/[0.06] hover:text-text"
+    >
+      <Icon size={13} />
+      {label}
+    </button>
+  )
 }

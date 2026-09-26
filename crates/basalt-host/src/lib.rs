@@ -20,6 +20,7 @@ pub mod config;
 pub mod drives;
 pub mod error;
 pub mod media;
+pub mod profiles;
 pub mod rates;
 pub mod registry;
 pub mod server;

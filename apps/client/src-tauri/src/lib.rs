@@ -330,6 +330,64 @@ async fn remove_entry(state: State<'_, AppState>, path: String, recursive: bool)
     Ok(state.client.remove(&path, recursive).await?)
 }
 
+// ---------------------------------------------------------------------------
+// Profiles
+// ---------------------------------------------------------------------------
+
+/// Who is using this device, and whether to ask.
+#[tauri::command]
+async fn identity(state: State<'_, AppState>) -> Answer<basalt_client::IdentityState> {
+    Ok(state.client.identity().await)
+}
+
+#[tauri::command]
+async fn profiles(state: State<'_, AppState>) -> Answer<Vec<basalt_proto::msg::ProfileView>> {
+    Ok(state.client.profiles().await?)
+}
+
+#[tauri::command]
+async fn create_profile(
+    state: State<'_, AppState>,
+    name: String,
+    pin: String,
+    color: u8,
+    remember: bool,
+) -> Answer<basalt_proto::msg::ProfileView> {
+    Ok(state
+        .client
+        .create_profile(&name, &pin, color, remember)
+        .await?)
+}
+
+#[tauri::command]
+async fn sign_in_profile(
+    state: State<'_, AppState>,
+    id: String,
+    pin: String,
+    remember: bool,
+) -> Answer<basalt_proto::msg::ProfileView> {
+    Ok(state.client.sign_in_profile(&id, &pin, remember).await?)
+}
+
+#[tauri::command]
+async fn sign_out_profile(state: State<'_, AppState>) -> Answer<()> {
+    Ok(state.client.sign_out_profile().await?)
+}
+
+#[tauri::command]
+async fn continue_as_device(state: State<'_, AppState>, always: bool) -> Answer<()> {
+    Ok(state.client.continue_as_device(always).await?)
+}
+
+/// The signed-in profile's stars, replaced first when `set` is given.
+#[tauri::command]
+async fn profile_stars(
+    state: State<'_, AppState>,
+    set: Option<Vec<basalt_proto::msg::Star>>,
+) -> Answer<Vec<basalt_proto::msg::Star>> {
+    Ok(state.client.stars(set).await?)
+}
+
 /// Every video, song and photo on the drive, sorted by the host.
 #[tauri::command]
 async fn collections(
@@ -792,6 +850,13 @@ pub fn run() {
             media_url,
             media_base,
             collections,
+            identity,
+            profiles,
+            create_profile,
+            sign_in_profile,
+            sign_out_profile,
+            continue_as_device,
+            profile_stars,
             download,
             upload,
             open_externally,

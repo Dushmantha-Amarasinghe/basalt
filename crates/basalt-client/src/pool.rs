@@ -25,6 +25,23 @@ struct Inner {
     token: String,
     me: Me,
     idle: Mutex<Vec<Session>>,
+    profile: Mutex<ProfileChoice>,
+}
+
+/// Which profile every connection in the pool should act for.
+///
+/// Each connection is told once, the first time it is used after the choice
+/// changes: a device holds several connections at once, and every one of them
+/// has to act for the same person, or a film watched in one profile would be
+/// recorded against another.
+#[derive(Debug, Default, Clone)]
+struct ProfileChoice {
+    /// Bumped on every change. Connections compare it with their own.
+    generation: u64,
+    token: Option<String>,
+    /// Set when the host said the sign-in had ended — signed out elsewhere,
+    /// the profile removed, its PIN reset — so the app can say so.
+    ended: bool,
 }
 
 /// Connections to one paired host.
@@ -42,6 +59,7 @@ impl Pool {
                 token: token.to_string(),
                 me: me.clone(),
                 idle: Mutex::new(Vec::new()),
+                profile: Mutex::new(ProfileChoice::default()),
             }),
         }
     }
@@ -78,7 +96,7 @@ impl Pool {
         // everything, including the connection being waited on.
         let pooled = self.inner.idle.lock().expect("idle lock").pop();
 
-        let session = match pooled {
+        let mut session = match pooled {
             Some(session) => session,
             None => {
                 Session::connect(
@@ -91,11 +109,68 @@ impl Pool {
             }
         };
 
+        let choice = self.inner.profile.lock().expect("profile lock").clone();
+        if session.profile_gen != choice.generation {
+            match session.profile_use(choice.token.as_deref()).await {
+                Ok(_) => session.profile_gen = choice.generation,
+                // The sign-in ended on the host. The device carries on as
+                // itself rather than failing everything it does, and the
+                // app is told so it can ask who is watching.
+                Err(e) if e.kind() == "signedout" => {
+                    let generation = {
+                        let mut current = self.inner.profile.lock().expect("profile lock");
+                        if current.generation == choice.generation {
+                            current.generation += 1;
+                            current.token = None;
+                            current.ended = true;
+                        }
+                        current.generation
+                    };
+                    session.profile_use(None).await?;
+                    session.profile_gen = generation;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
         Ok(Lease {
             session: Some(session),
             inner: Arc::clone(&self.inner),
             healthy: true,
         })
+    }
+
+    /// Acts for a profile from now on, or for the device itself with None.
+    pub fn set_profile(&self, token: Option<String>) {
+        let mut choice = self.inner.profile.lock().expect("profile lock");
+        choice.generation += 1;
+        choice.token = token;
+        choice.ended = false;
+    }
+
+    /// The profile token in use, if any.
+    pub fn profile_token(&self) -> Option<String> {
+        self.inner
+            .profile
+            .lock()
+            .expect("profile lock")
+            .token
+            .clone()
+    }
+
+    /// The host said the sign-in has ended: carry on as the device.
+    pub fn profile_ended(&self) {
+        let mut choice = self.inner.profile.lock().expect("profile lock");
+        if choice.token.is_some() {
+            choice.generation += 1;
+            choice.token = None;
+            choice.ended = true;
+        }
+    }
+
+    /// Whether the host ended the sign-in since the last time this was asked.
+    pub fn take_profile_ended(&self) -> bool {
+        std::mem::take(&mut self.inner.profile.lock().expect("profile lock").ended)
     }
 
     /// Drops every idle connection, for example after the host goes away.
@@ -126,10 +201,16 @@ impl Lease {
     /// The distinction matters: "the file is not there" leaves a perfectly good
     /// connection, while "the socket reset" does not.
     pub fn check<T>(&mut self, result: Result<T>) -> Result<T> {
-        if let Err(e) = &result
-            && e.is_transient()
-        {
-            self.discard();
+        if let Err(e) = &result {
+            if e.is_transient() {
+                self.discard();
+            } else if e.kind() == "signedout" {
+                // Every connection goes back to acting for the device.
+                Pool {
+                    inner: Arc::clone(&self.inner),
+                }
+                .profile_ended();
+            }
         }
         result
     }

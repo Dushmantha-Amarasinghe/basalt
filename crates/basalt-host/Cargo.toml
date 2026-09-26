@@ -36,6 +36,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # libmpv, loaded at run time for video thumbnails. Loaded rather than linked
 # so a host without the DLL still starts, and simply makes no video pictures.
 libloading = "0.8"
+# Profile PINs, hashed the way passwords are.
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 # `rustls-no-provider` rather than `rustls`, which would pull aws-lc-rs and with

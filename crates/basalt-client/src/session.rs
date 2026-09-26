@@ -33,6 +33,9 @@ pub struct SessionInfo {
 pub struct Session {
     stream: TlsStream<TcpStream>,
     info: SessionInfo,
+    /// Which of the pool's profile choices this connection has told the host
+    /// about. See `Pool::set_profile`.
+    pub(crate) profile_gen: u64,
 }
 
 /// Who this device is, as it introduces itself to a host.
@@ -141,6 +144,7 @@ impl Session {
 
         Ok(Self {
             stream,
+            profile_gen: 0,
             info: SessionInfo {
                 host_id: presented,
                 host_name: hello.host_name,
@@ -203,6 +207,7 @@ impl Session {
         Ok((
             Self {
                 stream,
+                profile_gen: 0,
                 info: SessionInfo {
                     host_id: presented,
                     host_name: hello.host_name,
@@ -362,6 +367,75 @@ impl Session {
         )
         .await?;
         Ok(read_response(&mut self.stream).await?)
+    }
+
+    /// The household's profiles.
+    pub async fn profiles(&mut self) -> Result<basalt_proto::msg::ProfilesResponse> {
+        call_json(&mut self.stream, Op::Profiles, &serde_json::json!({}))
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn profile_create(
+        &mut self,
+        request: &basalt_proto::msg::ProfileCreateRequest,
+    ) -> Result<basalt_proto::msg::ProfileSession> {
+        call_json(&mut self.stream, Op::ProfileCreate, request)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn profile_sign_in(
+        &mut self,
+        request: &basalt_proto::msg::ProfileSignInRequest,
+    ) -> Result<basalt_proto::msg::ProfileSession> {
+        call_json(&mut self.stream, Op::ProfileSignIn, request)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Says which profile this connection acts for; None for the device.
+    pub async fn profile_use(
+        &mut self,
+        token: Option<&str>,
+    ) -> Result<basalt_proto::msg::ProfileUseResponse> {
+        call_json(
+            &mut self.stream,
+            Op::ProfileUse,
+            &basalt_proto::msg::ProfileUseRequest {
+                token: token.map(str::to_string),
+            },
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    pub async fn profile_sign_out(&mut self, token: &str) -> Result<()> {
+        write_request(
+            &mut self.stream,
+            Op::ProfileSignOut,
+            &serde_json::to_vec(&basalt_proto::msg::ProfileSignOutRequest {
+                token: token.to_string(),
+            })
+            .map_err(|e| ClientError::Protocol(e.to_string()))?,
+        )
+        .await?;
+        read_response(&mut self.stream).await?;
+        Ok(())
+    }
+
+    /// A profile's stars, replaced first when `set` is given.
+    pub async fn stars(
+        &mut self,
+        set: Option<Vec<basalt_proto::msg::Star>>,
+    ) -> Result<basalt_proto::msg::StarsResponse> {
+        call_json(
+            &mut self.stream,
+            Op::Stars,
+            &basalt_proto::msg::StarsRequest { set },
+        )
+        .await
+        .map_err(Into::into)
     }
 
     /// Records and reads watch progress in one round trip.

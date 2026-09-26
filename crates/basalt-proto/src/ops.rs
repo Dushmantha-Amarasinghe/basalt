@@ -105,6 +105,21 @@ pub enum Op {
     Collections = 24,
     /// A small preview image of a video or a photo, made by the host.
     Thumbnail = 25,
+    /// The household's profiles, by name. Never their PINs.
+    Profiles = 26,
+    /// Makes a profile, and signs this device in to it.
+    ProfileCreate = 27,
+    /// Signs this device in to a profile, with its PIN.
+    ProfileSignIn = 28,
+    /// Which profile this connection acts for, or none: the device itself.
+    ///
+    /// Per connection, because a device holds several open at once and each
+    /// has to say who it is working for.
+    ProfileUse = 29,
+    /// Ends a profile sign-in, on this device.
+    ProfileSignOut = 30,
+    /// The starred files of the profile this connection acts for.
+    Stars = 31,
 }
 
 impl Op {
@@ -113,7 +128,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::Thumbnail as u8;
+    pub const LAST: u8 = Op::Stars as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -142,6 +157,12 @@ impl Op {
             23 => Op::Unpair,
             24 => Op::Collections,
             25 => Op::Thumbnail,
+            26 => Op::Profiles,
+            27 => Op::ProfileCreate,
+            28 => Op::ProfileSignIn,
+            29 => Op::ProfileUse,
+            30 => Op::ProfileSignOut,
+            31 => Op::Stars,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -196,6 +217,9 @@ pub enum ErrorCode {
     /// Its own code so a client can say so and keep checking, rather than
     /// showing an empty folder — which is what a generic failure looked like.
     Unavailable,
+    /// The profile sign-in this connection presented has ended: signed out on
+    /// another device, the profile removed, or its PIN reset on the host.
+    SignedOut,
     /// A code from a newer host than this build knows, read as a plain
     /// failure rather than as a reply that will not parse at all.
     #[serde(other)]
@@ -274,6 +298,12 @@ mod tests {
             Op::Unpair,
             Op::Collections,
             Op::Thumbnail,
+            Op::Profiles,
+            Op::ProfileCreate,
+            Op::ProfileSignIn,
+            Op::ProfileUse,
+            Op::ProfileSignOut,
+            Op::Stars,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

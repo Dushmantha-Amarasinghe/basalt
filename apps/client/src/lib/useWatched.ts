@@ -28,7 +28,11 @@ export interface WatchedLibrary {
  * what the media proxy has seen it read. That arrives whenever the host is
  * asked, so asking on a timer is the mechanism rather than a shortcut.
  */
-export function useWatched(connected: boolean): WatchedLibrary {
+/**
+ * `who` is whose history this is — a profile's id, or empty for the device —
+ * so a change of profile shows the new person's list straight away.
+ */
+export function useWatched(connected: boolean, who = ''): WatchedLibrary {
   const [all, setAll] = useState<Watched[]>([])
   const live = useRef(true)
   const inFlight = useRef(false)
@@ -63,16 +67,15 @@ export function useWatched(connected: boolean): WatchedLibrary {
   )
 
   useEffect(() => {
-    if (!connected) {
-      setAll([])
-      return
-    }
+    // Someone else's list is never shown while this one loads.
+    setAll([])
+    if (!connected) return
     void sync()
     const timer = setInterval(() => {
       void sync()
     }, playing.current ? WHILE_PLAYING_MS : IDLE_MS)
     return () => clearInterval(timer)
-  }, [connected, sync])
+  }, [connected, sync, who])
 
   const report = useCallback(
     (path: string, position: number, duration: number) => {
