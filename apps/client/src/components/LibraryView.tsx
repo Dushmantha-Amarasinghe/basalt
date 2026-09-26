@@ -1,4 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
+import { itemQuality, qualityOf } from '@/lib/quality'
+import { QualityTag } from './QualityTag'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Check, ChevronLeft, Clapperboard, Loader2, Play, Tv } from 'lucide-react'
 import {
@@ -198,6 +200,7 @@ function Card({
   onOpen: () => void
 }): React.JSX.Element {
   const episodes = item.seasons.reduce((total, s) => total + s.episodes.length, 0)
+  const quality = itemQuality(item)
 
   return (
     <motion.button
@@ -252,13 +255,20 @@ function Card({
           </span>
         )}
 
-        {item.confidence < CONFIDENT && (
-          <span
-            title="Recognised from the filename, but not confidently"
-            className="absolute left-2 top-2 rounded-[4px] bg-black/70 px-1.5 py-[2px] font-mono text-[8.5px] uppercase tracking-[0.1em] text-textDim"
-          >
-            a guess
-          </span>
+        {/* What the picture is, then whether the match itself is a guess —
+            side by side, so neither covers the other. */}
+        {(quality || item.confidence < CONFIDENT) && (
+          <div className="absolute left-2 top-2 flex items-center gap-1">
+            <QualityTag quality={quality} />
+            {item.confidence < CONFIDENT && (
+              <span
+                title="Recognised from the filename, but not confidently"
+                className="rounded-[4px] bg-black/70 px-1.5 py-[2px] font-mono text-[8.5px] uppercase tracking-[0.1em] text-textDim"
+              >
+                a guess
+              </span>
+            )}
+          </div>
         )}
       </div>
 
@@ -399,6 +409,8 @@ function EpisodeRow({
       >
         {episode.title ?? nameOf(episode.path)}
       </span>
+
+      <QualityTag quality={qualityOf(episode.resolution)} size="sm" />
 
       {(episode.subtitles?.length ?? 0) > 0 && (
         <span

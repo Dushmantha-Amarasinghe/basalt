@@ -783,3 +783,31 @@ fn walk_files(dir: &Path) -> Vec<PathBuf> {
     }
     out
 }
+
+/// The HD / 4K tag on a card: the size reaches devices with the library,
+/// read from the name until the file itself has been measured.
+#[tokio::test]
+async fn a_film_and_its_episodes_arrive_with_their_picture_size() {
+    let fixture = start_host().await;
+    put_feature(&fixture.vault_path("films/Arrival.2016.2160p.WEB-DL.mkv"));
+    std::fs::create_dir_all(fixture.vault_path("tv/Breaking Bad/Season 01")).unwrap();
+    put_feature(&fixture.vault_path("tv/Breaking Bad/Season 01/Breaking.Bad.S01E01.720p.mkv"));
+
+    let client = fixture.paired_client().await;
+    fixture.host.set_library_enabled(true).await.unwrap();
+    let items = library_of(&client, 2).await;
+
+    let film = items
+        .iter()
+        .find(|i| i.kind == LibraryKind::Film)
+        .expect("the film");
+    let size = film.resolution.expect("a size for the film");
+    assert_eq!((size.width, size.height), (3840, 2160));
+
+    let show = items
+        .iter()
+        .find(|i| i.kind == LibraryKind::Series)
+        .expect("the show");
+    let episode = &show.seasons[0].episodes[0];
+    assert_eq!(episode.resolution.map(|r| r.height), Some(720));
+}

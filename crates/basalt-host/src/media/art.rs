@@ -372,6 +372,7 @@ mod tests {
 
     fn film(id: &str, title: &str) -> LibraryItem {
         LibraryItem {
+            resolution: None,
             id: id.into(),
             kind: LibraryKind::Film,
             title: title.into(),
@@ -397,6 +398,7 @@ mod tests {
 
     fn series(title: &str, year: Option<u16>) -> LibraryItem {
         LibraryItem {
+            resolution: None,
             kind: LibraryKind::Series,
             title: title.into(),
             year,
@@ -442,6 +444,7 @@ mod tests {
     #[test]
     fn the_wrong_year_is_refused() {
         let asked = LibraryItem {
+            resolution: None,
             year: Some(1922),
             ..film("f1", "Nosferatu")
         };
@@ -469,6 +472,7 @@ mod tests {
         assert!(matches(
             &result("Amélie", Some(2001), "MOVIE"),
             &LibraryItem {
+                resolution: None,
                 year: Some(2001),
                 ..film("f9", "Amelie")
             }

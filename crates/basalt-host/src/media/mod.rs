@@ -13,6 +13,7 @@ pub mod collect;
 pub mod index;
 pub mod parse;
 pub mod progress;
+pub mod quality;
 pub mod subs;
 pub mod thumbs;
 
