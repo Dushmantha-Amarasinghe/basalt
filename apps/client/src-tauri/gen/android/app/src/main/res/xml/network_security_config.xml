@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Plain HTTP to this phone itself, and nowhere else.
+     The media proxy serves films and thumbnails on 127.0.0.1; the host itself
+     is reached over pinned TLS on its own protocol, which this does not
+     govern. Everything on the internet stays HTTPS only. -->
+<network-security-config>
+  <base-config cleartextTrafficPermitted="false" />
+  <domain-config cleartextTrafficPermitted="true">
+    <domain includeSubdomains="false">127.0.0.1</domain>
+    <domain includeSubdomains="false">localhost</domain>
+    <domain includeSubdomains="true">tauri.localhost</domain>
+  </domain-config>
+</network-security-config>

@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Files this app hands to other apps: downloads saved before Android 10,
+     and a verified update, which the installer has to be able to read. -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-  <external-path name="my_images" path="." />
-  <cache-path name="my_cache_images" path="." />
+  <external-path name="downloads" path="Download/Basalt" />
+  <cache-path name="updates" path="Basalt Updates" />
+  <cache-path name="scratch" path="Basalt" />
 </paths>

@@ -544,6 +544,257 @@ async fn upload(
     Ok(result?)
 }
 
+// ---------------------------------------------------------------------------
+// The phone's own files
+// ---------------------------------------------------------------------------
+
+/// A file on the phone, as Android describes one it has handed over.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PhoneFile {
+    /// The `content://` address Android gave for it.
+    uri: String,
+    /// Where it goes, relative to the folder it is uploaded into: the name,
+    /// or `Folder/Sub/name` for a file inside a picked folder.
+    rel: String,
+    /// Bytes. Negative when Android could not say.
+    size: i64,
+    /// Unix seconds, or 0 when not known.
+    #[serde(default)]
+    mtime: i64,
+}
+
+/// An open file from a descriptor Android handed over.
+#[cfg(target_os = "android")]
+fn owned_file(fd: i32) -> std::fs::File {
+    use std::os::fd::FromRawFd;
+    // Detached on the Kotlin side, so this is the only owner, and dropping
+    // the File closes it.
+    unsafe { std::fs::File::from_raw_fd(fd) }
+}
+
+/// Uploads files from the phone: picked, shared from another app, or a
+/// whole picked folder with the folders inside it. One transfer for all of
+/// them, as the desktop does for a folder.
+#[allow(unused_variables)]
+#[tauri::command]
+async fn upload_from_phone(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    files: Vec<PhoneFile>,
+    folders: Vec<String>,
+    into: String,
+    label: String,
+    id: String,
+) -> Answer<UploadOutcome> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, state, files, folders, into, label, id);
+        Err(UiError {
+            kind: "error".into(),
+            message: "only on Android".into(),
+        })
+    }
+    #[cfg(target_os = "android")]
+    {
+        use tauri_plugin_basalt_android::BasaltAndroidExt;
+
+        let join = |rel: &str| {
+            if into.is_empty() {
+                rel.to_string()
+            } else {
+                format!("{into}/{rel}")
+            }
+        };
+
+        // Folders first, parents before children, so every file has
+        // somewhere to land. One that is already there is fine.
+        let mut folders = folders;
+        folders.sort_by_key(|f| f.matches('/').count());
+        for folder in &folders {
+            match state.client.mkdir(&join(folder)).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == "exists" => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        let cancel = Cancel::new();
+        state
+            .transfers
+            .lock()
+            .expect("transfers lock")
+            .insert(id.clone(), cancel.clone());
+        let report = progress_reporter(app.clone(), id.clone(), label, "upload");
+
+        let total: u64 = files.iter().map(|f| f.size.max(0) as u64).sum();
+        let mut done = 0u64;
+        let mut outcome = UploadOutcome {
+            bytes: 0,
+            files: 0,
+            failed: Vec::new(),
+        };
+
+        for file in &files {
+            if cancel.is_cancelled() {
+                break;
+            }
+            let target = join(&file.rel);
+            if file.size < 0 {
+                outcome
+                    .failed
+                    .push((target, "the phone would not say how big it is".into()));
+                continue;
+            }
+            let base = done;
+            let ceiling = total.saturating_sub(1);
+            let outer = std::sync::Arc::clone(&report);
+            let whole = target.clone();
+            let progress: ProgressFn = Arc::new(move |p: basalt_client::Progress| {
+                outer(basalt_client::Progress {
+                    kind: p.kind,
+                    path: whole.clone(),
+                    transferred: (base + p.transferred).min(ceiling),
+                    total,
+                })
+            });
+
+            let handle = app.clone();
+            let uri = file.uri.clone();
+            let opened =
+                tokio::task::spawn_blocking(move || handle.basalt_android().open_fd(&uri, "r"))
+                    .await;
+            let fd = match opened {
+                Ok(Ok(fd)) => fd,
+                Ok(Err(e)) => {
+                    outcome.failed.push((target, e.to_string()));
+                    done += file.size as u64;
+                    continue;
+                }
+                Err(e) => {
+                    outcome.failed.push((target, e.to_string()));
+                    done += file.size as u64;
+                    continue;
+                }
+            };
+            let mtime = (file.mtime > 0).then_some(file.mtime);
+            match state
+                .client
+                .upload_file(
+                    owned_file(fd),
+                    file.size as u64,
+                    mtime,
+                    &target,
+                    false,
+                    Some(progress),
+                    Some(cancel.clone()),
+                )
+                .await
+            {
+                Ok(bytes) => {
+                    outcome.files += 1;
+                    outcome.bytes += bytes;
+                }
+                Err(e) => outcome.failed.push((target, e.to_string())),
+            }
+            done += file.size as u64;
+        }
+
+        report(basalt_client::Progress {
+            kind: basalt_client::TransferKind::Upload,
+            path: into.clone(),
+            transferred: total,
+            total,
+        });
+        state.transfers.lock().expect("transfers lock").remove(&id);
+        if cancel.is_cancelled() {
+            return Err(UiError {
+                kind: "error".into(),
+                message: "cancelled".into(),
+            });
+        }
+        Ok(outcome)
+    }
+}
+
+/// Where a download landed on the phone.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedOnPhone {
+    /// For opening or sharing it afterwards.
+    uri: String,
+    /// Where somebody would look for it: `Download/Basalt/name`.
+    shown_as: String,
+}
+
+/// Downloads a file into the phone's Downloads/Basalt folder.
+///
+/// Hidden from other apps until it is complete, and removed if it fails, so
+/// Downloads never shows half a film.
+#[allow(unused_variables)]
+#[tauri::command]
+async fn download_to_phone(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    remote: String,
+    id: String,
+) -> Answer<SavedOnPhone> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, state, remote, id);
+        Err(UiError {
+            kind: "error".into(),
+            message: "only on Android".into(),
+        })
+    }
+    #[cfg(target_os = "android")]
+    {
+        use tauri_plugin_basalt_android::BasaltAndroidExt;
+
+        let name = remote.rsplit('/').next().unwrap_or(&remote).to_string();
+        let handle = app.clone();
+        let wanted = name.clone();
+        let created = tokio::task::spawn_blocking(move || {
+            handle.basalt_android().create_download(&wanted, "")
+        })
+        .await
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: e.to_string(),
+        })?
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("could not save to Downloads: {e}"),
+        })?;
+
+        let cancel = Cancel::new();
+        state
+            .transfers
+            .lock()
+            .expect("transfers lock")
+            .insert(id.clone(), cancel.clone());
+        let report = progress_reporter(app.clone(), id.clone(), name, "download");
+        let result = state
+            .client
+            .download_to_file(&remote, owned_file(created.fd), Some(report), Some(cancel))
+            .await;
+        state.transfers.lock().expect("transfers lock").remove(&id);
+
+        let ok = result.is_ok();
+        let handle = app.clone();
+        let uri = created.uri.clone();
+        let _ =
+            tokio::task::spawn_blocking(move || handle.basalt_android().finish_download(&uri, ok))
+                .await;
+        result?;
+        Ok(SavedOnPhone {
+            uri: created.uri,
+            shown_as: created.shown_as,
+        })
+    }
+}
+
 /// What an upload did: one file, or a folder of them.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -644,6 +895,18 @@ fn scratch_dir(app: &tauri::AppHandle) -> PathBuf {
 struct OpenResult {
     player: String,
     streamed: bool,
+}
+
+/// Which app this is, for the interface to lay itself out for.
+#[tauri::command]
+fn platform() -> &'static str {
+    if cfg!(target_os = "android") {
+        "android"
+    } else if cfg!(target_os = "ios") {
+        "ios"
+    } else {
+        "desktop"
+    }
 }
 
 /// Whether a player that can stream a URL is installed.
@@ -757,6 +1020,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init());
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_libmpv::init());
+    #[cfg(mobile)]
+    let builder = builder.plugin(tauri_plugin_basalt_android::init());
 
     builder
         .setup(|app| {
@@ -883,6 +1148,9 @@ pub fn run() {
             open_externally,
             external_player,
             cancel_transfer,
+            upload_from_phone,
+            download_to_phone,
+            platform,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Basalt");

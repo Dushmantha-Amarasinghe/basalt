@@ -412,6 +412,20 @@ export const api = {
   upload: (local: string, remote: string, overwrite: boolean, id: string) =>
     call<UploadOutcome>('upload', { local, remote, overwrite, id }),
   cancelTransfer: (id: string) => call<boolean>('cancel_transfer', { id }),
+  /** Which app this is: the desktop window, or the Android app. */
+  platform: () => call<'desktop' | 'android' | 'ios'>('platform'),
+  /** Files from the phone — picked, shared in, or a whole folder — as one
+   *  upload. Android only. */
+  uploadFromPhone: (
+    files: Array<{ uri: string; rel: string; size: number; mtime: number }>,
+    folders: string[],
+    into: string,
+    label: string,
+    id: string,
+  ) => call<UploadOutcome>('upload_from_phone', { files, folders, into, label, id }),
+  /** A file saved into the phone's Downloads/Basalt. Android only. */
+  downloadToPhone: (remote: string, id: string) =>
+    call<{ uri: string; shownAs: string }>('download_to_phone', { remote, id }),
   /**
    * Hands a file to a player that can decode it — streamed over a local URL
    * where possible, copied out only when nothing streaming-capable is

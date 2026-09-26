@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-let-go"
+description = "Enables the let_go command without any pre-configured scope."
+commands.allow = ["let_go"]
+
+[[permission]]
+identifier = "deny-let-go"
+description = "Denies the let_go command without any pre-configured scope."
+commands.deny = ["let_go"]
