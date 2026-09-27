@@ -22,9 +22,10 @@ import {
 } from 'lucide-react'
 import type { MediaItem } from '@/lib/mockMedia'
 import { formatDuration } from '@/lib/mockMedia'
-import { api, type SubtitleTrack } from '@/lib/api'
+import { api, inTauri, type SubtitleTrack } from '@/lib/api'
 import { onExternalFileDrop, pickSubtitleFile } from '@/lib/dialogs'
 import { useAsyncSubscription, useLatest } from '@/lib/useAsyncSubscription'
+import { PreviewPicture } from './PreviewPicture'
 import { useMpv, type Mpv, type MpvTrack } from '@/lib/useMpv'
 import {
   chooseDriveFile,
@@ -747,6 +748,15 @@ export function PlayerOverlay({
           data-player=""
           className={cn('fixed inset-0 z-40', !mpv.picture && 'bg-black')}
         >
+          {/* The browser preview's stand-in for mpv's picture. */}
+          {!inTauri() && mpv.picture && (
+            <PreviewPicture
+              path={item.id}
+              paused={mpv.paused}
+              position={mpv.position}
+              subtitles={mpv.subtitleId !== null}
+            />
+          )}
           {/*
             The stage: black, until there is a picture behind it.
 

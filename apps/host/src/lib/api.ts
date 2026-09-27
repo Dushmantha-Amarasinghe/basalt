@@ -13,6 +13,8 @@
  * there and not here, the field silently becomes `undefined`.
  */
 
+import packageInfo from '../../package.json'
+
 export interface VaultView {
   path: string
   name: string
@@ -239,6 +241,11 @@ export async function pickFolder(): Promise<string | null> {
 // ---------------------------------------------------------------------------
 // Sample data, for reviewing the interface in a browser
 // ---------------------------------------------------------------------------
+//
+// The same invented household as the client's preview (its showcase.json):
+// a host called LIVING-ROOM-PC sharing a "Media Drive", three profiles, and
+// their devices. It is what Basalt's videos and screenshots show, so nothing
+// here may name a real machine or person.
 
 const GB = 1024 ** 3
 
@@ -251,26 +258,26 @@ const sample: {
 } = {
   status: {
     hostId: 'a3f9c1e27b48d05f6a1c9e83b4d72f10c5e6a9b8d3f4172c8e5a6b9d0f3c7e21',
-    hostName: 'STUDY-LAPTOP',
+    hostName: 'LIVING-ROOM-PC',
     port: 7742,
     requirePin: true,
     startWithWindows: false,
     vault: null,
-    addresses: ['192.168.1.90'],
-    deviceCount: 2,
+    addresses: ['192.168.1.20'],
+    deviceCount: 3,
     library: {
-      enabled: false,
+      enabled: true,
       scanning: false,
-      films: 0,
-      series: 0,
+      films: 10,
+      series: 4,
       uncertain: 0,
-      withArt: 0,
-      posters: false,
+      withArt: 14,
+      posters: true,
       hasKey: false,
-      scannedAt: 0,
-      videos: 14,
-      music: 212,
-      photos: 1840,
+      scannedAt: Math.floor(Date.now() / 1000) - 3600,
+      videos: 8,
+      music: 24,
+      photos: 32,
     },
     profiles: [
       {
@@ -281,16 +288,25 @@ const sample: {
         createdAt: Math.floor(Date.now() / 1000) - 86400 * 30,
         lastUsed: Math.floor(Date.now() / 1000) - 120,
         devices: [
-          { name: 'LIVING-ROOM', remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 120 },
-          { name: 'STUDY-LAPTOP', remembered: false, lastUsed: Math.floor(Date.now() / 1000) - 7200 },
+          { name: "Maya's laptop", remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 120 },
+          { name: "Maya's phone", remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 5400 },
         ],
       },
       {
         id: 'p2',
         name: 'Sam',
         color: 4,
-        hasPin: false,
+        hasPin: true,
         createdAt: Math.floor(Date.now() / 1000) - 86400 * 12,
+        lastUsed: Math.floor(Date.now() / 1000) - 86400,
+        devices: [{ name: "Sam's tablet", remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 86400 }],
+      },
+      {
+        id: 'p3',
+        name: 'Leo',
+        color: 2,
+        hasPin: false,
+        createdAt: Math.floor(Date.now() / 1000) - 86400 * 4,
         lastUsed: Math.floor(Date.now() / 1000) - 86400 * 3,
         devices: [],
       },
@@ -302,7 +318,7 @@ const sample: {
   devices: [
     {
       id: 'aa11',
-      name: 'FST',
+      name: "Maya's laptop",
       pairedAt: Math.floor(Date.now() / 1000) - 86_400 * 9,
       lastSeen: Math.floor(Date.now() / 1000) - 12,
       writable: true,
@@ -315,9 +331,22 @@ const sample: {
     },
     {
       id: 'bb22',
-      name: 'Living room PC',
+      name: "Maya's phone",
+      pairedAt: Math.floor(Date.now() / 1000) - 86_400 * 20,
+      lastSeen: Math.floor(Date.now() / 1000) - 30,
+      writable: true,
+      online: true,
+      connections: 1,
+      sent: 12.6 * GB,
+      received: 4.8 * GB,
+      sendRate: 0,
+      receiveRate: 6_400_000,
+    },
+    {
+      id: 'cc33',
+      name: "Sam's tablet",
       pairedAt: Math.floor(Date.now() / 1000) - 86_400 * 31,
-      lastSeen: Math.floor(Date.now() / 1000) - 86_400 * 2,
+      lastSeen: Math.floor(Date.now() / 1000) - 86_400,
       writable: false,
       online: false,
       connections: 0,
@@ -331,14 +360,14 @@ const sample: {
     {
       id: 'req-1',
       deviceName: 'Kitchen tablet',
-      pin: '169241',
+      pin: '482915',
       secondsLeft: 104,
     },
   ],
   drives: [
     { path: 'C:\\', name: 'Windows (C:)', label: 'Windows', kind: 'fixed', free: 74 * GB, total: 476 * GB, ready: true },
     { path: 'D:\\', name: 'Storage (D:)', label: 'Storage', kind: 'fixed', free: 512 * GB, total: 1863 * GB, ready: true },
-    { path: 'E:\\', name: 'Films (E:)', label: 'Films', kind: 'removable', free: 1204 * GB, total: 3726 * GB, ready: true },
+    { path: 'E:\\', name: 'Media Drive (E:)', label: 'Media Drive', kind: 'removable', free: 1204 * GB, total: 3726 * GB, ready: true },
     { path: 'F:\\', name: 'Removable Disk (F:)', label: '', kind: 'removable', free: 0, total: 0, ready: false },
   ],
 }
@@ -358,10 +387,10 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         // `?shared` starts with a drive already chosen, for looking at the
         // main screen without clicking through setup each time.
         if (previewFlag('shared') && !sample.status.vault) {
-          const drive = sample.drives[1]!
+          const drive = sample.drives.find((d) => d.label === 'Media Drive') ?? sample.drives[1]!
           sample.status.vault = {
             path: drive.path,
-            name: drive.name,
+            name: drive.label || drive.name,
             free: drive.free,
             total: drive.total,
             available: true,
@@ -510,7 +539,8 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
 }
 
 /** The version the preview claims to be. */
-const MOCK_VERSION = '1.0.0'
+/** The version the preview claims to be: this build's own. */
+const MOCK_VERSION: string = packageInfo.version
 
 /**
  * `?update` in the preview offers one.
@@ -520,7 +550,7 @@ const MOCK_VERSION = '1.0.0'
  * a release — which is a poor moment to discover the notes do not fit.
  */
 const MOCK_RELEASE: Release = {
-  version: '1.1.0',
+  version: '9.9.0',
   notes: [
     '## New',
     '',
@@ -531,11 +561,11 @@ const MOCK_RELEASE: Release = {
     '',
     '* A scan no longer stalls on a folder the drive refuses to list.',
   ].join('\n'),
-  pageUrl: 'https://example.test/releases/v1.1.0',
-  installerName: 'Basalt-Host-1.1.0-setup.exe',
-  installerUrl: 'https://example.test/Basalt-Host-1.1.0-setup.exe',
+  pageUrl: 'https://example.test/releases/v9.9.0',
+  installerName: 'Basalt-Host-9.9.0-setup.exe',
+  installerUrl: 'https://example.test/Basalt-Host-9.9.0-setup.exe',
   installerBytes: 5_200_000,
-  checksumUrl: 'https://example.test/Basalt-Host-1.1.0-setup.exe.sha256',
+  checksumUrl: 'https://example.test/Basalt-Host-9.9.0-setup.exe.sha256',
 }
 
 function previewFlag(name: string): boolean {

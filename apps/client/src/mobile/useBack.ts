@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { android } from '@/lib/android'
-import { isAndroid } from '@/lib/platform'
+import { isAndroid, isMobileShell } from '@/lib/platform'
 
 /**
  * Android's back gesture, handled the way a phone user expects.
@@ -20,7 +20,20 @@ let nextId = 0
 let listening = false
 
 async function listen(): Promise<void> {
-  if (listening || !isAndroid()) return
+  if (listening) return
+  if (!isAndroid()) {
+    // The browser preview of the phone app has no back button: Escape is
+    // back there, so the same screens can be walked through at a desk.
+    if (!isMobileShell()) return
+    listening = true
+    window.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return
+      for (let i = stack.length - 1; i >= 0; i--) {
+        if (stack[i]!.handler.current()) return
+      }
+    })
+    return
+  }
   listening = true
   const { onBackButtonPress } = await import('@tauri-apps/api/app')
   await onBackButtonPress(() => {

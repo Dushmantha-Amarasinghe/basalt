@@ -11,7 +11,9 @@
  * UI can branch on `kind` instead of matching on prose.
  */
 
+import packageInfo from '../../package.json'
 import type { Entry } from '@/components/FileList'
+import * as showcase from './showcase'
 import { generateEntries } from './mockData'
 
 export interface DirEntry {
@@ -551,13 +553,17 @@ export function parentOf(path: string): string {
  */
 const MOCK_STATUS: Status = {
   connected: true,
-  hostId: 'demo0000',
-  hostName: 'Demo Host',
-  vault: 'Vault',
+  hostId: '5c1e8d2a9b7f4e03',
+  hostName: showcase.HOST.name,
+  vault: showcase.HOST.vault,
   writable: true,
   address: '127.0.0.1:7742',
   hasPaired: true,
-  deviceName: 'Browser',
+  // A name from the showcase household, as the videos show it.
+  deviceName:
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('mobile')
+      ? "Maya's phone"
+      : "Maya's laptop",
 }
 
 /**
@@ -580,7 +586,8 @@ function previewFlag(name: string): boolean {
 }
 
 /** The version the preview claims to be. */
-const MOCK_VERSION = '1.0.0'
+/** The version the preview claims to be: this build's own. */
+const MOCK_VERSION: string = packageInfo.version
 
 /**
  * `?update` in the preview offers one, for the same reason as `?unpaired`.
@@ -590,7 +597,7 @@ const MOCK_VERSION = '1.0.0'
  * a release — which is a poor moment to discover the notes do not fit.
  */
 const MOCK_RELEASE: Release = {
-  version: '1.1.0',
+  version: '9.9.0',
   notes: [
     '## New',
     '',
@@ -601,11 +608,11 @@ const MOCK_RELEASE: Release = {
     '',
     '* Seeking in a file still being written no longer stalls the player.',
   ].join('\n'),
-  pageUrl: 'https://example.test/releases/v1.1.0',
-  installerName: 'Basalt-Client-1.1.0-setup.exe',
-  installerUrl: 'https://example.test/Basalt-Client-1.1.0-setup.exe',
+  pageUrl: 'https://example.test/releases/v9.9.0',
+  installerName: 'Basalt-Client-9.9.0-setup.exe',
+  installerUrl: 'https://example.test/Basalt-Client-9.9.0-setup.exe',
   installerBytes: 35_600_000,
-  checksumUrl: 'https://example.test/Basalt-Client-1.1.0-setup.exe.sha256',
+  checksumUrl: 'https://example.test/Basalt-Client-9.9.0-setup.exe.sha256',
 }
 
 /**
@@ -617,8 +624,8 @@ const MOCK_RELEASE: Release = {
  */
 const MOCK_HOSTS: DiscoveredHost[] = [
   {
-    hostId: 'known111aa11bb22cc33dd44ee55ff66',
-    hostName: 'ATTIC-PC',
+    hostId: 'a83f0c6d21e94b7a5f1c2d3e4b5a6978',
+    hostName: 'STUDY-LAPTOP',
     vault: 'Backups',
     address: '192.168.1.42:7742',
     requiresPin: false,
@@ -626,17 +633,17 @@ const MOCK_HOSTS: DiscoveredHost[] = [
     paired: true,
   },
   {
-    hostId: 'demo0000aa11bb22cc33dd44ee55ff66',
-    hostName: 'STUDY-LAPTOP',
-    vault: 'Films',
+    hostId: '5c1e8d2a9b7f4e03c6a1f2e3d4c5b6a7',
+    hostName: showcase.HOST.name,
+    vault: showcase.HOST.vault,
     address: '192.168.1.90:7742',
     requiresPin: true,
     hasVault: true,
     paired: false,
   },
   {
-    hostId: 'empty222aa11bb22cc33dd44ee55ff66',
-    hostName: 'DESKTOP-4F2A',
+    hostId: 'e27b94f0c3a15d68e9f0a1b2c3d4e5f6',
+    hostName: 'OFFICE-PC',
     vault: 'Vault',
     address: '192.168.1.17:7742',
     requiresPin: true,
@@ -645,130 +652,11 @@ const MOCK_HOSTS: DiscoveredHost[] = [
   },
 ]
 
-/** A small library, covering both kinds and an uncertain match. */
-const MOCK_LIBRARY: LibraryItem[] = [
-  {
-    id: 'f1',
-    kind: 'film',
-    title: 'Arrival',
-    year: 2016,
-    path: 'Films/Arrival (2016)/Arrival.2016.2160p.mkv',
-    resolution: { width: 3840, height: 2160 },
-    size: 24 * 1024 ** 3,
-    added: Math.floor(Date.now() / 1000) - 86_400 * 3,
-    seasons: [],
-    confidence: 95,
-    hasArt: false,
-  },
-  {
-    id: 'f2',
-    kind: 'film',
-    title: 'Blade Runner 2049',
-    year: 2017,
-    path: 'Films/Blade Runner 2049 (2017).mkv',
-    resolution: { width: 1920, height: 800 },
-    size: 31 * 1024 ** 3,
-    added: Math.floor(Date.now() / 1000) - 86_400 * 30,
-    seasons: [],
-    confidence: 92,
-    hasArt: false,
-  },
-  {
-    id: 'f3',
-    kind: 'film',
-    title: 'Holiday Footage',
-    year: null,
-    path: 'Films/Holiday Footage.mkv',
-    size: 2 * 1024 ** 3,
-    added: Math.floor(Date.now() / 1000) - 86_400 * 200,
-    seasons: [],
-    confidence: 55,
-    hasArt: false,
-  },
-  {
-    id: 's1',
-    kind: 'series',
-    title: 'Breaking Bad',
-    year: 2008,
-    path: null,
-    size: 180 * 1024 ** 3,
-    added: Math.floor(Date.now() / 1000) - 86_400 * 12,
-    seasons: [
-      {
-        number: 1,
-        episodes: Array.from({ length: 7 }, (_, i) => ({
-          number: i + 1,
-          path: `Shows/Breaking Bad/Season 01/S01E0${i + 1}.mkv`,
-          resolution: { width: 1920, height: 1080 },
-          title: null,
-          size: 3 * 1024 ** 3,
-          added: Math.floor(Date.now() / 1000) - 86_400 * 12,
-        })),
-      },
-      {
-        number: 2,
-        episodes: Array.from({ length: 13 }, (_, i) => ({
-          number: i + 1,
-          path: `Shows/Breaking Bad/Season 02/S02E${String(i + 1).padStart(2, '0')}.mkv`,
-          resolution: { width: 1920, height: 1080 },
-          title: null,
-          size: 3 * 1024 ** 3,
-          added: Math.floor(Date.now() / 1000) - 86_400 * 11,
-        })),
-      },
-    ],
-    confidence: 95,
-    hasArt: false,
-  },
-  {
-    id: 's2',
-    kind: 'series',
-    title: 'The Wire',
-    year: 2002,
-    path: null,
-    size: 90 * 1024 ** 3,
-    added: Math.floor(Date.now() / 1000) - 86_400 * 60,
-    seasons: [
-      {
-        number: 1,
-        episodes: Array.from({ length: 13 }, (_, i) => ({
-          number: i + 1,
-          path: `Shows/The Wire/Season 01/S01E${String(i + 1).padStart(2, '0')}.mkv`,
-          resolution: { width: 1920, height: 1080 },
-          title: null,
-          size: 2 * 1024 ** 3,
-          added: Math.floor(Date.now() / 1000) - 86_400 * 60,
-        })),
-      },
-    ],
-    confidence: 95,
-    hasArt: false,
-  },
-]
+/** The showcase library: invented films and series. See `showcase.ts`. */
+const MOCK_LIBRARY: LibraryItem[] = showcase.library()
 
-/** Two things part-watched, so Continue watching has something to draw. */
-const mockWatched = new Map<string, Watched>([
-  [
-    'Films/Blade Runner 2049 (2017).mkv',
-    {
-      path: 'Films/Blade Runner 2049 (2017).mkv',
-      fraction: 0.42,
-      position: 4_200,
-      duration: 9_780,
-      updatedAt: Math.floor(Date.now() / 1000) - 3_600,
-    },
-  ],
-  [
-    'Shows/Breaking Bad/Season 01/S01E03.mkv',
-    {
-      path: 'Shows/Breaking Bad/Season 01/S01E03.mkv',
-      fraction: 0.71,
-      position: 2_130,
-      duration: 3_000,
-      updatedAt: Math.floor(Date.now() / 1000) - 600,
-    },
-  ],
-])
+/** Some things part-watched, so Continue watching has something to draw. */
+const mockWatched = new Map<string, Watched>(showcase.watching().map((w) => [w.path, w]))
 
 let mockEntries: Entry[] | null = null
 
@@ -837,9 +725,10 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return [...mockWatched.values()].sort((a, b) => b.updatedAt - a.updatedAt) as T
     }
     case 'library_art':
-      // No sample artwork: the preview shows the generated posters, which is
-      // also what anyone without a TMDb key sees.
-      return null as T
+      // Artwork only when the preview was pointed at some with `?assets`.
+      // Without, it draws posters from the title, as a host with no poster
+      // source does.
+      return showcase.posterUrl(String(args?.id ?? '')) as T
     case 'library':
       return {
         revision: 1,
@@ -852,8 +741,10 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     case 'space':
       return [1_842_000_000_000, 4_000_000_000_000] as T
     case 'list_dir': {
-      // One large generated listing at the root, so the virtualised list and
-      // the sort menu are exercised exactly as they are against a real drive.
+      // The showcase drive, folder by folder. `?many` gives the root a
+      // hundred thousand generated entries instead, so the virtualised list
+      // and the sort menu can be exercised as against a large real drive.
+      if (!previewFlag('many')) return showcase.listFolder((args?.path as string) ?? '') as T
       if (!mockEntries) mockEntries = generateEntries(100_000)
       const path = (args?.path as string) ?? ''
       const entries: DirEntry[] = (path ? mockEntries.slice(0, 40) : mockEntries).map(
@@ -869,6 +760,8 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     }
     case 'stat_entry': {
       const path = (args?.path as string) ?? ''
+      const known = showcase.statFile(path)
+      if (known) return known as T
       const name = path.split('/').pop() ?? path
       return {
         name,
@@ -885,7 +778,9 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     case 'external_player':
       return 'VLC' as T
     case 'media_url':
-      return '' as T
+      // Something to open, so the player goes ahead; the preview's player
+      // shows the showcase's footage for it. See `useMpv`.
+      return `showcase:${String(args?.path ?? '')}` as T
     case 'media_base':
       // No thumbnails in the browser preview: tiles show their placeholder,
       // which is what a host without pictures looks like too.
@@ -936,7 +831,7 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return {
         revision: 1,
         scanning: false,
-        collections: args?.knownRevision === 1 ? null : mockCollections(),
+        collections: args?.knownRevision === 1 ? null : showcase.collections(),
       } as T
     case 'make_dir':
     case 'rename_entry':
@@ -947,44 +842,11 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
   }
 }
 
-/** A small spread of every kind, so each section has something to show. */
-function mockCollections(): Collections {
-  const now = Math.floor(Date.now() / 1000)
-  const day = 86_400
-  const photos: MediaFile[] = Array.from({ length: 48 }, (_, i) => {
-    const portrait = i % 3 === 1
-    const square = i % 7 === 0
-    return {
-      path: `Photos/${2026 - Math.floor(i / 20)}/Trip/IMG_${String(4100 + i).padStart(4, '0')}.jpg`,
-      size: 2_400_000 + i * 31_000,
-      mtime: now - i * day * 4,
-      width: square ? 3000 : portrait ? 3000 : 4000,
-      height: square ? 3000 : portrait ? 4000 : 3000,
-    }
-  })
-  const videos: MediaFile[] = Array.from({ length: 14 }, (_, i) => ({
-    path: `Home Videos/Clip ${String(i + 1).padStart(2, '0')}.mp4`,
-    size: 180_000_000 + i * 9_000_000,
-    mtime: now - i * day * 6,
-  }))
-  const music: MediaFile[] = Array.from({ length: 24 }, (_, i) => ({
-    path: `Music/The Quiet Coast/Harbour Lights/${String(i + 1).padStart(2, '0')} Track ${i + 1}.flac`,
-    size: 28_000_000 + i * 400_000,
-    mtime: now - i * day,
-  }))
-  const recent = [...photos.slice(0, 6), ...videos.slice(0, 4), ...music.slice(0, 4)].sort(
-    (a, b) => b.mtime - a.mtime,
-  )
-  return { videos, music, photos, recent, truncated: false }
-}
-
-// Preview profiles. The PIN for both is 1234; Sam's was reset, so signing in
-// as Sam chooses a new one. `?device` opens as the device, skipping the choice.
-const mockProfiles: ProfileView[] = [
-  { id: 'p1', name: 'Maya', color: 0, hasPin: true, lastUsed: 0 },
-  { id: 'p2', name: 'Sam', color: 4, hasPin: false, lastUsed: 0 },
-]
-const mockPins = new Map<string, string>([['p1', '1234']])
+// Preview profiles, from the showcase. Maya's PIN is 1234; Sam and Leo have
+// none yet, so signing in as either chooses one. `?device` opens as the
+// device, skipping the choice.
+const mockProfiles: ProfileView[] = showcase.profiles()
+const mockPins = showcase.pins()
 let mockProfileStars: Star[] = []
 let mockIdentity: IdentityState = {
   profile: null,

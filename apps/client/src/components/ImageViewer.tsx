@@ -599,7 +599,9 @@ function Filmstrip({
               selected ? 'opacity-100 ring-2 ring-white/80' : 'opacity-50 hover:opacity-90',
             )}
           >
-            {base && (
+            {/* Whenever there is a picture to show: from the host, or in the
+                browser preview from the showcase. */}
+            {thumbUrl(base, p.path, p.mtime, GRID_THUMB) && (
               <img
                 src={thumbUrl(base, p.path, p.mtime, GRID_THUMB)}
                 alt=""

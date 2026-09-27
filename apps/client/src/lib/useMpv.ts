@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as mpv from './mpvBackend'
 import { inTauri } from './api'
+import { usePreviewMpv } from './previewMpv'
 
 /**
  * The player, which is mpv rendering behind the window.
@@ -332,7 +333,17 @@ export interface Mpv extends MpvState {
   setSubtitleMargin: (pixels: number) => Promise<void>
 }
 
+/**
+ * The player: mpv inside the app, and a stand-in with its own clock in the
+ * browser preview (see `previewMpv.ts`). Which one is fixed for the life of
+ * the page, so the same hook runs on every render.
+ */
 export function useMpv(): Mpv {
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  return inTauri() ? useAppMpv() : usePreviewMpv()
+}
+
+function useAppMpv(): Mpv {
   const [state, setState] = useState<MpvState>(EMPTY)
   const started = useRef(false)
   const loaded = useRef(false)

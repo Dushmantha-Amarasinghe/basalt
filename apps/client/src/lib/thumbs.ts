@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from './api'
+import * as showcase from './showcase'
 
 /** The long side of a grid thumbnail. Mirrors the host. */
 export const GRID_THUMB = 320
@@ -35,6 +36,7 @@ export function useMediaBase(connected: boolean): string {
 
 /** The file itself, as a URL an `<img>` or the player can open. */
 export function fileUrl(base: string, path: string): string {
+  if (!base && showcase.showcaseAssets()) return showcase.photoFor(path)
   return base ? `${base}${encodeURIComponent(path)}` : ''
 }
 
@@ -46,6 +48,10 @@ export function fileUrl(base: string, path: string): string {
  * its old picture for that long.
  */
 export function thumbUrl(base: string, path: string, mtime: number, size = GRID_THUMB): string {
+  // The browser preview, given showcase pictures: see `showcase.ts`.
+  if (!base && showcase.showcaseAssets()) {
+    return size > GRID_THUMB ? showcase.photoFor(path) : showcase.thumbFor(path)
+  }
   return base ? `${base}${encodeURIComponent(path)}?thumb=${size}&v=${mtime}` : ''
 }
 

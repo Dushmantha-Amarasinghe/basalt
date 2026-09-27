@@ -1,0 +1,86 @@
+{
+  "_about": "The browser preview's library, and the one in Basalt's videos and screenshots. Every title, name and track here is invented; the pictures are drawn by marketing/art.py.",
+  "host": { "name": "LIVING-ROOM-PC", "vault": "Media Drive" },
+  "films": [
+    { "id": "f1", "title": "Column Zero", "year": 2025, "res": [3840, 1600], "size": 38, "scene": "planet", "seed": 11, "tagline": "The last signal came from the edge." },
+    { "id": "f2", "title": "The Lantern Road", "year": 2024, "res": [1920, 1080], "size": 14, "scene": "autumn", "seed": 22, "tagline": "Every light leads somewhere." },
+    { "id": "f3", "title": "Kestrel Point", "year": 2023, "res": [3840, 2160], "size": 31, "scene": "lighthouse", "seed": 33, "tagline": "The tide keeps its secrets." },
+    { "id": "f4", "title": "Nine Winters", "year": 2022, "res": [1920, 1080], "size": 12, "scene": "night", "seed": 44, "tagline": "Some roads only open in the cold." },
+    { "id": "f5", "title": "Paper Kites", "year": 2025, "res": [1920, 1080], "size": 9, "scene": "blue", "seed": 55, "tagline": "A summer that never let go." },
+    { "id": "f6", "title": "Saltwater Radio", "year": 2021, "res": [3840, 2160], "size": 27, "scene": "golden", "seed": 66, "tagline": "Broadcasting from the end of the pier." },
+    { "id": "f7", "title": "Low Orbit", "year": 2024, "res": [3840, 1600], "size": 35, "scene": "aurora", "seed": 77, "tagline": "Four hundred kilometres from home." },
+    { "id": "f8", "title": "Ember & Iron", "year": 2023, "res": [1920, 800], "size": 16, "scene": "sunset", "seed": 88, "tagline": "Forged in the valley of fire." },
+    { "id": "f9", "title": "The Glass Dunes", "year": 2025, "res": [3840, 2160], "size": 33, "scene": "dunes", "seed": 99, "tagline": "Nothing out here stays buried." },
+    { "id": "f10", "title": "Afterlight City", "year": 2022, "res": [1920, 1080], "size": 13, "scene": "city", "seed": 110, "tagline": "The night shift never ends." }
+  ],
+  "series": [
+    {
+      "id": "s1", "title": "Signal House", "year": 2023, "scene": "dusk", "seed": 121, "tagline": "Someone is still transmitting.",
+      "seasons": [
+        { "number": 1, "episodes": ["The Keeper", "Low Water", "Static", "The Other Shore", "Fog Bell", "Night Watch", "Undertow", "First Light"] },
+        { "number": 2, "episodes": ["Return", "Old Frequencies", "The Wreck", "Salt in the Wires", "Beacon", "What the Sea Kept", "Crossing", "Signal"] }
+      ]
+    },
+    {
+      "id": "s2", "title": "The Night Ferry", "year": 2022, "scene": "misty", "seed": 132, "tagline": "One crossing. No return ticket.",
+      "seasons": [
+        { "number": 1, "episodes": ["Departure", "Cabin Nine", "The Passenger List", "Dead Calm", "Harbour Lights Out", "Arrival"] }
+      ]
+    },
+    {
+      "id": "s3", "title": "Copperline", "year": 2024, "scene": "alpine", "seed": 143, "tagline": "The mountain remembers.",
+      "seasons": [
+        { "number": 1, "episodes": ["Claim", "Deep Seam", "Cave-In", "Assay", "The Surveyor", "Winter Road", "Blasting Day", "Ore", "The Company", "Copperline"] }
+      ]
+    },
+    {
+      "id": "s4", "title": "Greenwood Hall", "year": 2021, "scene": "forest", "seed": 154, "tagline": "Every family has a garden to tend.",
+      "seasons": [
+        { "number": 1, "episodes": ["Spring", "The Orchard", "Guests", "Midsummer", "The Harvest", "First Frost"] },
+        { "number": 2, "episodes": ["Thaw", "The Glasshouse", "Letters", "Storm", "Boundaries", "Homecoming"] }
+      ]
+    }
+  ],
+  "watching": [
+    { "film": "f1", "fraction": 0.42, "minutesAgo": 50 },
+    { "series": "s1", "season": 2, "episode": 4, "fraction": 0.35, "minutesAgo": 12 },
+    { "film": "f7", "fraction": 0.71, "minutesAgo": 1500 }
+  ],
+  "photos": [
+    { "dir": "Photos/2026/Coast Trip", "scenes": ["golden", "blue", "dusk", "lighthouse", "golden", "blue"], "day": 3 },
+    { "dir": "Photos/2026/Mountains", "scenes": ["alpine", "misty", "sunset", "alpine", "night", "misty", "autumn"], "day": 21 },
+    { "dir": "Photos/2026/City Break", "scenes": ["city", "city", "dusk", "sunset"], "day": 48 },
+    { "dir": "Photos/2025/Desert", "scenes": ["dunes", "dunes", "golden", "sunset", "dunes"], "day": 130 },
+    { "dir": "Photos/2025/Night Sky", "scenes": ["aurora", "night", "aurora", "planet", "night"], "day": 170 },
+    { "dir": "Photos/2025/Forest Walk", "scenes": ["forest", "misty", "forest", "autumn", "forest"], "day": 220 }
+  ],
+  "videos": [
+    { "path": "Home Videos/Beach day.mp4", "scene": "blue", "size": 412, "day": 4 },
+    { "path": "Home Videos/Sunset from the pier.mp4", "scene": "golden", "size": 188, "day": 5 },
+    { "path": "Home Videos/Summit.mp4", "scene": "alpine", "size": 640, "day": 22 },
+    { "path": "Home Videos/Northern lights.mp4", "scene": "aurora", "size": 355, "day": 171 },
+    { "path": "Home Videos/Dune run.mp4", "scene": "dunes", "size": 290, "day": 131 },
+    { "path": "Home Videos/Rooftop at dusk.mp4", "scene": "city", "size": 205, "day": 49 },
+    { "path": "Home Videos/Forest trail.mp4", "scene": "forest", "size": 520, "day": 221 },
+    { "path": "Home Videos/Ferry crossing.mp4", "scene": "misty", "size": 310, "day": 260 }
+  ],
+  "music": [
+    { "artist": "Juniper Vale", "album": "Lowlight", "day": 9, "tracks": ["Slow Tide", "Lanterns", "Harbour Wall", "Paper Moon", "Driftwood", "Quiet Hours", "Northern Line", "Afterglow", "Home Before Dark", "Lowlight"] },
+    { "artist": "The Quiet Coast", "album": "Northern Hours", "day": 40, "tracks": ["First Frost", "Radio Silence", "Kestrel", "Long Way Round", "Glasswater", "The Keeper's Song", "Evening Star", "Last Ferry"] },
+    { "artist": "Mira Solen", "album": "Soft Machines", "day": 75, "tracks": ["Circuit", "Weightless", "Blue Hour", "Parallel", "Satellite Heart", "Afterimage"] }
+  ],
+  "files": [
+    { "path": "Documents/Holiday plan.docx", "size": 0.04, "day": 6 },
+    { "path": "Documents/Recipes.pdf", "size": 2.1, "day": 33 },
+    { "path": "Documents/Car insurance 2026.pdf", "size": 0.8, "day": 61 },
+    { "path": "Documents/Garden layout.png", "size": 1.4, "day": 90 },
+    { "path": "Backups/Laptop backup 2026-09.zip", "size": 42000, "day": 2 },
+    { "path": "Backups/Phone photos 2026-08.zip", "size": 18400, "day": 30 },
+    { "path": "Welcome.txt", "size": 0.002, "day": 400 }
+  ],
+  "profiles": [
+    { "id": "p1", "name": "Maya", "color": 0, "pin": "1234" },
+    { "id": "p2", "name": "Sam", "color": 4, "pin": "" },
+    { "id": "p3", "name": "Leo", "color": 2, "pin": "" }
+  ]
+}
