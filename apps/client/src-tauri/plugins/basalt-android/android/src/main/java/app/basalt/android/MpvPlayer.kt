@@ -60,6 +60,9 @@ class MpvPlayer(
     MPVLib.setOptionString("cache", "yes")
     MPVLib.setOptionString("demuxer-max-bytes", "96MiB")
     MPVLib.setOptionString("demuxer-max-back-bytes", "32MiB")
+    // Never a window of its own for sound alone: an empty one reports a
+    // picture size, and music was taken for a film and turned sideways. The
+    // page draws the black stage music plays on.
     MPVLib.setOptionString("force-window", "no")
     MPVLib.setOptionString("idle", "yes")
     MPVLib.init()
@@ -101,7 +104,6 @@ class MpvPlayer(
 
   override fun surfaceCreated(holder: SurfaceHolder) {
     MPVLib.attachSurface(holder.surface)
-    MPVLib.setOptionString("force-window", "yes")
     MPVLib.setPropertyString("vo", "gpu")
   }
 
@@ -110,9 +112,9 @@ class MpvPlayer(
   }
 
   override fun surfaceDestroyed(holder: SurfaceHolder) {
-    // In this order, or mpv is left drawing into a surface that is gone.
+    // In this order, or mpv is left drawing into a surface that is gone. The
+    // sound carries on: music with the screen off, or the app in the back.
     MPVLib.setPropertyString("vo", "null")
-    MPVLib.setOptionString("force-window", "no")
     MPVLib.detachSurface()
   }
 

@@ -1105,7 +1105,7 @@ export function PlayerOverlay({
               <SeekButton direction={-1} onClick={() => void mpv.seekBy(-10)} />
               <SeekButton direction={1} onClick={() => void mpv.seekBy(10)} />
 
-              <span className="tnum ml-2 font-mono text-[11px] text-textDim">
+              <span className="tnum ml-2 whitespace-nowrap font-mono text-[11px] text-textDim">
                 {formatDuration(mpv.position)}
                 <span className="text-textFaint"> / {formatDuration(mpv.duration)}</span>
               </span>
@@ -1118,6 +1118,8 @@ export function PlayerOverlay({
                 title="Subtitles"
                 className={cn(
                   'flex h-8 items-center gap-1.5 rounded-md px-2 text-[11px] transition-colors',
+                  // Nothing to read along to on a phone playing music.
+                  TOUCH && !mpv.picture && 'hidden',
                   mpv.subtitleId !== null
                     ? 'bg-white/[0.08] text-text'
                     : 'text-textDim hover:bg-white/[0.06] hover:text-text',
@@ -1155,11 +1157,13 @@ export function PlayerOverlay({
                   className="h-1 w-0 cursor-pointer appearance-none rounded-full bg-white/[0.14] opacity-0 transition-all duration-200 accent-basalt group-hover/vol:w-20 group-hover/vol:opacity-100"
                 />
               </div>
-              <ControlButton
-                icon={TOUCH && turned === 'landscape' ? Minimize2 : Maximize2}
-                label={TOUCH ? 'Turn the picture' : 'Fullscreen (f)'}
-                onClick={fullscreen}
-              />
+              {(!TOUCH || mpv.picture) && (
+                <ControlButton
+                  icon={TOUCH && turned === 'landscape' ? Minimize2 : Maximize2}
+                  label={TOUCH ? 'Turn the picture' : 'Fullscreen (f)'}
+                  onClick={fullscreen}
+                />
+              )}
             </div>
           </motion.div>
         </motion.div>
