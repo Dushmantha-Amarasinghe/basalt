@@ -33,6 +33,7 @@ import { MusicList, PhotoGrid, VideoGrid } from '@/components/MediaViews'
 import { PlayerOverlay } from '@/components/PlayerOverlay'
 import { ImageViewer } from '@/components/ImageViewer'
 import { PromptDialog } from '@/components/ui/PromptDialog'
+import { PropertiesDetails } from '@/components/PropertiesPanel'
 import { About } from '@/components/About'
 import type { NavKey } from '@/components/Sidebar'
 import type { Entry } from '@/components/FileList'
@@ -435,6 +436,24 @@ function Shell({ model }: { model: AppModel }): React.JSX.Element {
         }}
       />
       <BackCloses open={viewer !== null} onBack={() => model.setViewer(null)} />
+
+      {/* What the menu's Properties shows: the same details as the desktop's
+          side panel, in a sheet. */}
+      <Sheet
+        open={model.properties !== null}
+        onClose={() => model.setProperties(null)}
+        title="Properties"
+      >
+        {model.properties && (
+          <div className="px-5 pb-4 pt-2">
+            <PropertiesDetails
+              entry={model.properties}
+              vaultName={model.vault.status?.vault ?? 'the drive'}
+              large
+            />
+          </div>
+        )}
+      </Sheet>
 
       <PromptDialog request={model.prompt} onClose={() => model.setPrompt(null)} />
       {model.confirmDialog}

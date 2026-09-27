@@ -4,7 +4,7 @@ import { X } from 'lucide-react'
 import type { Entry } from './FileList'
 import { iconFor } from './FileList'
 import { api, parentOf } from '@/lib/api'
-import { formatBytes, formatDate } from '@/lib/utils'
+import { cn, formatBytes, formatDate } from '@/lib/utils'
 
 /**
  * What a file actually is.
@@ -23,6 +23,59 @@ export function PropertiesPanel({
   vaultName: string
   onClose: () => void
 }): React.JSX.Element {
+  useEffect(() => {
+    if (!entry) return undefined
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [entry, onClose])
+
+  return (
+    <AnimatePresence>
+      {entry && (
+        <motion.aside
+          initial={{ x: 320, opacity: 0 }}
+          animate={{ x: 0, opacity: 1 }}
+          exit={{ x: 320, opacity: 0 }}
+          transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+          className="fixed bottom-0 right-0 top-9 z-[60] flex w-[300px] flex-col border-l border-line bg-panel shadow-lift"
+        >
+          <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-4">
+            <span className="text-[12px] font-semibold text-text">Properties</span>
+            <div className="flex-1" />
+            <button
+              onClick={onClose}
+              aria-label="Close properties"
+              className="flex h-7 w-7 items-center justify-center rounded text-textFaint transition-colors hover:bg-white/[0.06] hover:text-text"
+            >
+              <X size={14} />
+            </button>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+            <PropertiesDetails entry={entry} vaultName={vaultName} />
+          </div>
+        </motion.aside>
+      )}
+    </AnimatePresence>
+  )
+}
+
+/**
+ * The properties themselves, for the desktop's side panel and the phone's
+ * sheet alike. `large` sets them at a size for reading on a phone.
+ */
+export function PropertiesDetails({
+  entry,
+  vaultName,
+  large,
+}: {
+  entry: Entry
+  vaultName: string
+  large?: boolean
+}): React.JSX.Element {
   const [size, setSize] = useState<number | null>(null)
   const [modified, setModified] = useState<number | null>(null)
   const [contents, setContents] = useState<{ files: number; folders: number } | null>(
@@ -31,7 +84,6 @@ export function PropertiesPanel({
   const [readonly, setReadonly] = useState(false)
 
   useEffect(() => {
-    if (!entry) return
     let cancelled = false
     setSize(null)
     setModified(null)
@@ -74,90 +126,69 @@ export function PropertiesPanel({
     }
   }, [entry])
 
-  useEffect(() => {
-    if (!entry) return undefined
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [entry, onClose])
-
-  const Icon = entry ? iconFor(entry) : null
-  const folder = entry ? parentOf(entry.id) : ''
+  const Icon = iconFor(entry)
+  const folder = parentOf(entry.id)
 
   return (
-    <AnimatePresence>
-      {entry && (
-        <motion.aside
-          initial={{ x: 320, opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
-          exit={{ x: 320, opacity: 0 }}
-          transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
-          className="fixed bottom-0 right-0 top-9 z-[60] flex w-[300px] flex-col border-l border-line bg-panel shadow-lift"
+    <>
+      <div className="flex flex-col items-center text-center">
+        <Icon
+          size={large ? 48 : 40}
+          strokeWidth={1.2}
+          className={entry.kind === 'dir' ? 'text-basaltDeep' : 'text-textFaint'}
+        />
+        <p
+          className={cn(
+            'mt-3 break-all font-medium text-text',
+            large ? 'text-[16px]' : 'text-[13px]',
+          )}
         >
-          <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-4">
-            <span className="text-[12px] font-semibold text-text">Properties</span>
-            <div className="flex-1" />
-            <button
-              onClick={onClose}
-              aria-label="Close properties"
-              className="flex h-7 w-7 items-center justify-center rounded text-textFaint transition-colors hover:bg-white/[0.06] hover:text-text"
-            >
-              <X size={14} />
-            </button>
-          </div>
+          {entry.name}
+        </p>
+      </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-            <div className="flex flex-col items-center text-center">
-              {Icon && (
-                <Icon
-                  size={40}
-                  strokeWidth={1.2}
-                  className={
-                    entry.kind === 'dir' ? 'text-basaltDeep' : 'text-textFaint'
-                  }
-                />
-              )}
-              <p className="mt-3 break-all text-[13px] font-medium text-text">
-                {entry.name}
-              </p>
-            </div>
+      <div className="mt-5 space-y-px">
+        <Row label="Kind" value={describeKind(entry)} large={large} />
+        <Row
+          large={large}
+          label="Size"
+          value={
+            entry.kind === 'dir'
+              ? contents
+                ? `${contents.files} file${contents.files === 1 ? '' : 's'}, ${contents.folders} folder${contents.folders === 1 ? '' : 's'}`
+                : 'counting…'
+              : size === null
+                ? '…'
+                : `${formatBytes(size)} (${size.toLocaleString()} bytes)`
+          }
+        />
+        <Row
+          large={large}
+          label="Modified"
+          value={modified === null ? '…' : formatDate(modified)}
+        />
+        <Row
+          large={large}
+          label="Where"
+          value={folder ? `${vaultName}/${folder}` : vaultName}
+        />
+        <Row large={large} label="Full path" value={entry.id} mono />
+        {readonly && <Row large={large} label="Attributes" value="read-only" />}
+      </div>
 
-            <div className="mt-5 space-y-px">
-              <Row label="Kind" value={describeKind(entry)} />
-              <Row
-                label="Size"
-                value={
-                  entry.kind === 'dir'
-                    ? contents
-                      ? `${contents.files} file${contents.files === 1 ? '' : 's'}, ${contents.folders} folder${contents.folders === 1 ? '' : 's'}`
-                      : 'counting…'
-                    : size === null
-                      ? '…'
-                      : `${formatBytes(size)} (${size.toLocaleString()} bytes)`
-                }
-              />
-              <Row
-                label="Modified"
-                value={modified === null ? '…' : formatDate(modified)}
-              />
-              <Row label="Where" value={folder ? `${vaultName}/${folder}` : vaultName} />
-              <Row label="Full path" value={entry.id} mono />
-              {readonly && <Row label="Attributes" value="read-only" />}
-            </div>
-
-            {entry.kind === 'dir' && contents && (
-              <p className="mt-4 text-[11px] leading-relaxed text-textFaint">
-                Counts what is directly inside this folder. Adding up a whole
-                tree means walking every subfolder on the drive, which is not
-                something a panel should do while you wait.
-              </p>
-            )}
-          </div>
-        </motion.aside>
+      {entry.kind === 'dir' && contents && (
+        <p
+          className={cn(
+            'mt-4 leading-relaxed text-textFaint',
+            large ? 'text-[13px]' : 'text-[11px]',
+          )}
+        >
+          Counts what is directly inside this folder. Adding up a whole tree
+          means walking every subfolder on the drive, which is not something a
+          panel should do while you wait.
+        </p>
       )}
-    </AnimatePresence>
+    </>
   )
 }
 
@@ -172,20 +203,30 @@ function Row({
   label,
   value,
   mono,
+  large,
 }: {
   label: string
   value: string
   mono?: boolean
+  large?: boolean
 }): React.JSX.Element {
   return (
-    <div className="flex gap-3 rounded px-1 py-1.5">
-      <span className="w-[74px] shrink-0 text-[11px] text-textFaint">{label}</span>
+    <div className={cn('flex gap-3 rounded px-1', large ? 'py-2' : 'py-1.5')}>
       <span
-        className={
+        className={cn(
+          'shrink-0 text-textFaint',
+          large ? 'w-[92px] text-[13px]' : 'w-[74px] text-[11px]',
+        )}
+      >
+        {label}
+      </span>
+      <span
+        className={cn(
+          'min-w-0 flex-1',
           mono
-            ? 'min-w-0 flex-1 break-all font-mono text-[10px] text-textDim'
-            : 'min-w-0 flex-1 break-words text-[11px] text-text'
-        }
+            ? cn('break-all font-mono text-textDim', large ? 'text-[12px]' : 'text-[10px]')
+            : cn('break-words text-text', large ? 'text-[14px]' : 'text-[11px]'),
+        )}
       >
         {value}
       </span>
