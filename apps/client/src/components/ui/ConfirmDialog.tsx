@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AlertTriangle } from 'lucide-react'
+import { useBack } from '@/mobile/useBack'
 
 export interface ConfirmRequest {
   title: string
@@ -59,6 +60,12 @@ function Card({
   request: ConfirmRequest
   onSettle: (ok: boolean) => void
 }): React.JSX.Element {
+  // Android's back cancels, rather than going up a folder behind the dialog.
+  useBack(true, () => {
+    onSettle(false)
+    return true
+  })
+
   return (
     <motion.div
       role="alertdialog"

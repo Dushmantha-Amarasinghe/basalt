@@ -15,6 +15,7 @@ import { cn, formatBytes } from '@/lib/utils'
 import { Poster } from './Poster'
 import { subtitleBadge, subtitleTitle } from '@/lib/subtitles'
 import { ContinueWatching, resumable } from './ContinueWatching'
+import { useBack } from '@/mobile/useBack'
 
 /**
  * Films and series, as a wall of posters.
@@ -300,20 +301,35 @@ function SeriesSheet({
 }): React.JSX.Element {
   const [season, setSeason] = useState<LibrarySeason | undefined>(item.seasons[0])
 
+  // On a phone, back closes the series and shows the posters again, as the
+  // Back button does, rather than leaving the library for Files.
+  useBack(true, () => {
+    onClose()
+    return true
+  })
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.16 }}
-      className="fixed inset-0 z-50 bg-ink/95"
+      // Solid on a phone: at that size the library showing through behind
+      // the list reads as clutter, not depth.
+      className="fixed inset-0 z-50 bg-ink sm:bg-ink/95"
       onMouseDown={onClose}
     >
       <motion.div
         initial={{ y: 14 }}
         animate={{ y: 0 }}
         transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-        className="mx-auto flex h-full max-w-[760px] flex-col px-8 py-7"
+        className="mx-auto flex h-full max-w-[760px] flex-col px-8"
+        // Clear of the phone's status bar and gesture bar; both are zero on
+        // the desktop.
+        style={{
+          paddingTop: 'calc(var(--inset-top, 0px) + 28px)',
+          paddingBottom: 'calc(var(--inset-bottom, 0px) + 28px)',
+        }}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <button

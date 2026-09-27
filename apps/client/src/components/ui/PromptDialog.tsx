@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
+import { useBack } from '@/mobile/useBack'
 
 export interface PromptRequest {
   title: string
@@ -68,6 +69,12 @@ function Card({
   request: PromptRequest
   onClose: () => void
 }): React.JSX.Element {
+  // Android's back cancels, rather than going up a folder behind the dialog.
+  useBack(true, () => {
+    onClose()
+    return true
+  })
+
   const [value, setValue] = useState(request.value)
   const opened = useRef(false)
 
