@@ -179,3 +179,38 @@ body.player-open [data-player] * {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* The phone's sheets: moved by transform alone, which the compositor runs,
+   so the slide holds its rate whatever the page is doing. The curve is quick
+   off the mark and settles gently, the way a sheet is thrown and caught. */
+.sheet-slide {
+  transition: transform 300ms cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform;
+}
+.sheet-fade {
+  transition: opacity 220ms ease-out;
+  will-change: opacity;
+}
+.shadow-sheet {
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.35);
+}
+.rise {
+  transition:
+    transform 240ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 200ms ease-out;
+}
+
+/* On a phone, no blur behind anything. Android's WebView redraws a blurred
+   backdrop every frame something moves over it, which is the costliest thing
+   a page can ask of it, and at a phone's size the blur behind a button over a
+   film was barely visible. The see-through colours stay. The large soft
+   shadow is traded for a tighter one for the same reason. */
+html.mobile *,
+html.mobile *::before,
+html.mobile *::after {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+html.mobile .shadow-lift {
+  box-shadow: 0 8px 20px -8px rgba(0, 0, 0, 0.6);
+}

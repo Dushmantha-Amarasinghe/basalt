@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
 import {
   ArrowLeft,
   CheckSquare,
@@ -43,6 +42,7 @@ import { profileColor } from '@/lib/useIdentity'
 import { fileToEntry } from '@/lib/useCollections'
 import { cn, formatBytes } from '@/lib/utils'
 import { FilesScreen } from './FilesScreen'
+import { Rise } from './presence'
 import { ActionSheet, Sheet } from './Sheet'
 import { useBack } from './useBack'
 
@@ -367,13 +367,11 @@ function Shell({ model }: { model: AppModel }): React.JSX.Element {
           )}
         </main>
 
-        <AnimatePresence>
-          {tab === 'files' && actions.clipboard && !selecting && (
-            <PasteBar model={model} key="paste" />
-          )}
-          {shared.length > 0 && (
+        <Rise show={tab === 'files' && actions.clipboard !== null && !selecting}>
+          <PasteBar model={model} />
+        </Rise>
+        <Rise show={shared.length > 0}>
             <SharedBar
-              key="shared"
               files={shared}
               into={vault.dir}
               vaultName={vault.status?.vault ?? 'the drive'}
@@ -386,30 +384,23 @@ function Shell({ model }: { model: AppModel }): React.JSX.Element {
               }}
               onDismiss={() => setShared([])}
             />
-          )}
-          {active.length > 0 && (
-            <TransferStrip key="strip" model={model} onOpen={() => setTransfersOpen(true)} />
-          )}
-        </AnimatePresence>
+        </Rise>
+        <Rise show={active.length > 0}>
+          <TransferStrip model={model} onOpen={() => setTransfersOpen(true)} />
+        </Rise>
 
         {!wide && <BottomNav tab={tab} onTab={goTo} activeTransfers={active.length} />}
         {wide && <div style={{ height: 'var(--inset-bottom, 0px)' }} className="shrink-0" />}
       </div>
 
-      <AnimatePresence>
-        {notice && (
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 12 }}
-            onClick={() => setNotice(null)}
-            className="fixed inset-x-4 z-[70] mx-auto max-w-[480px] rounded-xl border border-white/[0.1] bg-[#1c1c1f] px-4 py-3 text-[13.5px] leading-snug text-text shadow-lift"
-            style={{ bottom: `calc(var(--inset-bottom, 0px) + ${wide ? 20 : 84}px)` }}
-          >
-            {notice}
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <Rise
+        show={notice !== null}
+        onClick={() => setNotice(null)}
+        className="fixed inset-x-4 z-[70] mx-auto max-w-[480px] rounded-xl border border-white/[0.1] bg-[#1c1c1f] px-4 py-3 text-[13.5px] leading-snug text-text shadow-lift"
+        style={{ bottom: `calc(var(--inset-bottom, 0px) + ${wide ? 20 : 84}px)` }}
+      >
+        {notice}
+      </Rise>
 
       <ActionSheet
         open={menuFor !== null}
@@ -803,19 +794,22 @@ function ConnectionLine({ model }: { model: AppModel }): React.JSX.Element | nul
 
 function Fab({ onClick, raised }: { onClick: () => void; raised: boolean }): React.JSX.Element {
   return (
-    <motion.button
-      aria-label="Add"
-      onClick={() => {
-        void android.haptic('tap')
-        onClick()
-      }}
-      initial={false}
-      animate={{ y: raised ? -64 : 0 }}
-      transition={{ type: 'spring', stiffness: 420, damping: 34 }}
-      className="absolute bottom-5 right-5 z-20 flex h-14 w-14 items-center justify-center rounded-2xl bg-basalt text-ink shadow-lift active:scale-95"
+    // Lifted by transform on a wrapper, so its own press shrink still works.
+    <div
+      className="rise absolute bottom-5 right-5 z-20"
+      style={{ transform: raised ? 'translate3d(0, -64px, 0)' : 'translate3d(0, 0, 0)' }}
     >
-      <Plus size={26} />
-    </motion.button>
+      <button
+        aria-label="Add"
+        onClick={() => {
+          void android.haptic('tap')
+          onClick()
+        }}
+        className="flex h-14 w-14 items-center justify-center rounded-2xl bg-basalt text-ink shadow-lift transition-transform duration-100 active:scale-95"
+      >
+        <Plus size={26} />
+      </button>
+    </div>
   )
 }
 
@@ -848,10 +842,7 @@ function PasteBar({ model }: { model: AppModel }): React.JSX.Element {
   const n = clip.paths.length
   const what = n === 1 ? (clip.paths[0]!.split('/').pop() ?? '1 item') : `${n} items`
   return (
-    <motion.div
-      initial={{ y: 24, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      exit={{ y: 24, opacity: 0 }}
+    <div
       className="mx-3 mb-2 flex items-center gap-2 rounded-2xl border border-white/[0.1] bg-[#1c1c1f] py-2 pl-4 pr-2 shadow-lift"
     >
       <span className="min-w-0 flex-1 truncate text-[13.5px] text-text">
@@ -869,7 +860,7 @@ function PasteBar({ model }: { model: AppModel }): React.JSX.Element {
       >
         {clip.mode === 'cut' ? 'Move here' : 'Paste'}
       </button>
-    </motion.div>
+    </div>
   )
 }
 
@@ -889,10 +880,7 @@ function SharedBar({
   const where = into ? into.split('/').pop() : vaultName
   const what = files.length === 1 ? files[0]!.name : `${files.length} files`
   return (
-    <motion.div
-      initial={{ y: 24, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      exit={{ y: 24, opacity: 0 }}
+    <div
       className="mx-3 mb-2 rounded-2xl border border-white/[0.1] bg-[#1c1c1f] p-3 shadow-lift"
     >
       <div className="flex items-start gap-3">
@@ -915,7 +903,7 @@ function SharedBar({
           Upload to {where}
         </button>
       </div>
-    </motion.div>
+    </div>
   )
 }
 
@@ -935,12 +923,9 @@ function TransferStrip({ model, onOpen }: { model: AppModel; onOpen: () => void 
       ? active[0]!.name
       : `${uploads > 0 ? (uploads === active.length ? 'Uploading' : 'Moving') : 'Downloading'} ${active.length} files`
   return (
-    <motion.button
-      initial={{ y: 24, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      exit={{ y: 24, opacity: 0 }}
+    <button
       onClick={onOpen}
-      className="relative mx-3 mb-2 overflow-hidden rounded-2xl border border-white/[0.1] bg-[#1c1c1f] px-4 py-3 text-left shadow-lift"
+      className="relative mx-3 mb-2 block w-[calc(100%-1.5rem)] overflow-hidden rounded-2xl border border-white/[0.1] bg-[#1c1c1f] px-4 py-3 text-left shadow-lift"
     >
       <div className="flex items-center gap-3">
         {active[0]?.kind === 'upload' ? (
@@ -956,7 +941,7 @@ function TransferStrip({ model, onOpen }: { model: AppModel; onOpen: () => void 
       <div className="absolute inset-x-0 bottom-0 h-[3px] bg-white/[0.06]">
         <div className="h-full bg-basalt transition-[width] duration-300" style={{ width: `${fraction * 100}%` }} />
       </div>
-    </motion.button>
+    </button>
   )
 }
 
