@@ -61,6 +61,11 @@ export interface Vault {
   /** Vault-relative directory. `''` is the root. */
   dir: string
   entries: Entry[]
+  /**
+   * The folder `entries` came from. It trails `dir` while a newly opened
+   * folder loads, when the old folder's entries are still what is on screen.
+   */
+  listed: string
   loading: boolean
   error: ApiError | null
   space: [number, number] | null
@@ -84,6 +89,7 @@ export function useVault(): Vault {
   const [status, setStatus] = useState<Status | null>(null)
   const [dir, setDir] = useState('')
   const [entries, setEntries] = useState<Entry[]>([])
+  const [listed, setListed] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
   const [space, setSpace] = useState<[number, number] | null>(null)
@@ -104,6 +110,7 @@ export function useVault(): Vault {
       const listing = await api.list(target)
       if (wanted.current !== target) return
       setEntries(toEntries(target, listing))
+      setListed(target)
       setError(null)
       retryDelay.current = RETRY_MIN_MS
     } catch (e) {
@@ -260,6 +267,7 @@ export function useVault(): Vault {
     status,
     dir,
     entries,
+    listed,
     loading,
     error,
     space,

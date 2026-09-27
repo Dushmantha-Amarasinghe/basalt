@@ -5,6 +5,7 @@ import type { Entry, RowHandlers } from './FileList'
 import { DRAG_MIME, draggedPaths, iconFor } from './FileList'
 import { cn, formatBytes } from '@/lib/utils'
 import { MarqueeBox, useMarquee } from './useMarquee'
+import { useScrollMemory } from '@/lib/useScrollMemory'
 
 /**
  * Tiles and List, the two Explorer-style alternatives to Details.
@@ -151,6 +152,7 @@ export function TileView({
   dropHighlight,
   handlers,
   onBackgroundContextMenu,
+  scrollKey,
 }: {
   entries: Entry[]
   selected: Set<string>
@@ -159,8 +161,11 @@ export function TileView({
   dropHighlight?: string | null
   handlers: RowHandlers
   onBackgroundContextMenu?: (event: { clientX: number; clientY: number }) => void
+  /** What is on show, so the list keeps its place per folder; see `useScrollMemory`. */
+  scrollKey: string
 }): React.JSX.Element {
   const [ref, width] = useContainerWidth()
+  const scroll = useScrollMemory(scrollKey)
   const perRow = Math.max(1, Math.floor((width - 16) / TILE_WIDTH))
   const rows = rowCountFor(entries.length, perRow)
   const marquee = useMarquee({
@@ -213,6 +218,8 @@ export function TileView({
     >
       {width > 0 && (
         <VList
+          ref={scroll.ref}
+          onScroll={scroll.onScroll}
           className="marquee-scroll"
           style={{ height: '100%' }}
           count={rows}
@@ -320,6 +327,7 @@ export function ListView({
   dropHighlight,
   handlers,
   onBackgroundContextMenu,
+  scrollKey,
 }: {
   entries: Entry[]
   selected: Set<string>
@@ -328,8 +336,11 @@ export function ListView({
   dropHighlight?: string | null
   handlers: RowHandlers
   onBackgroundContextMenu?: (event: { clientX: number; clientY: number }) => void
+  /** What is on show, so the list keeps its place per folder; see `useScrollMemory`. */
+  scrollKey: string
 }): React.JSX.Element {
   const [ref, width] = useContainerWidth()
+  const scroll = useScrollMemory(scrollKey)
   const perRow = Math.max(1, Math.floor((width - 16) / LIST_COLUMN_WIDTH))
   const rows = rowCountFor(entries.length, perRow)
   const marquee = useMarquee({
@@ -382,6 +393,8 @@ export function ListView({
     >
       {width > 0 && (
         <VList
+          ref={scroll.ref}
+          onScroll={scroll.onScroll}
           className="marquee-scroll"
           style={{ height: '100%' }}
           count={rows}

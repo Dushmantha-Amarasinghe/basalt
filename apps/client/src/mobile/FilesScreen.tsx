@@ -7,6 +7,7 @@ import { isKind } from '@/lib/useLibrary'
 import { thumbUrl } from '@/lib/thumbs'
 import { cn, formatBytes } from '@/lib/utils'
 import { android } from '@/lib/android'
+import { useScrollMemory } from '@/lib/useScrollMemory'
 
 const ROW = 64
 
@@ -24,6 +25,7 @@ export function FilesScreen({
   selecting,
   emptyLabel,
   showPath,
+  scrollKey,
 }: {
   model: AppModel
   entries: Entry[]
@@ -33,6 +35,8 @@ export function FilesScreen({
   emptyLabel: string
   /** Under each name, the folder it is in — for Recent and Starred. */
   showPath?: boolean
+  /** What is on show, so the list keeps its place per folder; see `useScrollMemory`. */
+  scrollKey: string
 }): React.JSX.Element {
   const { selected, setSelected, openEntry, mediaBase, cutPaths, stars } = model
 
@@ -75,7 +79,8 @@ export function FilesScreen({
     [toggle],
   )
 
-  const pull = usePullToRefresh(model.vault.refresh)
+  const scroll = useScrollMemory(scrollKey)
+  const pull = usePullToRefresh(model.vault.refresh, scroll.handle)
 
   if (entries.length === 0) {
     return (
@@ -93,7 +98,8 @@ export function FilesScreen({
     <div className="relative h-full" {...pull.handlers}>
       <PullIndicator distance={pull.distance} refreshing={pull.refreshing} />
       <VList
-        ref={pull.listRef}
+        ref={scroll.ref}
+        onScroll={scroll.onScroll}
         style={{ height: '100%', paddingBottom: 96 }}
         count={entries.length}
         itemSize={ROW}
@@ -326,7 +332,10 @@ export function useLongPress(
 }
 
 /** Pull down at the top of a list to refresh it. */
-function usePullToRefresh(refresh: () => void): {
+function usePullToRefresh(
+  refresh: () => void,
+  listRef: React.RefObject<VListHandle | null>,
+): {
   handlers: {
     onTouchStart: (e: React.TouchEvent) => void
     onTouchMove: (e: React.TouchEvent) => void
@@ -334,9 +343,7 @@ function usePullToRefresh(refresh: () => void): {
   }
   distance: number
   refreshing: boolean
-  listRef: React.RefObject<VListHandle | null>
 } {
-  const listRef = useRef<VListHandle | null>(null)
   const from = useRef<number | null>(null)
   const [distance, setDistance] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
@@ -348,7 +355,6 @@ function usePullToRefresh(refresh: () => void): {
   }, [refreshing])
 
   return {
-    listRef,
     distance,
     refreshing,
     handlers: {

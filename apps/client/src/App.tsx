@@ -61,6 +61,7 @@ import { fileToEntry, useCollections } from '@/lib/useCollections'
 import { useMediaBase } from '@/lib/thumbs'
 import { useIdentity } from '@/lib/useIdentity'
 import { ProfileGate } from '@/components/ProfileGate'
+import { scrollKeyOf } from '@/lib/useScrollMemory'
 import { stemOf, trackInfo } from '@/lib/mediaInfo'
 import { useVault } from '@/lib/useVault'
 import { isMobileShell } from '@/lib/platform'
@@ -339,6 +340,13 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     if (nav === 'recent' && sortField === 'name') return filtered
     return sortEntries(filtered, sortField, sortDirection)
   }, [sectionEntries, query, nav, sortField, sortDirection])
+
+  /**
+   * What the file list is showing, so it can keep its place per folder: the
+   * section, the folder the entries actually came from, and the search. See
+   * `useScrollMemory`.
+   */
+  const listKey = scrollKeyOf(nav, nav === 'files' ? vault.listed : '', query.trim())
 
   const isLibrary = LIBRARY_KEYS.includes(nav)
 
@@ -1260,6 +1268,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     refreshLibrary,
     sectionEntries,
     entries,
+    listKey,
     isLibrary,
     libraryFiles,
     libraryScanning,
@@ -1353,6 +1362,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
     nextAfter,
     previousByPath,
     entries,
+    listKey,
     isLibrary,
     libraryFiles,
     libraryScanning,
@@ -1425,6 +1435,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
 
   const viewProps = {
     entries,
+    scrollKey: listKey,
     selected,
     cutPaths,
     dropHighlight: dropInto,

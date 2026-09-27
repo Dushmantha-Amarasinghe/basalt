@@ -1,5 +1,6 @@
 import { memo, useCallback, useState } from 'react'
 import { VList } from 'virtua'
+import { useScrollMemory } from '@/lib/useScrollMemory'
 import { MarqueeBox, useMarquee, type MarqueeGrid } from './useMarquee'
 import {
   Download,
@@ -250,6 +251,7 @@ export function FileList({
   dropHighlight,
   handlers,
   onBackgroundContextMenu,
+  scrollKey,
 }: {
   entries: Entry[]
   selected: Set<string>
@@ -260,8 +262,11 @@ export function FileList({
   handlers: RowHandlers
   /** Right-click on empty space, for New folder / Paste. */
   onBackgroundContextMenu?: (event: { clientX: number; clientY: number }) => void
+  /** What is on show, so the list keeps its place per folder; see `useScrollMemory`. */
+  scrollKey: string
 }): React.JSX.Element {
   const [dropTarget, setDropTarget] = useState<string | null>(null)
+  const scroll = useScrollMemory(scrollKey)
 
   // Index-based, so Virtua can create elements lazily. Passing
   // `entries.map(...)` built 100,000 React elements on **every** render even
@@ -326,6 +331,8 @@ export function FileList({
         100,000 rows than the virtualisation itself.
       */}
       <VList
+        ref={scroll.ref}
+        onScroll={scroll.onScroll}
         className="marquee-scroll"
         style={{ height: 'calc(100% - 28px)' }}
         count={entries.length}

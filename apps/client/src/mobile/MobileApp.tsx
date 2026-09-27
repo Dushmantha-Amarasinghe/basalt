@@ -343,6 +343,7 @@ function Shell({ model }: { model: AppModel }): React.JSX.Element {
               entries={entries}
               selecting={selecting}
               onActions={setMenuFor}
+              scrollKey={model.listKey}
               emptyLabel={query ? `Nothing matches “${query}”` : 'This folder is empty'}
             />
           )}
@@ -352,6 +353,7 @@ function Shell({ model }: { model: AppModel }): React.JSX.Element {
               entries={entries}
               selecting={selecting}
               onActions={setMenuFor}
+              scrollKey={model.listKey}
               showPath
               emptyLabel={
                 recentMode === 'starred'
