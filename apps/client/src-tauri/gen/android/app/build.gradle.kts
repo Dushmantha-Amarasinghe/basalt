@@ -13,6 +13,22 @@ val tauriProperties = Properties().apply {
     }
 }
 
+/*
+ * The key releases are signed with. It lives outside the repository, in the
+ * home folder of the machine that builds releases, and must be kept: Android
+ * installs an update only over an app signed with the same key, so a lost key
+ * means everyone reinstalling. Without it, a release build is left unsigned.
+ * BASALT_SIGNING points somewhere else if the key is kept elsewhere.
+ */
+val signing = Properties().apply {
+    val where = System.getenv("BASALT_SIGNING")
+        ?: "${System.getProperty("user.home")}/.basalt/android-signing/keystore.properties"
+    val propFile = file(where)
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
+}
+
 android {
     compileSdk = 36
     namespace = "app.basalt.client"
@@ -23,6 +39,16 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (signing.getProperty("storeFile") != null) {
+            create("release") {
+                storeFile = file(signing.getProperty("storeFile"))
+                storePassword = signing.getProperty("storePassword")
+                keyAlias = signing.getProperty("keyAlias")
+                keyPassword = signing.getProperty("keyPassword")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -37,6 +63,14 @@ android {
             }
         }
         getByName("release") {
+            signingConfigs.findByName("release")?.let { signingConfig = it }
+            // 64-bit ARM, which is every phone of the last several years. The
+            // player's libraries come for four kinds of processor, and the
+            // others would only make the download larger for nobody.
+            ndk {
+                abiFilters.clear()
+                abiFilters.add("arm64-v8a")
+            }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
