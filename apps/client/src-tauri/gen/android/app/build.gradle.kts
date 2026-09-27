@@ -34,7 +34,11 @@ android {
     namespace = "app.basalt.client"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
-        applicationId = "app.basalt.client"
+        // The name Android installs the app under, and the one Google Play will
+        // keep for good. The code itself still lives in app.basalt.client,
+        // which is Tauri's identifier and also the Windows apps'; changing
+        // that would make Windows install Basalt a second time beside itself.
+        applicationId = "com.reforatech.basalt"
         minSdk = 26
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
