@@ -33,3 +33,8 @@ Thumbs.db
 apps/*/src-tauri/target/
 apps/*/src-tauri/gen/schemas/
 apps/*/src-tauri/lib/
+
+# Kept on this machine, not published: the assistant's workspace settings,
+# and the working plans the project was built from
+.claude/
+/docs/phase-*-plan.md
