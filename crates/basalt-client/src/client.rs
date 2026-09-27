@@ -1086,9 +1086,20 @@ impl Basalt {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
 
-        let begin = {
-            let result = lease.write_begin(remote, total, overwrite, None).await;
-            lease.check(result)?
+        // Once more on a fresh connection if the first could not even start.
+        // Nothing has been sent at this point, so there is nothing to undo,
+        // and a connection the system closed while the app was in the
+        // background is the usual reason — not the host, and not the file.
+        let begin = match lease.write_begin(remote, total, overwrite, None).await {
+            Ok(begin) => begin,
+            Err(e) if e.is_transient() => {
+                lease.discard();
+                drop(lease);
+                lease = pool.acquire().await?;
+                let result = lease.write_begin(remote, total, overwrite, None).await;
+                lease.check(result)?
+            }
+            Err(e) => return Err(lease.check::<()>(Err(e)).unwrap_err()),
         };
         let mut buf = vec![0u8; CHUNK_BYTES as usize];
         let mut hasher = blake3::Hasher::new();

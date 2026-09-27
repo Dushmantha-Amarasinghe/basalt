@@ -19,12 +19,31 @@ use crate::{ClientError, Result};
 
 const MAX_IDLE: usize = 4;
 
+/// A spare connection left alone longer than this is checked before use.
+///
+/// On a phone, leaving the app — for Android's own file picker, most of all —
+/// is enough for the system to close its connections underneath it, and the
+/// first request on one then fails with "software caused connection abort".
+/// Uploads failed exactly that way, once for each spare connection, every
+/// time a file was picked. A connection used a moment ago is used as it is:
+/// checking every one would put a round trip in front of every request.
+const CHECK_AFTER: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// How long a check may take before the connection is given up on.
+const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// A spare connection, and when it was last put down.
+struct Idle {
+    session: Session,
+    since: std::time::Instant,
+}
+
 struct Inner {
     addr: SocketAddr,
     host_id: String,
     token: String,
     me: Me,
-    idle: Mutex<Vec<Session>>,
+    idle: Mutex<Vec<Idle>>,
     profile: Mutex<ProfileChoice>,
 }
 
@@ -73,7 +92,10 @@ impl Pool {
         session: Session,
     ) -> Self {
         let pool = Self::new(addr, host_id, token, me);
-        pool.inner.idle.lock().expect("idle lock").push(session);
+        pool.inner.idle.lock().expect("idle lock").push(Idle {
+            session,
+            since: std::time::Instant::now(),
+        });
         pool
     }
 
@@ -94,18 +116,27 @@ impl Pool {
         // Never hold the lock across an await: `acquire` is called from every
         // task in the app and blocking the executor on a mutex here would stall
         // everything, including the connection being waited on.
-        let pooled = self.inner.idle.lock().expect("idle lock").pop();
-
-        let mut session = match pooled {
-            Some(session) => session,
-            None => {
-                Session::connect(
+        let mut session = loop {
+            let pooled = self.inner.idle.lock().expect("idle lock").pop();
+            let Some(Idle { mut session, since }) = pooled else {
+                break Session::connect(
                     self.inner.addr,
                     &self.inner.host_id,
                     &self.inner.token,
                     &self.inner.me,
                 )
-                .await?
+                .await?;
+            };
+            if since.elapsed() < CHECK_AFTER {
+                break session;
+            }
+            // Left alone a while: make sure it is still there. One that is
+            // not is dropped, and the next spare — or a new connection — is
+            // tried in its place, so a dead connection costs a moment rather
+            // than the request.
+            match tokio::time::timeout(CHECK_TIMEOUT, session.ping()).await {
+                Ok(Ok(())) => break session,
+                _ => continue,
             }
         };
 
@@ -243,7 +274,10 @@ impl Drop for Lease {
         }
         let mut idle = self.inner.idle.lock().expect("idle lock");
         if idle.len() < MAX_IDLE {
-            idle.push(session);
+            idle.push(Idle {
+                session,
+                since: std::time::Instant::now(),
+            });
         }
         // Over the cap the session is simply dropped, which closes it.
     }

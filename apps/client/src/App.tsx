@@ -58,6 +58,7 @@ import {
   type SubtitleTrack,
 } from '@/lib/api'
 import { fileToEntry, useCollections } from '@/lib/useCollections'
+import { uploadFailure } from '@/lib/uploadMessage'
 import { useMediaBase } from '@/lib/thumbs'
 import { useIdentity } from '@/lib/useIdentity'
 import { ProfileGate } from '@/components/ProfileGate'
@@ -560,18 +561,10 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         })
         try {
           const outcome = await api.upload(local, joinPath(into, name), false, id)
-          const failed = outcome?.failed ?? []
-          if (failed.length > 0) {
-            // A folder that mostly arrived is not a failed transfer, but the
-            // files that did not have to be named somewhere.
-            const [first, why] = failed[0]!
-            transfers.finish(
-              id,
-              `${failed.length} of ${outcome.files + failed.length} files did not upload. ${nameOf(first)}: ${why}`,
-            )
-          } else {
-            transfers.finish(id)
-          }
+          // A folder that mostly arrived is not a failed transfer, but the
+          // files that did not have to be named somewhere.
+          const failure = uploadFailure(outcome?.failed ?? [], outcome?.files ?? 0)
+          transfers.finish(id, failure ?? undefined)
         } catch (e) {
           transfers.finish(id, e instanceof Error ? e.message : String(e))
         } finally {
@@ -601,16 +594,8 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
           label,
           id,
         )
-        const failed = outcome?.failed ?? []
-        if (failed.length > 0) {
-          const [first, why] = failed[0]!
-          transfers.finish(
-            id,
-            `${failed.length} of ${outcome.files + failed.length} did not upload. ${nameOf(first)}: ${why}`,
-          )
-        } else {
-          transfers.finish(id)
-        }
+        const failure = uploadFailure(outcome?.failed ?? [], outcome?.files ?? 0)
+        transfers.finish(id, failure ?? undefined)
       } catch (e) {
         transfers.finish(id, e instanceof Error ? e.message : String(e))
       }

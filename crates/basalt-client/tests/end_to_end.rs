@@ -1462,3 +1462,107 @@ async fn a_download_fills_a_file_it_was_handed() {
     assert_eq!(got, bytes.len() as u64);
     assert_eq!(std::fs::read(&target).unwrap(), bytes);
 }
+
+// ---------------------------------------------------------------------------
+// Connections that die while the app is away
+// ---------------------------------------------------------------------------
+
+/// A relay between client and host that can cut every connection through it,
+/// the way Android closes an app's connections while it is in the background.
+struct Relay {
+    addr: std::net::SocketAddr,
+    pipes: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+}
+
+impl Relay {
+    async fn to(host: std::net::SocketAddr) -> Relay {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let pipes: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> = Arc::default();
+        let held = Arc::clone(&pipes);
+        tokio::spawn(async move {
+            while let Ok((mut near, _)) = listener.accept().await {
+                let pipe = tokio::spawn(async move {
+                    if let Ok(mut far) = tokio::net::TcpStream::connect(host).await {
+                        let _ = tokio::io::copy_bidirectional(&mut near, &mut far).await;
+                    }
+                });
+                held.lock().unwrap().push(pipe);
+            }
+        });
+        Relay { addr, pipes }
+    }
+
+    /// Drops every connection open through the relay. New ones still work.
+    fn cut(&self) {
+        for pipe in self.pipes.lock().unwrap().drain(..) {
+            pipe.abort();
+        }
+    }
+}
+
+/// Picking a file on a phone sends the app to the background, and Android
+/// closed its spare connections meanwhile. The upload then took one of the
+/// dead ones and failed with "software caused connection abort" — once for
+/// each spare, every time. A spare that has sat unused is checked first now.
+#[tokio::test]
+async fn an_upload_after_the_connections_were_cut_goes_through() {
+    let fixture = start_host().await;
+    let relay = Relay::to(fixture.addr).await;
+    let client = fixture.client();
+    let requires_pin = client
+        .begin_pairing(relay.addr)
+        .await
+        .expect("pairing opens");
+    let pin = requires_pin.then(|| fixture.displayed_pin().expect("a PIN"));
+    client.finish_pairing(pin.as_deref()).await.expect("pairs");
+
+    // Several spare connections, as browsing leaves behind.
+    let (a, b, c) = tokio::join!(client.list(""), client.list("docs"), client.list("films"));
+    assert!(a.is_ok() && b.is_ok() && c.is_ok());
+
+    relay.cut();
+    // Away for a moment: longer than a spare is trusted unchecked.
+    tokio::time::sleep(std::time::Duration::from_millis(4_500)).await;
+
+    for n in 0..3 {
+        let source = fixture.dir.join(format!("picked-{n}.bin"));
+        std::fs::write(&source, sample_bytes(200_000)).unwrap();
+        client
+            .upload(&source, &format!("picked-{n}.bin"), false, None, None)
+            .await
+            .unwrap_or_else(|e| panic!("upload {n} failed: {e}"));
+    }
+    assert!(client.list("").await.is_ok(), "and browsing carries on");
+}
+
+/// Even a spare cut a moment ago — too recent to be checked — costs the
+/// upload nothing: nothing has been sent when the first message fails, so it
+/// starts again on a fresh connection.
+#[tokio::test]
+async fn an_upload_on_a_just_cut_connection_starts_again() {
+    let fixture = start_host().await;
+    let relay = Relay::to(fixture.addr).await;
+    let client = fixture.client();
+    let requires_pin = client
+        .begin_pairing(relay.addr)
+        .await
+        .expect("pairing opens");
+    let pin = requires_pin.then(|| fixture.displayed_pin().expect("a PIN"));
+    client.finish_pairing(pin.as_deref()).await.expect("pairs");
+    assert!(client.list("").await.is_ok());
+
+    relay.cut();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let source = fixture.dir.join("quick.bin");
+    std::fs::write(&source, sample_bytes(100_000)).unwrap();
+    client
+        .upload(&source, "quick.bin", false, None, None)
+        .await
+        .expect("the upload starts again on a fresh connection");
+    assert_eq!(
+        std::fs::read(fixture.vault_path("quick.bin")).unwrap(),
+        std::fs::read(&source).unwrap()
+    );
+}
