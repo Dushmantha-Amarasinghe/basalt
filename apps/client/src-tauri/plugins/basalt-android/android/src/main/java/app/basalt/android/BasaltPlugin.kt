@@ -439,12 +439,18 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
         activity.contentResolver.openFileDescriptor(uri, "r")?.use { size = it.statSize }
       }
     }
+    val mime = runCatching { activity.contentResolver.getType(uri) }.getOrNull() ?: ""
+    // A source that will not say what the file is called leaves only the end
+    // of its address, a bare number; it is at least given its type's ending.
+    if (!name.contains('.')) {
+      MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)?.let { name = "$name.$it" }
+    }
     return JSObject()
       .put("uri", uri.toString())
       .put("name", name)
       .put("size", size)
       .put("mtime", mtime)
-      .put("mime", activity.contentResolver.getType(uri) ?: "")
+      .put("mime", mime)
   }
 
   /** Called from Rust: a picked file, opened, as a descriptor it now owns. */
