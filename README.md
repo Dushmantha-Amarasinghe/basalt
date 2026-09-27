@@ -1,6 +1,7 @@
 <div align="center">
+  <img src="apps/client/src-tauri/icons/128x128@2x.png" alt="Basalt" width="88" />
   <h1>Basalt</h1>
-  <p><b>One drive, on every device in the house. No addresses, no accounts, no setup.</b></p>
+  <p><b>Your home drive, on every screen in the house.<br/>No cloud, no subscription, no account.</b></p>
   <p>
     <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-blue?style=flat-square" alt="Windows 10/11" />
     <img src="https://img.shields.io/badge/Android-8.0%2B-3ddc84?style=flat-square" alt="Android 8.0+" />
@@ -9,95 +10,169 @@
     <img src="https://img.shields.io/github/downloads/Dushmantha-Amarasinghe/basalt/total?style=flat-square" alt="Downloads" />
   </p>
   <p>
-    <a href="https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest">Download</a> &nbsp;·&nbsp;
+    <a href="https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Host-Setup.exe"><b>Host for Windows</b></a> &nbsp;·&nbsp;
+    <a href="https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Client-Setup.exe"><b>Basalt for Windows</b></a> &nbsp;·&nbsp;
+    <a href="https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Android.apk"><b>Basalt for Android</b></a>
+  </p>
+  <p>
+    <a href="https://basalt.reforatech.com">basalt.reforatech.com</a> &nbsp;·&nbsp;
+    <a href="https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest">Release notes</a> &nbsp;·&nbsp;
     <a href="https://reforatech.com">Refora Technologies</a>
   </p>
 </div>
 
 <br/>
 
+<p align="center">
+  <img src="docs/screenshots/library.jpg" alt="Basalt for Windows: the Movies library, with Continue watching" width="900" />
+</p>
+
 ## Overview
 
-**Basalt** by Refora Technologies turns one spare machine into a drive your
-other devices can use. It comes in two halves: **Basalt Host** runs on the
-machine with the drive, and **Basalt** runs everywhere else — on Windows PCs,
-and on Android phones and tablets.
+**Basalt** by Refora Technologies turns one Windows PC into a private drive
+for the whole household. **Basalt Host** runs on the machine with the drive;
+**Basalt** runs everywhere else, on Windows PCs and on Android phones and
+tablets. Every device browses the same files, watches the same library, and
+picks up where the last one left off.
 
-The point of it is that there is nothing to configure. You pick a drive on the
-host; on another device you pick the host from a list and read a PIN across.
-That is the whole setup. No IP address is ever typed, no account is made, and
-no Windows sharing settings are touched — your devices find the host by
-themselves and keep finding it when the router hands it a different address,
-because what they trust is its pinned identity rather than where it happens to
-be today.
+There is nothing to configure. You pick a drive on the host; on another device
+you pick the host from a list and type the PIN it shows. That is the whole
+setup. No IP address is ever typed, no account is made, and no Windows sharing
+settings are touched. Devices find the host by themselves and keep finding it
+when the router hands it a different address, because what they trust is its
+pinned identity rather than where it happens to be today.
+
+Nothing leaves your home. There is no Basalt server and no cloud in the
+design: the host serves your files to your devices over your own network,
+encrypted, and that is all it does.
 
 ## Screenshots
 
-<div align="center">
-  <img src="docs/screenshots/host.png" alt="Basalt Host — sharing a drive" width="420" />
-  <img src="docs/screenshots/files.png" alt="Browsing the drive" width="420" />
-</div>
-<div align="center">
-  <img src="docs/screenshots/series.png" alt="The TV Series library" width="420" />
-  <img src="docs/screenshots/about.png" alt="Settings" width="420" />
-</div>
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/player.jpg" alt="The player, with subtitles" /></td>
+    <td width="50%"><img src="docs/screenshots/photos.jpg" alt="Photos, in rows by month" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>The player: streamed from the drive, every format, every subtitle track</sub></td>
+    <td align="center"><sub>Photos from every folder, by month, at their own shape</sub></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/phone.jpg" alt="Basalt for Android: files, the library, a series and photos" width="900" />
+  <br/>
+  <sub>Basalt for Android: the same drive, library and profiles, laid out for touch</sub>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/host.jpg" alt="Basalt Host: the shared drive, a device asking to join, and who is connected" width="620" />
+  <br/>
+  <sub>Basalt Host: the shared drive, a new device asking to join, and everyone connected</sub>
+</p>
 
 ## Key Features
 
-- **Finds itself.** The host announces itself on the local network and the
-  client lists what it finds. Pairing is a PIN read from one screen to the
-  other, once. Addresses change freely afterwards and nothing breaks.
-- **Pinned, encrypted, private.** Every connection is TLS 1.3, and the client
-  pins the host's public key on first pairing — an imposter on the same network
-  is refused rather than trusted. Nothing leaves your network, and there is no
-  cloud account anywhere in the design.
-- **Browse the whole drive.** Files, folders, search, copy, move, rename,
-  delete, and select several by dragging a box around them. Upload files or
-  whole folders by dropping them onto whichever folder you want. Transfers are
-  compressed where that helps, batched for small files, and verified with
-  BLAKE3 end to end.
-- **Photos, music and videos, sorted.** The host sorts every photo, song and
-  video on the drive, however deep, into their own sections. Photos are laid
-  out in rows by month at their own shapes, with a viewer that zooms; videos
-  show a picture from inside them; music is a track list by artist and album.
-  Thumbnails are made once, on the host, and shared by every device.
-- **Films and series, recognised.** Turn it on and the host reads the drive and
-  files what it finds under Movies and TV Series, with seasons and episodes in
-  order. Every film is checked against a bundled catalogue of released titles,
-  so screen recordings and home videos stay out of Movies — offline, with
-  nothing sent anywhere. Posters are optional and need no API key.
-- **A real player.** Built on **mpv**, so it plays what a browser cannot —
-  HEVC, E-AC3, DTS, MKV, and the rest — without the host transcoding anything.
-  Click to pause, arrow keys to seek and change volume, `,` and `.` to step one
-  frame at a time, and `C` for subtitles. Subtitles are named by language,
-  remembered on or off from one video to the next, found beside the video on
-  the drive or dropped onto it, and nudged into sync when they drift.
-- **Profiles, if you want them.** Pick a profile after connecting and its
-  watch history and stars follow you to every device in the house: start
-  something on the laptop, finish it on the television. A profile is a name, a
-  colour and a PIN, stored hashed on the host, and "keep me signed in" means
-  typing it once per device. Or skip it and carry on as the device, with a
-  history of its own, as before.
-- **Carries on where you left off.** Resume points live on the host, and
-  episodes play on to the next one by themselves.
-- **Live, both ways.** The host watches the drive itself, so a file added,
-  renamed or deleted — by Basalt, by Explorer, or by anything else — reaches
-  every connected device at once, and a new film or episode is filed under
-  Movies or TV Series the moment it lands.
-- **A drive that comes and goes.** Unplug the host's drive and it says so, on
-  the host and on every device; plug it back in and it is shared again, with
-  nothing to redo.
-- **On your phone and tablet too.** The Android app is the same app, laid out
-  for touch: tabs along the bottom on a phone and a rail down the side on a
-  tablet, a tap to open, a long press to choose several. Upload from the
-  phone's own picker or share straight into Basalt from any other app;
-  downloads land in the phone's Download folder. Films play in the app on the
-  same mpv as the desktop — full screen, turned to suit the picture, with a
-  double tap either side to skip — and photos pinch, swipe and zoom. A
-  transfer or a song carries on with the screen off.
-- **Several devices at once.** There is no device limit and no connection
-  limit; the host serves bytes and nothing more, so more viewers cost it
-  almost nothing.
+### Set up once, then forget it
+
+- **Finds itself.** The host announces itself on the local network and every
+  device lists what it finds. If a network blocks that, a device can be given
+  the host's address instead.
+- **Nobody joins without your say-so.** A new device shows up on the host with
+  a PIN to type on that device, once. After that it simply connects, and the
+  host can make any device read-only or let it go.
+- **A drive that comes and goes.** Unplug the host's drive and every device
+  says so; plug it back in and it is shared again, with nothing to redo.
+- **Keeps itself up to date.** Every app checks for new versions, shows what
+  changed, and installs only after checking the download against its published
+  checksum.
+
+### Private by design
+
+- **Encrypted and pinned.** Every connection is TLS 1.3, and each device pins
+  the host's key when it pairs, so a different machine at the same address is
+  refused rather than trusted.
+- **Local only.** No account, no cloud, no telemetry. Files travel between your
+  own devices and nowhere else. The only requests that leave your network are
+  the update check, to GitHub, and poster lookups if you turn them on.
+- **Careful with what it keeps.** Profile PINs are stored only as slow, salted
+  hashes, and repeated wrong guesses lock a profile for longer each time.
+  Sign-ins kept on a Windows PC are encrypted for that Windows account, and on
+  Android they stay in the app's private storage, out of phone backups.
+
+### The whole drive, from anywhere in the house
+
+- **Browse everything.** Files, folders, search, copy, move, rename, delete,
+  and select several by dragging a box around them.
+- **Upload the easy way.** Drop files or whole folders onto the folder you
+  want. On a phone, upload from the gallery, any file or a folder, or share to
+  Basalt from any other app.
+- **Fast and verified.** Transfers are compressed where that helps, batched
+  for small files, and checked with BLAKE3 end to end.
+- **Live.** A file added, renamed or deleted on the host, by Basalt or anything
+  else, reaches every connected device at once.
+
+### Films and series, filed for you
+
+- **Recognised automatically.** Turn it on and the host files the films and
+  series on the drive under Movies and TV Series, with seasons and episodes in
+  order, and new ones the moment they are copied in. Every film is checked
+  against a bundled catalogue of released titles, offline, so screen recordings
+  and home videos stay out of Movies.
+- **Posters and picture quality.** Optional posters need no API key. Films,
+  series and episodes are tagged HD, Full HD, 2K or 4K from the video itself,
+  not from its file name.
+- **Continue watching.** Resume points live on the host, so a film started on
+  the laptop finishes on the phone, and episodes play on to the next one.
+- **Photos, music and home videos.** The host finds every photo, song and video
+  on the drive, however deep, and sorts each into its own section. Photos are
+  laid out by month at their own shape with a viewer that zooms; music is a
+  track list by artist and album that plays on; videos show a picture from
+  inside them. Thumbnails are made once, on the host, and shared by every
+  device.
+- **Choose what devices show.** The host decides which sections appear on
+  your devices. Hiding one only tidies the sidebar; every file stays in Files.
+
+### A real player
+
+- **Plays what a browser cannot.** Built on **mpv**, on Windows and Android
+  alike, so HEVC, HDR, E-AC3, DTS, MKV and the rest play straight from the
+  drive, with nothing downloaded first and nothing transcoded on the host.
+- **Subtitles done properly.** Tracks named by language, remembered on or off
+  from one video to the next, found beside the video on the drive or dropped
+  onto it, and nudged into sync when they drift.
+- **Made for the keyboard.** Space to pause, arrow keys to seek and change
+  volume, `C` for subtitles, Shift+P and Shift+N for the previous and next
+  episode, and `,` and `.` to step one frame at a time. Pausing shows what is
+  playing and what comes next.
+
+### Profiles for the household
+
+- **Everyone gets their own.** A profile is a name, a colour and a PIN. Its
+  Continue watching and starred files follow it to every device, and "keep me
+  signed in" means typing the PIN once per device.
+- **Or skip it.** Carry on as the device, with a history of its own.
+- **Managed from the host.** See who is signed in where, reset a forgotten PIN,
+  or remove a profile along with its history.
+
+### On your phone and tablet
+
+- **The same app, laid out for touch.** Tabs along the bottom on a phone and a
+  rail down the side on a tablet; tap to open, long-press to choose several.
+- **Films in your hand.** Full screen, turned to suit the picture, with a double
+  tap either side to skip. Or hand the stream to another player such as VLC.
+- **Photos by touch.** Pinch to zoom, swipe to the next, swipe down to put it
+  away.
+- **Carries on with the screen off.** A transfer or a song keeps going while
+  the phone is locked, and downloads land in the phone's Download folder.
+- **Stays on the Wi-Fi.** On a Wi-Fi network without internet access, where a
+  phone would normally switch to mobile data, Basalt keeps its connection to
+  the host.
+
+### Several devices at once
+
+There is no device limit and no connection limit. The host serves bytes and
+nothing more, so more viewers cost it almost nothing.
 
 ## Technical Stack
 
@@ -106,52 +181,63 @@ be today.
 | Host and client cores | Rust 2024, Tokio |
 | Transport | TCP, TLS 1.3 (rustls + ring), SPKI pinning, custom binary protocol |
 | Discovery | UDP beacon on the local network |
-| Desktop shells | Tauri v2, React 19, TypeScript, Tailwind, Framer Motion |
+| Desktop apps | Tauri v2, React 19, TypeScript, Tailwind, Framer Motion |
 | Android app | Tauri v2 mobile, the same React interface, a Kotlin plugin |
-| Playback | libmpv, on Windows and Android |
+| Playback and thumbnails | libmpv, on Windows and Android |
+| Film recognition | A bundled catalogue of film and series titles from Wikidata |
 | Integrity | BLAKE3 per transfer, SHA-256 on updates |
 
 ## Installation
 
-Download the latest installers from the
-[releases page](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest):
+Download the latest version:
 
-- **[`Basalt-Host-Setup.exe`](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Host-Setup.exe)** — on the machine with the drive.
-- **[`Basalt-Client-Setup.exe`](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Client-Setup.exe)** — on every Windows PC that should reach it.
-- **[`Basalt-Android.apk`](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Android.apk)** — on Android phones and tablets (Android 8.0
-  or later, 64-bit).
+| Download | Install on |
+|---|---|
+| **[`Basalt-Host-Setup.exe`](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Host-Setup.exe)** | The Windows PC with the drive |
+| **[`Basalt-Client-Setup.exe`](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Client-Setup.exe)** | Every Windows PC that should reach it |
+| **[`Basalt-Android.apk`](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Android.apk)** | Android phones and tablets (Android 8.0 or later, 64-bit) |
 
-Both Windows installers install per-user and need no administrator. Each
-release also publishes a `.sha256` beside each file if you want to check what
-you downloaded.
+These links always give the newest release. Each file has a `.sha256` beside
+it on the [releases page](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest)
+if you want to check what you downloaded.
+
+Both Windows installers install per user and need no administrator rights.
+They update an existing installation in place and keep its pairing and
+settings.
 
 The Android app is not on the Play Store. Open the `.apk` on the phone and
 allow your browser or file manager to install it when Android asks; that
 permission is only for installing, and can be switched off again afterwards.
 
-Then: open Basalt Host, pick a drive, and open Basalt on another device. It
-will list the host; select it and type the PIN the host shows.
+**Getting started:**
 
-All three apps check for updates on their own and will tell you what is in the
-new version before you install it. On Android the update is downloaded,
-checked against its published checksum, and handed to Android's own installer;
-the first time, Android asks you to allow Basalt to install it.
+1. Install Basalt Host on the PC with the drive, open it, and choose the drive
+   to share.
+2. Open Basalt on another device. It lists the host; select it.
+3. Type the PIN the host shows. Done.
+
+All three apps check for updates on their own and show what is in the new
+version before you install it. On Android the update is downloaded, checked
+against its published checksum, and handed to Android's own installer; the
+first time, Android asks you to allow Basalt to install it.
 
 ## Configuration & Usage
 
-Everything Basalt keeps lives in `%APPDATA%\Basalt\`:
+Everything Basalt keeps on Windows lives in `%APPDATA%\Basalt\`:
 
 | File | What it is |
 |---|---|
-| `host.json` | The host's identity, its settings and its paired devices |
-| `client.json` | The vault this device is paired with |
+| `host.json` | The host's identity, settings, paired devices and profiles |
+| `client.json` | The drive this device is paired with |
 | `host.log` | The host's log, replaced at each start |
-| `library-*.json` | The media index, rebuilt by a scan |
-| `progress-*.json` | Where each file was watched to |
-| `art/` | Downloaded posters |
+| `library-*.json`, `collections-*.json` | The media index, rebuilt by a scan |
+| `watched-*.json`, `stars-*.json` | Watch history and starred files, per device and per profile |
+| `resolutions-*.json` | Each video's measured picture size |
+| `thumbs/`, `art/` | Thumbnails, and downloaded posters |
 
 Deleting `host.json` regenerates the host's identity, which un-pairs every
-device. The rest can be deleted freely.
+device and removes its profiles. The rest can be deleted freely and is
+rebuilt as needed, apart from watch history and stars.
 
 On Android the app keeps what it needs in its own private storage, which is
 left out of phone backups, so its pairing never travels to another device.
@@ -160,7 +246,7 @@ pairing again.
 
 **Optional, and off by default:** recognising films and series reads the whole
 drive, and downloading posters sends each recognised title to a lookup service.
-Neither happens until you turn it on.
+Neither happens until you turn it on in Basalt Host.
 
 ## Building from source
 
@@ -230,11 +316,12 @@ derivative works are also open-source under the identical terms. See the
 `LICENSE` file for the complete terms.
 
 Basalt bundles libmpv (LGPL-2.1-or-later) — and, in the Android app, the
-libmpv-android build of it — and links a number of open-source libraries. See `THIRD-PARTY-NOTICES.txt` for full attribution.
+libmpv-android build of it — and links a number of open-source libraries. See
+`THIRD-PARTY-NOTICES.txt` for full attribution.
 
 ---
 
 <div align="center">
   <p>Crafted by <b>Refora Technologies</b></p>
-  <p><a href="https://reforatech.com">reforatech.com</a></p>
+  <p><a href="https://basalt.reforatech.com">basalt.reforatech.com</a> &nbsp;·&nbsp; <a href="https://reforatech.com">reforatech.com</a></p>
 </div>
