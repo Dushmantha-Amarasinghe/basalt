@@ -8,6 +8,8 @@
  */
 
 import { inTauri } from './api'
+import { android } from './android'
+import { isAndroid } from './platform'
 
 /** Where to save a file the user is downloading. */
 export async function pickSaveLocation(
@@ -29,6 +31,7 @@ export async function pickFolder(): Promise<string | null> {
 /** A subtitle file on this machine, to load over what is playing. */
 export async function pickSubtitleFile(): Promise<string | null> {
   if (!inTauri()) return null
+  if (isAndroid()) return (await android.pickFiles('subtitle'))[0]?.uri ?? null
   const { open } = await import('@tauri-apps/plugin-dialog')
   const chosen = await open({
     multiple: false,

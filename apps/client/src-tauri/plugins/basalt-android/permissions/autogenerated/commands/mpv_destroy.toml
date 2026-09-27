@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-mpv-destroy"
+description = "Enables the mpv_destroy command without any pre-configured scope."
+commands.allow = ["mpv_destroy"]
+
+[[permission]]
+identifier = "deny-mpv-destroy"
+description = "Denies the mpv_destroy command without any pre-configured scope."
+commands.deny = ["mpv_destroy"]

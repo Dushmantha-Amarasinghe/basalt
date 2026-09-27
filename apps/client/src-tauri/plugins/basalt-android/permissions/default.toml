@@ -21,4 +21,12 @@ permissions = [
     "allow-haptic",
     "allow-request-notifications",
     "allow-insets",
+    "allow-register-listener",
+    "allow-remove-listener",
+    "allow-mpv-init",
+    "allow-mpv-command",
+    "allow-mpv-set-property",
+    "allow-mpv-get-property",
+    "allow-mpv-add-subtitle",
+    "allow-mpv-destroy",
 ]

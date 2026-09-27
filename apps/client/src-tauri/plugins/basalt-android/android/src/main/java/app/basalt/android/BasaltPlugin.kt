@@ -120,6 +120,31 @@ class HapticArgs {
   var kind: String? = null
 }
 
+@InvokeArg
+class MpvInitArgs {
+  var options: Map<String, String> = emptyMap()
+  /** Each property the page wants to hear about, and in what form. */
+  var observed: Map<String, String> = emptyMap()
+}
+
+@InvokeArg
+class MpvCommandArgs {
+  var args: Array<String> = emptyArray()
+}
+
+@InvokeArg
+class MpvSubtitleArgs {
+  lateinit var uri: String
+  var flag: String? = null
+}
+
+@InvokeArg
+class MpvPropertyArgs {
+  lateinit var name: String
+  var value: String? = null
+  var format: String? = null
+}
+
 /**
  * Everything Basalt needs from Android that a web page cannot do.
  *
@@ -146,6 +171,7 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   private var wifiCallback: ConnectivityManager.NetworkCallback? = null
   private val shared = mutableListOf<JSObject>()
   private var lastInsets = JSObject()
+  private val player by lazy { MpvPlayer(activity) { event -> trigger("mpv", event) } }
 
   override fun load(webView: WebView) {
     this.webView = webView
@@ -172,6 +198,7 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   override fun onDestroy() {
+    runCatching { player.destroy() }
     wifiCallback?.let {
       runCatching { connectivity().unregisterNetworkCallback(it) }
     }
@@ -188,6 +215,13 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
    */
   private fun watchInsets(view: WebView) {
     WindowCompat.setDecorFitsSystemWindows(activity.window, false)
+    // The app is dark, so the clock and icons over it are light.
+    activity.runOnUiThread {
+      WindowCompat.getInsetsController(activity.window, activity.window.decorView).apply {
+        isAppearanceLightStatusBars = false
+        isAppearanceLightNavigationBars = false
+      }
+    }
     ViewCompat.setOnApplyWindowInsetsListener(view) { v, insets ->
       val bars = insets.getInsets(
         WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
@@ -597,6 +631,68 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
     } catch (e: Exception) {
       invoke.reject("No app on this phone can open that.")
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // The player
+  // ---------------------------------------------------------------------------
+
+  @Command
+  fun mpvInit(invoke: Invoke) {
+    val args = invoke.parseArgs(MpvInitArgs::class.java)
+    try {
+      player.init(args.options, args.observed, webView)
+      invoke.resolve()
+    } catch (e: Throwable) {
+      invoke.reject("The player could not start: ${e.message}")
+    }
+  }
+
+  @Command
+  fun mpvCommand(invoke: Invoke) {
+    val args = invoke.parseArgs(MpvCommandArgs::class.java)
+    player.command(args.args)
+    invoke.resolve()
+  }
+
+  @Command
+  fun mpvSetProperty(invoke: Invoke) {
+    val args = invoke.parseArgs(MpvPropertyArgs::class.java)
+    player.setProperty(args.name, args.value ?: "")
+    invoke.resolve()
+  }
+
+  @Command
+  fun mpvGetProperty(invoke: Invoke) {
+    val args = invoke.parseArgs(MpvPropertyArgs::class.java)
+    val value = player.getProperty(args.name, args.format ?: "string")
+    invoke.resolve(if (value == null) JSObject() else JSObject().put("value", value))
+  }
+
+  /**
+   * A subtitle file from the phone's picker. mpv cannot open a `content://`
+   * address, so it is given the open file instead; it reads the whole of a
+   * subtitle file as it adds it, so the file is closed straight after.
+   */
+  @Command
+  fun mpvAddSubtitle(invoke: Invoke) {
+    val args = invoke.parseArgs(MpvSubtitleArgs::class.java)
+    val uri = Uri.parse(args.uri)
+    try {
+      val name = describe(uri).getString("name") ?: "Subtitles"
+      val file = activity.contentResolver.openFileDescriptor(uri, "r")
+        ?: return invoke.reject("That file could not be opened.")
+      file.use { player.command(arrayOf("sub-add", "fd://${it.fd}", args.flag ?: "select", name)) }
+      invoke.resolve()
+    } catch (e: Exception) {
+      invoke.reject("That file could not be opened: ${e.message}")
+    }
+  }
+
+  @Command
+  fun mpvDestroy(invoke: Invoke) {
+    player.destroy()
+    invoke.resolve()
   }
 
   // ---------------------------------------------------------------------------

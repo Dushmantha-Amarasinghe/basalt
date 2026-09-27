@@ -22,6 +22,14 @@ What the Basalt interface may ask of Android directly. Opening files and creatin
 - `allow-haptic`
 - `allow-request-notifications`
 - `allow-insets`
+- `allow-register-listener`
+- `allow-remove-listener`
+- `allow-mpv-init`
+- `allow-mpv-command`
+- `allow-mpv-set-property`
+- `allow-mpv-get-property`
+- `allow-mpv-add-subtitle`
+- `allow-mpv-destroy`
 
 ## Permission Table
 
@@ -295,6 +303,162 @@ Denies the minimize command without any pre-configured scope.
 <tr>
 <td>
 
+`basalt-android:allow-mpv-add-subtitle`
+
+</td>
+<td>
+
+Enables the mpv_add_subtitle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-mpv-add-subtitle`
+
+</td>
+<td>
+
+Denies the mpv_add_subtitle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-mpv-command`
+
+</td>
+<td>
+
+Enables the mpv_command command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-mpv-command`
+
+</td>
+<td>
+
+Denies the mpv_command command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-mpv-destroy`
+
+</td>
+<td>
+
+Enables the mpv_destroy command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-mpv-destroy`
+
+</td>
+<td>
+
+Denies the mpv_destroy command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-mpv-get-property`
+
+</td>
+<td>
+
+Enables the mpv_get_property command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-mpv-get-property`
+
+</td>
+<td>
+
+Denies the mpv_get_property command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-mpv-init`
+
+</td>
+<td>
+
+Enables the mpv_init command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-mpv-init`
+
+</td>
+<td>
+
+Denies the mpv_init command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-mpv-set-property`
+
+</td>
+<td>
+
+Enables the mpv_set_property command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-mpv-set-property`
+
+</td>
+<td>
+
+Denies the mpv_set_property command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `basalt-android:allow-open-download`
 
 </td>
@@ -444,6 +608,58 @@ Enables the pick_folder command without any pre-configured scope.
 <td>
 
 Denies the pick_folder command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-register-listener`
+
+</td>
+<td>
+
+Enables the register_listener command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-register-listener`
+
+</td>
+<td>
+
+Denies the register_listener command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-remove-listener`
+
+</td>
+<td>
+
+Enables the remove_listener command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-remove-listener`
+
+</td>
+<td>
+
+Denies the remove_listener command without any pre-configured scope.
 
 </td>
 </tr>

@@ -415,6 +415,78 @@
           "markdownDescription": "Denies the minimize command without any pre-configured scope."
         },
         {
+          "description": "Enables the mpv_add_subtitle command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mpv-add-subtitle",
+          "markdownDescription": "Enables the mpv_add_subtitle command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mpv_add_subtitle command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mpv-add-subtitle",
+          "markdownDescription": "Denies the mpv_add_subtitle command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the mpv_command command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mpv-command",
+          "markdownDescription": "Enables the mpv_command command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mpv_command command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mpv-command",
+          "markdownDescription": "Denies the mpv_command command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the mpv_destroy command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mpv-destroy",
+          "markdownDescription": "Enables the mpv_destroy command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mpv_destroy command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mpv-destroy",
+          "markdownDescription": "Denies the mpv_destroy command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the mpv_get_property command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mpv-get-property",
+          "markdownDescription": "Enables the mpv_get_property command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mpv_get_property command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mpv-get-property",
+          "markdownDescription": "Denies the mpv_get_property command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the mpv_init command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mpv-init",
+          "markdownDescription": "Enables the mpv_init command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mpv_init command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mpv-init",
+          "markdownDescription": "Denies the mpv_init command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the mpv_set_property command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mpv-set-property",
+          "markdownDescription": "Enables the mpv_set_property command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mpv_set_property command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mpv-set-property",
+          "markdownDescription": "Denies the mpv_set_property command without any pre-configured scope."
+        },
+        {
           "description": "Enables the open_download command without any pre-configured scope.",
           "type": "string",
           "const": "allow-open-download",
@@ -487,6 +559,30 @@
           "markdownDescription": "Denies the pick_folder command without any pre-configured scope."
         },
         {
+          "description": "Enables the register_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-register-listener",
+          "markdownDescription": "Enables the register_listener command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the register_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-register-listener",
+          "markdownDescription": "Denies the register_listener command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-listener",
+          "markdownDescription": "Enables the remove_listener command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-listener",
+          "markdownDescription": "Denies the remove_listener command without any pre-configured scope."
+        },
+        {
           "description": "Enables the request_notifications command without any pre-configured scope.",
           "type": "string",
           "const": "allow-request-notifications",
@@ -547,10 +643,10 @@
           "markdownDescription": "Denies the take_shared command without any pre-configured scope."
         },
         {
-          "description": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-request-notifications`\n- `allow-insets`",
+          "description": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-destroy`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-request-notifications`\n- `allow-insets`"
+          "markdownDescription": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-destroy`"
         }
       ]
     }

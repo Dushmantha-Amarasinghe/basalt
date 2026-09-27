@@ -22,6 +22,15 @@ const COMMANDS: &[&str] = &[
     "haptic",
     "request_notifications",
     "insets",
+    "mpv_init",
+    // Events from Kotlin: the player's clock, files shared into the app.
+    "register_listener",
+    "remove_listener",
+    "mpv_command",
+    "mpv_set_property",
+    "mpv_get_property",
+    "mpv_add_subtitle",
+    "mpv_destroy",
 ];
 
 fn main() {

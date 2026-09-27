@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import * as mpv from 'tauri-plugin-libmpv-api'
+import * as mpv from './mpvBackend'
 import { inTauri } from './api'
 
 /**

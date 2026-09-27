@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-mpv-add-subtitle"
+description = "Enables the mpv_add_subtitle command without any pre-configured scope."
+commands.allow = ["mpv_add_subtitle"]
+
+[[permission]]
+identifier = "deny-mpv-add-subtitle"
+description = "Denies the mpv_add_subtitle command without any pre-configured scope."
+commands.deny = ["mpv_add_subtitle"]

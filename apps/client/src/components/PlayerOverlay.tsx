@@ -6,6 +6,7 @@ import {
   ExternalLink,
   Loader2,
   Maximize2,
+  Minimize2,
   Music,
   Pause,
   Play,
@@ -35,6 +36,18 @@ import {
   savePref,
 } from '@/lib/subtitleChoice'
 import { cn } from '@/lib/utils'
+import { android } from '@/lib/android'
+import { getProperty } from '@/lib/mpvBackend'
+import { isMobileShell } from '@/lib/platform'
+
+/**
+ * A phone or tablet: fingers, not a pointer.
+ *
+ * A tap there shows or hides the controls instead of pausing, a double tap
+ * at either side skips, the film takes the whole screen on its own, and the
+ * fullscreen button turns the picture instead.
+ */
+const TOUCH = isMobileShell()
 
 /** Motionless for this long and the controls step aside. */
 const CONTROLS_IDLE = 2600
@@ -144,6 +157,13 @@ export function PlayerOverlay({
   useEffect(() => {
     if (!open) return undefined
     keepControls()
+    // A tap arrives with a mousemove of its own, which would bring the
+    // controls straight back as a tap put them away.
+    if (TOUCH) {
+      return () => {
+        if (idleTimer.current) clearTimeout(idleTimer.current)
+      }
+    }
     window.addEventListener('mousemove', keepControls)
     return () => {
       window.removeEventListener('mousemove', keepControls)
@@ -291,6 +311,77 @@ export function PlayerOverlay({
     }, 220)
   }, [mpv])
 
+  /** The controls up if they were down, and down if they were up. */
+  const shown = useRef(showControls)
+  shown.current = showControls
+  const toggleControls = useCallback(() => {
+    if (shown.current) {
+      if (idleTimer.current) clearTimeout(idleTimer.current)
+      setShowControls(false)
+    } else {
+      keepControls()
+    }
+  }, [keepControls])
+
+  /**
+   * Taps on a touch screen.
+   *
+   * One tap shows or hides the controls. Two, at the left or right third,
+   * skip ten seconds back or forward, and each further tap on the same side
+   * skips another ten, the way every phone player does it. Two in the middle
+   * pause. The single tap waits to be sure it was one.
+   */
+  const lastTap = useRef<{ at: number; x: number } | null>(null)
+  const skipping = useRef<{ side: -1 | 1; until: number } | null>(null)
+  const [skipped, setSkipped] = useState<{ side: -1 | 1; seconds: number } | null>(null)
+  const skippedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const skip = useCallback(
+    (side: -1 | 1) => {
+      void mpv.seekBy(side * 10)
+      void android.haptic('tap')
+      skipping.current = { side, until: performance.now() + 700 }
+      setSkipped((was) => ({ side, seconds: was?.side === side ? was.seconds + 10 : 10 }))
+      if (skippedTimer.current) clearTimeout(skippedTimer.current)
+      skippedTimer.current = setTimeout(() => setSkipped(null), 700)
+    },
+    [mpv],
+  )
+
+  const onTap = useCallback(
+    (e: React.MouseEvent) => {
+      const now = performance.now()
+      const width = window.innerWidth
+      const side: -1 | 0 | 1 = e.clientX < width / 3 ? -1 : e.clientX > (width * 2) / 3 ? 1 : 0
+
+      const run = skipping.current
+      if (run && now < run.until && side === run.side) {
+        skip(run.side)
+        return
+      }
+
+      const before = lastTap.current
+      if (before && now - before.at < 300 && Math.abs(before.x - e.clientX) < 80) {
+        if (clickTimer.current) {
+          clearTimeout(clickTimer.current)
+          clickTimer.current = null
+        }
+        lastTap.current = null
+        if (side === 0) void mpv.togglePause()
+        else skip(side)
+        return
+      }
+
+      lastTap.current = { at: now, x: e.clientX }
+      if (clickTimer.current) clearTimeout(clickTimer.current)
+      clickTimer.current = setTimeout(() => {
+        clickTimer.current = null
+        toggleControls()
+      }, 260)
+    },
+    [mpv, skip, toggleControls],
+  )
+
   const onDoubleClick = useCallback(() => {
     if (clickTimer.current) {
       clearTimeout(clickTimer.current)
@@ -298,6 +389,38 @@ export function PlayerOverlay({
     }
     void fullscreenRef.current()
   }, [])
+
+  /**
+   * On a phone, the way the screen is held for this film.
+   *
+   * A film fills the screen by itself: the status and navigation bars go,
+   * and the screen turns to suit the picture — sideways for a film, upright
+   * for something shot on a phone. The button then turns it the other way.
+   * Closing the player gives the screen back as it was.
+   */
+  const [turned, setTurned] = useState<'landscape' | 'portrait' | null>(null)
+  useEffect(() => {
+    if (!TOUCH || !open || !mpv.picture) return undefined
+    let cancelled = false
+    void (async () => {
+      const w = Number(await getProperty('dwidth', 'int64').catch(() => 0)) || 0
+      const h = Number(await getProperty('dheight', 'int64').catch(() => 0)) || 0
+      if (cancelled) return
+      const way = w > 0 && h > w ? 'portrait' : 'landscape'
+      setTurned(way)
+      void android.setOrientation(way)
+      void android.setImmersive(true)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [open, mpv.picture, item?.id])
+  useEffect(() => {
+    if (!TOUCH || open) return
+    setTurned(null)
+    void android.setImmersive(false)
+    void android.setOrientation('auto')
+  }, [open])
 
   /** Whether the window was maximised before it went fullscreen. */
   const wasMaximised = useRef(false)
@@ -313,6 +436,14 @@ export function PlayerOverlay({
    * small annoyance.
    */
   const fullscreen = useCallback(async () => {
+    if (TOUCH) {
+      setTurned((was) => {
+        const next = was === 'landscape' ? 'portrait' : 'landscape'
+        void android.setOrientation(next)
+        return next
+      })
+      return
+    }
     try {
       const { getCurrentWindow } = await import('@tauri-apps/api/window')
       const window = getCurrentWindow()
@@ -629,8 +760,8 @@ export function PlayerOverlay({
             `picture` is careful to wait for.
           */}
           <div
-            onClick={onSingleClick}
-            onDoubleClick={onDoubleClick}
+            onClick={TOUCH ? onTap : onSingleClick}
+            onDoubleClick={TOUCH ? undefined : onDoubleClick}
             // A pointer over the picture is not over the bar, whatever the
             // bar last heard. Its `mouseleave` never comes when the pointer
             // leaves by way of a window on top — the file picker behind "Add
@@ -819,16 +950,50 @@ export function PlayerOverlay({
               initial={false}
               animate={{ opacity: controlsUp ? 1 : 0 }}
               transition={{ duration: 0.22 }}
-              style={{ pointerEvents: controlsUp ? 'auto' : 'none' }}
+              style={{
+                pointerEvents: controlsUp ? 'auto' : 'none',
+                ...(TOUCH
+                  ? {
+                      top: 'calc(var(--inset-top, 0px) + 12px)',
+                      right: 'calc(var(--inset-right, 0px) + 12px)',
+                    }
+                  : {}),
+              }}
               onClick={(e) => {
                 e.stopPropagation()
                 void leave()
               }}
               aria-label="Close player"
-              className="no-drag absolute right-4 top-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-black/40 text-textDim backdrop-blur transition-colors hover:bg-black/60 hover:text-text"
+              className={cn(
+                'no-drag absolute right-4 top-4 z-10 flex items-center justify-center rounded-full bg-black/40 text-textDim backdrop-blur transition-colors hover:bg-black/60 hover:text-text',
+                TOUCH ? 'h-11 w-11' : 'h-9 w-9',
+              )}
             >
-              <X size={16} />
+              <X size={TOUCH ? 20 : 16} />
             </motion.button>
+
+            {/* Where a double tap skipped to, on the side it was tapped. */}
+            <AnimatePresence>
+              {skipped && (
+                <motion.div
+                  key={skipped.side}
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                  className={cn(
+                    'pointer-events-none absolute top-1/2 flex -translate-y-1/2 items-center gap-2 rounded-full bg-black/55 px-4 py-2.5 backdrop-blur',
+                    skipped.side < 0 ? 'left-[12%]' : 'right-[12%]',
+                  )}
+                >
+                  {skipped.side < 0 ? <RotateCcw size={16} /> : <RotateCw size={16} />}
+                  <span className="tnum font-mono text-[13px] text-text">
+                    {skipped.side < 0 ? '-' : '+'}
+                    {skipped.seconds}s
+                  </span>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
           {/*
@@ -855,7 +1020,18 @@ export function PlayerOverlay({
             transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
             onMouseEnter={() => setOverBar(true)}
             onMouseLeave={() => setOverBar(false)}
-            style={{ pointerEvents: controlsUp ? 'auto' : 'none' }}
+            // A finger on the controls is someone using them.
+            onPointerDown={TOUCH ? keepControls : undefined}
+            style={{
+              pointerEvents: controlsUp ? 'auto' : 'none',
+              ...(TOUCH
+                ? {
+                    paddingBottom: 'calc(var(--inset-bottom, 0px) + 14px)',
+                    paddingLeft: 'calc(var(--inset-left, 0px) + 16px)',
+                    paddingRight: 'calc(var(--inset-right, 0px) + 16px)',
+                  }
+                : {}),
+            }}
             // Over the picture rather than beside it. As a row in a column it
             // took a strip of the window permanently, so a film was letterboxed
             // above its own controls whether or not anyone wanted them.
@@ -924,7 +1100,7 @@ export function PlayerOverlay({
                 disabled={!nextUp || !onPlayNext}
               />
 
-              <div className="mx-1.5 h-4 w-px bg-white/[0.1]" />
+              <div className={cn('mx-1.5 h-4 w-px bg-white/[0.1]', TOUCH && 'hidden')} />
 
               <SeekButton direction={-1} onClick={() => void mpv.seekBy(-10)} />
               <SeekButton direction={1} onClick={() => void mpv.seekBy(10)} />
@@ -956,7 +1132,8 @@ export function PlayerOverlay({
                 )}
               </button>
 
-              <div className="group/vol flex items-center gap-1.5">
+              {/* On a phone its own buttons are the volume control. */}
+              <div className={cn('group/vol items-center gap-1.5', TOUCH ? 'hidden' : 'flex')}>
                 <ControlButton
                   icon={mpv.muted || mpv.volume === 0 ? VolumeX : Volume2}
                   label={mpv.muted ? 'Unmute' : 'Mute'}
@@ -978,7 +1155,11 @@ export function PlayerOverlay({
                   className="h-1 w-0 cursor-pointer appearance-none rounded-full bg-white/[0.14] opacity-0 transition-all duration-200 accent-basalt group-hover/vol:w-20 group-hover/vol:opacity-100"
                 />
               </div>
-              <ControlButton icon={Maximize2} label="Fullscreen (f)" onClick={fullscreen} />
+              <ControlButton
+                icon={TOUCH && turned === 'landscape' ? Minimize2 : Maximize2}
+                label={TOUCH ? 'Turn the picture' : 'Fullscreen (f)'}
+                onClick={fullscreen}
+              />
             </div>
           </motion.div>
         </motion.div>
