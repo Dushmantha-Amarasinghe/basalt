@@ -116,9 +116,9 @@ be today.
 Download the latest installers from the
 [releases page](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest):
 
-- **`Basalt-Host-x.y.z-setup.exe`** — on the machine with the drive.
-- **`Basalt-Client-x.y.z-setup.exe`** — on every Windows PC that should reach it.
-- **`Basalt-Android-x.y.z.apk`** — on Android phones and tablets (Android 8.0
+- **[`Basalt-Host-Setup.exe`](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Host-Setup.exe)** — on the machine with the drive.
+- **[`Basalt-Client-Setup.exe`](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Client-Setup.exe)** — on every Windows PC that should reach it.
+- **[`Basalt-Android.apk`](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Android.apk)** — on Android phones and tablets (Android 8.0
   or later, 64-bit).
 
 Both Windows installers install per-user and need no administrator. Each

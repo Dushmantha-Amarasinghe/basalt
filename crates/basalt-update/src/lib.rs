@@ -441,6 +441,44 @@ mod tests {
         assert!(pick_for(&windows_only, Product::Client, Platform::Android).is_none());
     }
 
+    /// Releases name their files without a version, so a download link to the
+    /// latest release never changes. Every app still finds its own file, and
+    /// the checksum beside it.
+    #[test]
+    fn files_named_without_a_version_are_found() {
+        let names = [
+            "Basalt-Host-Setup.exe",
+            "Basalt-Host-Setup.exe.sha256",
+            "Basalt-Client-Setup.exe",
+            "Basalt-Client-Setup.exe.sha256",
+            "Basalt-Android.apk",
+            "Basalt-Android.apk.sha256",
+        ];
+        let assets: Vec<GhAsset> = names.iter().map(|name| asset(name)).collect();
+        let found = |product, platform| pick_for(&assets, product, platform).unwrap().name.clone();
+        assert_eq!(
+            found(Product::Host, Platform::Windows),
+            "Basalt-Host-Setup.exe"
+        );
+        assert_eq!(
+            found(Product::Client, Platform::Windows),
+            "Basalt-Client-Setup.exe"
+        );
+        assert_eq!(
+            found(Product::Client, Platform::Android),
+            "Basalt-Android.apk"
+        );
+
+        let update =
+            newer_than(release("v9.0.0", &names), Product::Host, "1.4.0").expect("an update");
+        assert!(
+            update
+                .checksum_url
+                .unwrap()
+                .ends_with("/Basalt-Host-Setup.exe.sha256")
+        );
+    }
+
     #[test]
     fn a_release_missing_this_app_offers_nothing() {
         let only_host = release("v2.0.0", &["Basalt-Host-2.0.0-setup.exe"]);

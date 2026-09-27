@@ -117,7 +117,7 @@ Copy the app to the phone and open it:
 apps\client\src-tauri\gen\android\app\build\outputs\apk\universal\release\app-universal-release.apk
 ```
 
-It is published as `Basalt-Android-1.4.0.apk`. Android asks, once, to allow
+It is published as `Basalt-Android.apk`. Android asks, once, to allow
 whatever opened it — the browser, or the Files app — to install apps. That
 permission is only for installing, and can be switched off again afterwards.
 It needs Android 8.0 or later on a 64-bit phone, which is every phone of the
