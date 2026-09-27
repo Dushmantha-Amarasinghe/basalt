@@ -116,9 +116,9 @@ export function LibraryView({
   }
 
   return (
-    // Less padding on a phone: inside the phone screen's own, the desktop's
-    // left room for a single poster per row.
-    <div className="h-full overflow-y-auto px-1 py-4 sm:px-7 sm:py-6">
+    // A phone's own margins, and room at the foot so the last row clears the
+    // edge; the desktop's roomier padding from the small breakpoint up.
+    <div className="h-full overflow-y-auto px-4 pb-8 pt-3 sm:px-7 sm:py-6">
       {/* A scan running over an existing library says so without hiding it. */}
       <AnimatePresence>
         {scanning && (
@@ -138,7 +138,10 @@ export function LibraryView({
 
       <ContinueWatching entries={carryOn} onPlay={onPlay} onForget={onForget} />
 
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(136px,1fr))] gap-x-3 gap-y-5 sm:grid-cols-[repeat(auto-fill,minmax(150px,1fr))] sm:gap-x-4 sm:gap-y-6">
+      {/* Two to a row on a phone, whatever its display size: a column count
+          worked out from a minimum width fell to one on phones set to show
+          things larger. Wider screens fit as many as there is room for. */}
+      <div className="grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-[repeat(auto-fill,minmax(150px,1fr))] sm:gap-x-4 sm:gap-y-6">
         {ordered.map((item, index) => (
           <Card
             key={item.id}

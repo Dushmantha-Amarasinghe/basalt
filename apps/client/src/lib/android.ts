@@ -75,6 +75,12 @@ export const android = {
   /** Back at the top of the app: to the home screen, as every app does. */
   minimize: () => plugin<void>('minimize'),
   haptic: (kind: 'tap' | 'long' | 'confirm' = 'tap') => plugin<void>('haptic', { kind }),
+  /** Brightness and media volume, each 0 to 1, for the player's swipes. */
+  playerLevels: () => plugin<{ brightness: number; volume: number; volumeSteps: number }>('player_levels'),
+  /** This window's brightness, 0 to 1; below 0 gives it back to the system. */
+  setBrightness: (level: number) => plugin<void>('set_brightness', { level }),
+  /** The phone's media volume, 0 to 1. Answers with where it landed. */
+  setVolume: (level: number) => plugin<{ volume: number }>('set_volume', { level }),
   insets: () => plugin<Insets>('insets'),
 
   canInstallApks: async () => (await plugin<{ can: boolean }>('can_install_apks'))?.can ?? false,

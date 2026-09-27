@@ -19,6 +19,9 @@ import {
   X,
   RotateCcw,
   RotateCw,
+  Sun,
+  SunDim,
+  Volume1,
 } from 'lucide-react'
 import type { MediaItem } from '@/lib/mockMedia'
 import { formatDuration } from '@/lib/mockMedia'
@@ -352,6 +355,7 @@ export function PlayerOverlay({
   const onTap = useCallback(
     (e: React.MouseEvent) => {
       const now = performance.now()
+      if (now - swipedAt.current < 350) return
       const width = window.innerWidth
       const side: -1 | 0 | 1 = e.clientX < width / 3 ? -1 : e.clientX > (width * 2) / 3 ? 1 : 0
 
@@ -382,6 +386,111 @@ export function PlayerOverlay({
     },
     [mpv, skip, toggleControls],
   )
+
+  /**
+   * Swipes on a touch screen: up and down on the left half sets the screen's
+   * brightness, on the right half the phone's media volume, as phone video
+   * players do.
+   *
+   * Only a mostly vertical drag counts, so taps and double taps are left
+   * alone, and a swipe never also counts as a tap. Brightness is this
+   * window's own and goes back to the phone's when the player closes; volume
+   * is the phone's media volume, the one its buttons change, moved in its own
+   * steps so the phone never shows its panel on top of the film.
+   */
+  type Level = { kind: 'brightness' | 'volume'; value: number }
+  const levels = useRef<{ brightness: number; volume: number; volumeSteps: number } | null>(null)
+  const swipe = useRef<{
+    id: number
+    x: number
+    y: number
+    kind: Level['kind']
+    from: number
+    active: boolean
+    last: number
+  } | null>(null)
+  const swipedAt = useRef(0)
+  const [level, setLevel] = useState<Level | null>(null)
+  const levelTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const readLevels = useCallback(() => {
+    void android
+      .playerLevels()
+      .then((now) => {
+        if (now) levels.current = now
+      })
+      .catch(() => {})
+  }, [])
+
+  const onSwipeStart = useCallback(
+    (e: React.PointerEvent) => {
+      if (e.pointerType !== 'touch' || !mpv.picture || !levels.current) return
+      // Fresh, in case the phone's buttons moved the volume meanwhile; it is
+      // back long before a swipe has gone far enough to count.
+      readLevels()
+      const kind = e.clientX < window.innerWidth / 2 ? 'brightness' : 'volume'
+      swipe.current = {
+        id: e.pointerId,
+        x: e.clientX,
+        y: e.clientY,
+        kind,
+        from: levels.current[kind],
+        active: false,
+        last: levels.current[kind],
+      }
+    },
+    [mpv.picture, readLevels],
+  )
+
+  const onSwipeMove = useCallback((e: React.PointerEvent) => {
+    const run = swipe.current
+    if (!run || run.id !== e.pointerId) return
+    const dx = e.clientX - run.x
+    const dy = run.y - e.clientY
+    if (!run.active) {
+      // Past a small slop, and more up-and-down than sideways.
+      if (Math.abs(dy) < 14 || Math.abs(dy) < Math.abs(dx) * 1.3) return
+      run.active = true
+      run.from = levels.current?.[run.kind] ?? run.from
+      run.last = run.from
+      run.y = e.clientY
+      ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+      if (clickTimer.current) {
+        clearTimeout(clickTimer.current)
+        clickTimer.current = null
+      }
+      lastTap.current = null
+    }
+    // Most of the screen's height takes a level from bottom to top.
+    const value = Math.min(1, Math.max(0, run.from + dy / (window.innerHeight * 0.7)))
+    if (levelTimer.current) clearTimeout(levelTimer.current)
+    if (run.kind === 'brightness') {
+      if (Math.abs(value - run.last) < 0.005) return
+      run.last = value
+      void android.setBrightness(value)
+      if (levels.current) levels.current.brightness = value
+      setLevel({ kind: 'brightness', value })
+    } else {
+      const steps = levels.current?.volumeSteps ?? 15
+      const stepped = Math.round(value * steps) / steps
+      if (stepped !== run.last) {
+        run.last = stepped
+        void android.setVolume(stepped)
+        if (levels.current) levels.current.volume = stepped
+      }
+      setLevel({ kind: 'volume', value: stepped })
+    }
+  }, [])
+
+  const onSwipeEnd = useCallback((e: React.PointerEvent) => {
+    const run = swipe.current
+    if (!run || run.id !== e.pointerId) return
+    swipe.current = null
+    if (!run.active) return
+    swipedAt.current = performance.now()
+    if (levelTimer.current) clearTimeout(levelTimer.current)
+    levelTimer.current = setTimeout(() => setLevel(null), 700)
+  }, [])
 
   const onDoubleClick = useCallback(() => {
     if (clickTimer.current) {
@@ -421,7 +530,14 @@ export function PlayerOverlay({
     setTurned(null)
     void android.setImmersive(false)
     void android.setOrientation('auto')
+    // The swipe's brightness was the player's; the app has the phone's.
+    void android.setBrightness(-1)
+    levels.current = null
+    setLevel(null)
   }, [open])
+  useEffect(() => {
+    if (TOUCH && open && mpv.picture) readLevels()
+  }, [open, mpv.picture, readLevels])
 
   /** Whether the window was maximised before it went fullscreen. */
   const wasMaximised = useRef(false)
@@ -772,6 +888,11 @@ export function PlayerOverlay({
           <div
             onClick={TOUCH ? onTap : onSingleClick}
             onDoubleClick={TOUCH ? undefined : onDoubleClick}
+            onPointerDown={TOUCH ? onSwipeStart : undefined}
+            onPointerMove={TOUCH ? onSwipeMove : undefined}
+            onPointerUp={TOUCH ? onSwipeEnd : undefined}
+            onPointerCancel={TOUCH ? onSwipeEnd : undefined}
+            style={TOUCH ? { touchAction: 'none' } : undefined}
             // A pointer over the picture is not over the bar, whatever the
             // bar last heard. Its `mouseleave` never comes when the pointer
             // leaves by way of a window on top — the file picker behind "Add
@@ -982,17 +1103,55 @@ export function PlayerOverlay({
               <X size={TOUCH ? 20 : 16} />
             </motion.button>
 
+            {/* The level a swipe is setting, on the side it is set from. */}
+            <AnimatePresence>
+              {level && (
+                <motion.div
+                  key={level.kind}
+                  // Centred through framer's transform: its scale animation
+                  // replaces a class's translate, which sat the bar low.
+                  style={{ y: '-50%' }}
+                  initial={{ opacity: 0, scale: 0.94 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                  className={cn(
+                    'pointer-events-none absolute top-1/2 flex flex-col items-center gap-3 rounded-full bg-black/60 px-3 py-4 backdrop-blur',
+                    level.kind === 'brightness' ? 'left-[10%]' : 'right-[10%]',
+                  )}
+                >
+                  {level.kind === 'brightness' ? (
+                    level.value < 0.35 ? <SunDim size={18} /> : <Sun size={18} />
+                  ) : level.value === 0 ? (
+                    <VolumeX size={18} />
+                  ) : level.value < 0.5 ? (
+                    <Volume1 size={18} />
+                  ) : (
+                    <Volume2 size={18} />
+                  )}
+                  <div className="relative h-28 w-1.5 overflow-hidden rounded-full bg-white/20">
+                    <div
+                      className="absolute inset-x-0 bottom-0 rounded-full bg-white"
+                      style={{ height: `${Math.round(level.value * 100)}%` }}
+                    />
+                  </div>
+                  <span className="tnum font-mono text-[12px] text-text">{Math.round(level.value * 100)}</span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* Where a double tap skipped to, on the side it was tapped. */}
             <AnimatePresence>
               {skipped && (
                 <motion.div
                   key={skipped.side}
+                  style={{ y: '-50%' }}
                   initial={{ opacity: 0, scale: 0.9 }}
                   animate={{ opacity: 1, scale: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.15 }}
                   className={cn(
-                    'pointer-events-none absolute top-1/2 flex -translate-y-1/2 items-center gap-2 rounded-full bg-black/55 px-4 py-2.5 backdrop-blur',
+                    'pointer-events-none absolute top-1/2 flex items-center gap-2 rounded-full bg-black/55 px-4 py-2.5 backdrop-blur',
                     skipped.side < 0 ? 'left-[12%]' : 'right-[12%]',
                   )}
                 >

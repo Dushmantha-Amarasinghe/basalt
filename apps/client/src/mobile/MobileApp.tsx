@@ -1117,7 +1117,10 @@ function LibraryScreen({
 
   if (section === 'movies' || section === 'series') {
     return (
-      <div className="h-full overflow-y-auto px-4 pb-24">
+      // LibraryView scrolls itself. Wrapped in a second scroller with its own
+      // bottom padding, the inner one ended short of the screen and cut the
+      // posters off above an empty band.
+      <div className="h-full">
         <LibraryView
           kind={section === 'movies' ? 'film' : 'series'}
           items={mediaItems}

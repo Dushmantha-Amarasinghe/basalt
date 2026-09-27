@@ -20,6 +20,9 @@ What the Basalt interface may ask of Android directly. Opening files and creatin
 - `allow-can-install-apks`
 - `allow-open-install-settings`
 - `allow-haptic`
+- `allow-player-levels`
+- `allow-set-brightness`
+- `allow-set-volume`
 - `allow-request-notifications`
 - `allow-insets`
 - `allow-register-listener`
@@ -615,6 +618,32 @@ Denies the pick_folder command without any pre-configured scope.
 <tr>
 <td>
 
+`basalt-android:allow-player-levels`
+
+</td>
+<td>
+
+Enables the player_levels command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-player-levels`
+
+</td>
+<td>
+
+Denies the player_levels command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `basalt-android:allow-register-listener`
 
 </td>
@@ -693,6 +722,32 @@ Denies the request_notifications command without any pre-configured scope.
 <tr>
 <td>
 
+`basalt-android:allow-set-brightness`
+
+</td>
+<td>
+
+Enables the set_brightness command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-set-brightness`
+
+</td>
+<td>
+
+Denies the set_brightness command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `basalt-android:allow-set-immersive`
 
 </td>
@@ -738,6 +793,32 @@ Enables the set_orientation command without any pre-configured scope.
 <td>
 
 Denies the set_orientation command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-set-volume`
+
+</td>
+<td>
+
+Enables the set_volume command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-set-volume`
+
+</td>
+<td>
+
+Denies the set_volume command without any pre-configured scope.
 
 </td>
 </tr>

@@ -11,6 +11,7 @@ import android.widget.FrameLayout
 import app.tauri.plugin.JSObject
 import dev.jdtech.mpv.MPVLib
 import org.json.JSONObject
+import java.io.File
 
 /**
  * The player: mpv, drawing on a surface behind the page.
@@ -65,6 +66,15 @@ class MpvPlayer(
     // page draws the black stage music plays on.
     MPVLib.setOptionString("force-window", "no")
     MPVLib.setOptionString("idle", "yes")
+    // Subtitles need a font to draw with. This build of mpv cannot look fonts
+    // up on the phone, so libass falls back to `subfont.ttf` in mpv's config
+    // directory, and with none there a chosen subtitle drew nothing at all.
+    // `config` must be on for the directory to be searched; there is no
+    // mpv.conf in it, so nothing else is read.
+    val configDir = File(activity.filesDir, "mpv")
+    installSubtitleFont(configDir)
+    MPVLib.setOptionString("config", "yes")
+    MPVLib.setOptionString("config-dir", configDir.path)
     MPVLib.init()
 
     MPVLib.addObserver(this)
@@ -72,6 +82,47 @@ class MpvPlayer(
     started = true
 
     attachSurface(webView)
+  }
+
+  /**
+   * Copies one of the phone's own fonts in as `subfont.ttf`, once.
+   *
+   * Taken from the system rather than shipped in the app: every Android phone
+   * has a sans serif to read subtitles in, and this costs the download
+   * nothing. Roboto first, which nearly every phone has, then the fonts
+   * phones use in its place.
+   */
+  private fun installSubtitleFont(dir: File) {
+    val target = File(dir, "subfont.ttf")
+    if (target.length() > 0) return
+    val system = File("/system/fonts")
+    val preferred = listOf(
+      "Roboto-Regular.ttf",
+      "RobotoStatic-Regular.ttf",
+      "NotoSans-Regular.ttf",
+      "GoogleSans-Regular.ttf",
+      "DroidSans.ttf",
+    )
+    val source = preferred.map { File(system, it) }.firstOrNull { it.canRead() && it.length() > 0 }
+      // Any other regular sans that reads Latin text: not a symbol, emoji,
+      // monospace or serif face, and not one for a single other script.
+      ?: system.listFiles()
+        ?.filter { font ->
+          val name = font.name
+          name.endsWith("-Regular.ttf") && "Sans" in name && font.canRead() &&
+            listOf("Symbol", "Emoji", "Mono", "Serif", "CJK").none { it in name } &&
+            (name == "NotoSans-Regular.ttf" || !name.startsWith("NotoSans"))
+        }
+        ?.minByOrNull { it.name }
+      ?: return
+    try {
+      dir.mkdirs()
+      val partial = File(dir, "subfont.ttf.part")
+      source.copyTo(partial, overwrite = true)
+      partial.renameTo(target)
+    } catch (e: Exception) {
+      // Without it subtitles do not show, but nothing else is affected.
+    }
   }
 
   private fun formatOf(format: String): Int = when (format) {

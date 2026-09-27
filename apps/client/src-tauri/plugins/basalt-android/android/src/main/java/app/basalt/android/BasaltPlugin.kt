@@ -6,6 +6,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -20,6 +21,7 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.view.HapticFeedbackConstants
+import android.view.WindowManager
 import android.webkit.MimeTypeMap
 import android.webkit.WebView
 import androidx.activity.result.ActivityResult
@@ -118,6 +120,12 @@ class InstallArgs {
 class HapticArgs {
   /** tap, long or confirm */
   var kind: String? = null
+}
+
+@InvokeArg
+class LevelArgs {
+  /** 0 to 1; for brightness, below 0 hands the screen back to the system. */
+  var level: Double = -1.0
 }
 
 @InvokeArg
@@ -307,6 +315,72 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
       )
       invoke.resolve()
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // The player's swipes: brightness on the left, volume on the right
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Where brightness and volume stand, each 0 to 1, for a swipe to start from.
+   *
+   * Brightness is this window's own if the player has set one, otherwise the
+   * phone's setting, read as a fraction of its usual 0 to 255 range.
+   */
+  @Command
+  fun playerLevels(invoke: Invoke) {
+    val audio = activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+    val volume = audio.getStreamVolume(AudioManager.STREAM_MUSIC).toDouble() / max
+    activity.runOnUiThread {
+      val own = activity.window.attributes.screenBrightness
+      val brightness = if (own >= 0f) own.toDouble() else try {
+        Settings.System.getInt(activity.contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255.0
+      } catch (e: Exception) {
+        0.5
+      }
+      invoke.resolve(
+        JSObject()
+          .put("brightness", brightness.coerceIn(0.0, 1.0))
+          .put("volume", volume.coerceIn(0.0, 1.0))
+          .put("volumeSteps", max)
+      )
+    }
+  }
+
+  /**
+   * Brightness for this window only, as video players do; the phone's own
+   * setting is untouched, and leaving the player hands the screen back.
+   */
+  @Command
+  fun setBrightness(invoke: Invoke) {
+    val args = invoke.parseArgs(LevelArgs::class.java)
+    activity.runOnUiThread {
+      val attributes = activity.window.attributes
+      attributes.screenBrightness = if (args.level < 0) {
+        WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+      } else {
+        // Never fully black: a screen at zero looks like the phone is off.
+        args.level.coerceIn(0.01, 1.0).toFloat()
+      }
+      activity.window.attributes = attributes
+      invoke.resolve()
+    }
+  }
+
+  /** The phone's media volume, the one its buttons change, without its panel. */
+  @Command
+  fun setVolume(invoke: Invoke) {
+    val args = invoke.parseArgs(LevelArgs::class.java)
+    val audio = activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+    val step = Math.round(args.level.coerceIn(0.0, 1.0) * max).toInt()
+    try {
+      audio.setStreamVolume(AudioManager.STREAM_MUSIC, step, 0)
+    } catch (e: SecurityException) {
+      // Do Not Disturb can refuse a change; the swipe simply does nothing.
+    }
+    invoke.resolve(JSObject().put("volume", audio.getStreamVolume(AudioManager.STREAM_MUSIC).toDouble() / max.coerceAtLeast(1)))
   }
 
   // ---------------------------------------------------------------------------
