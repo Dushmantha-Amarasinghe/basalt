@@ -83,6 +83,11 @@ export const android = {
   setVolume: (level: number) => plugin<{ volume: number }>('set_volume', { level }),
   insets: () => plugin<Insets>('insets'),
 
+  /** "Basalt <version> is available", as a phone notification. Whether it showed. */
+  notifyUpdate: async (version: string) =>
+    (await plugin<{ shown: boolean }>('notify_update', { version }))?.shown ?? false,
+  /** What a notification tap asked the app to open, once. */
+  takeAction: async () => (await plugin<{ action: string | null }>('take_action'))?.action ?? null,
   canInstallApks: async () => (await plugin<{ can: boolean }>('can_install_apks'))?.can ?? false,
   openInstallSettings: () => plugin<void>('open_install_settings'),
   installApk: (path: string) => plugin<void>('install_apk', { path }),

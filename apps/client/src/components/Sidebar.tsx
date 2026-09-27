@@ -17,6 +17,7 @@ import {
   Tv,
   Video,
 } from 'lucide-react'
+import { UpdateCard } from './UpdateCard'
 import { cn, formatBytes } from '@/lib/utils'
 import { Avatar } from './ProfileGate'
 
@@ -110,6 +111,8 @@ export function Sidebar({
       </nav>
       <div className="min-h-4 flex-1" />
       </div>
+
+      <UpdateCard onWhatsNew={() => onNavigate('settings')} />
 
       {who && <WhoChip {...who} />}
 

@@ -22,6 +22,8 @@ permissions = [
     "allow-player-levels",
     "allow-set-brightness",
     "allow-set-volume",
+    "allow-notify-update",
+    "allow-take-action",
     "allow-request-notifications",
     "allow-insets",
     "allow-register-listener",

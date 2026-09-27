@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Basalt mark, three hexagonal columns, as a notification icon: Android
+     draws these as a single-colour silhouette, which the full-colour app icon
+     is not, so it came out as a plain disc. Same numbers as the apps' HexMark. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M16.300,8.276 L14.150,12.000 L9.850,12.000 L7.700,8.276 L9.850,4.552 L14.150,4.552 Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.6"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M9.850,15.724 L7.700,19.448 L3.400,19.448 L1.250,15.724 L3.400,12.000 L7.700,12.000 Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.6"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M22.750,15.724 L20.600,19.448 L16.300,19.448 L14.150,15.724 L16.300,12.000 L20.600,12.000 Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.6"
+        android:strokeLineJoin="round" />
+</vector>

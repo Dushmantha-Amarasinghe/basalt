@@ -487,6 +487,18 @@
           "markdownDescription": "Denies the mpv_set_property command without any pre-configured scope."
         },
         {
+          "description": "Enables the notify_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notify-update",
+          "markdownDescription": "Enables the notify_update command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notify_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notify-update",
+          "markdownDescription": "Denies the notify_update command without any pre-configured scope."
+        },
+        {
           "description": "Enables the open_download command without any pre-configured scope.",
           "type": "string",
           "const": "allow-open-download",
@@ -667,6 +679,18 @@
           "markdownDescription": "Denies the share_download command without any pre-configured scope."
         },
         {
+          "description": "Enables the take_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-take-action",
+          "markdownDescription": "Enables the take_action command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the take_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-take-action",
+          "markdownDescription": "Denies the take_action command without any pre-configured scope."
+        },
+        {
           "description": "Enables the take_shared command without any pre-configured scope.",
           "type": "string",
           "const": "allow-take-shared",
@@ -679,10 +703,10 @@
           "markdownDescription": "Denies the take_shared command without any pre-configured scope."
         },
         {
-          "description": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-destroy`",
+          "description": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-destroy`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-destroy`"
+          "markdownDescription": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-destroy`"
         }
       ]
     }

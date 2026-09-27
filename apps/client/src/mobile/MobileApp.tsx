@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  ArrowUpCircle,
   ArrowLeft,
   CheckSquare,
   Clock,
@@ -44,6 +45,8 @@ import { fileToEntry } from '@/lib/useCollections'
 import { cn, formatBytes } from '@/lib/utils'
 import { FilesScreen } from './FilesScreen'
 import { Rise } from './presence'
+import { isAndroid } from '@/lib/platform'
+import { offered, useUpdate, type UpdateState } from '@/lib/updates'
 import { ActionSheet, Sheet } from './Sheet'
 import { useBack } from './useBack'
 
@@ -269,6 +272,24 @@ function Shell({ model }: { model: AppModel }): React.JSX.Element {
     setTab(next)
   }
 
+  // A newer Basalt: a dot on More, a banner over the other tabs until it is
+  // dismissed for that version, and a notification outside the app, once.
+  // Each leads to More, where the offer is with its notes.
+  const update = useUpdate()
+  const [bannerGone, setBannerGone] = useState<string | null>(() => remembered(BANNER_DISMISSED))
+  const showUpdate = useCallback(() => {
+    setSelected(new Set())
+    setSearching(false)
+    setQuery('')
+    setTab('more')
+    setTimeout(
+      () => document.getElementById('basalt-update')?.scrollIntoView({ behavior: 'smooth', block: 'center' }),
+      350,
+    )
+  }, [setSelected])
+  useUpdateNotification(update)
+  useNotificationTaps(showUpdate)
+
   const active = transfers.active
 
   return (
@@ -276,7 +297,7 @@ function Shell({ model }: { model: AppModel }): React.JSX.Element {
       className="relative flex h-full bg-ink"
       style={{ paddingLeft: 'var(--inset-left, 0px)', paddingRight: 'var(--inset-right, 0px)' }}
     >
-      {wide && <Rail tab={tab} onTab={goTo} activeTransfers={active.length} />}
+      {wide && <Rail tab={tab} onTab={goTo} activeTransfers={active.length} attention={offered(update)} />}
 
       <div className="flex min-w-0 flex-1 flex-col">
         <div style={{ height: 'var(--inset-top, 0px)' }} className="shrink-0" />
@@ -388,11 +409,23 @@ function Shell({ model }: { model: AppModel }): React.JSX.Element {
               onDismiss={() => setShared([])}
             />
         </Rise>
+        <Rise show={offered(update) && tab !== 'more' && bannerGone !== update.release.version}>
+          {offered(update) && (
+            <UpdateStrip
+              update={update}
+              onOpen={showUpdate}
+              onDismiss={() => {
+                remember(BANNER_DISMISSED, update.release.version)
+                setBannerGone(update.release.version)
+              }}
+            />
+          )}
+        </Rise>
         <Rise show={active.length > 0}>
           <TransferStrip model={model} onOpen={() => setTransfersOpen(true)} />
         </Rise>
 
-        {!wide && <BottomNav tab={tab} onTab={goTo} activeTransfers={active.length} />}
+        {!wide && <BottomNav tab={tab} onTab={goTo} activeTransfers={active.length} attention={offered(update)} />}
         {wide && <div style={{ height: 'var(--inset-bottom, 0px)' }} className="shrink-0" />}
       </div>
 
@@ -487,10 +520,13 @@ function BottomNav({
   tab,
   onTab,
   activeTransfers,
+  attention = false,
 }: {
   tab: Tab
   onTab: (tab: Tab) => void
   activeTransfers: number
+  /** Something on More wants a look: an update. */
+  attention?: boolean
 }): React.JSX.Element {
   return (
     <nav
@@ -518,7 +554,7 @@ function BottomNav({
               <span className={cn('text-[11.5px]', on ? 'font-medium text-text' : 'text-textFaint')}>
                 {label}
               </span>
-              {key === 'more' && activeTransfers > 0 && (
+              {key === 'more' && (activeTransfers > 0 || attention) && (
                 <span className="absolute right-[calc(50%-22px)] top-2.5 h-2 w-2 rounded-full bg-basalt" />
               )}
             </button>
@@ -533,10 +569,12 @@ function Rail({
   tab,
   onTab,
   activeTransfers,
+  attention = false,
 }: {
   tab: Tab
   onTab: (tab: Tab) => void
   activeTransfers: number
+  attention?: boolean
 }): React.JSX.Element {
   return (
     <nav
@@ -564,7 +602,7 @@ function Rail({
             <span className={cn('text-[11.5px]', on ? 'font-medium text-text' : 'text-textFaint')}>
               {label}
             </span>
-            {key === 'more' && activeTransfers > 0 && (
+            {key === 'more' && (activeTransfers > 0 || attention) && (
               <span className="absolute right-3 top-1 h-2 w-2 rounded-full bg-basalt" />
             )}
           </button>
@@ -932,6 +970,115 @@ function SharedBar({
 // Transfers
 // ---------------------------------------------------------------------------
 
+const BANNER_DISMISSED = 'basalt.update-banner-dismissed'
+const NOTIFIED = 'basalt.update-notified'
+const ASKED_NOTIFICATIONS = 'basalt.asked-notifications'
+
+function remembered(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function remember(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // Private storage unavailable: the reminder simply comes back.
+  }
+}
+
+/** "Basalt 1.4.2 is available", over the other tabs, in the transfer strip's place. */
+function UpdateStrip({
+  update,
+  onOpen,
+  onDismiss,
+}: {
+  update: Extract<UpdateState, { release: unknown }>
+  onOpen: () => void
+  onDismiss: () => void
+}): React.JSX.Element {
+  const line =
+    update.kind === 'ready'
+      ? 'Ready to install'
+      : update.kind === 'downloading'
+        ? `Downloading… ${update.total > 0 ? Math.round((update.had / update.total) * 100) : 0}%`
+        : 'Tap to see what’s new'
+  return (
+    <div className="relative mx-3 mb-2 flex items-center gap-3 overflow-hidden rounded-2xl border border-basalt/30 bg-[#1c1c1f] py-3 pl-4 pr-2 shadow-lift">
+      <button onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+        <ArrowUpCircle size={19} className="shrink-0 text-basalt" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[13.5px] text-text">
+            Basalt {update.release.version} is available
+          </span>
+          <span className="block truncate text-[12px] text-textFaint">{line}</span>
+        </span>
+      </button>
+      <button
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-textFaint active:bg-white/[0.08]"
+      >
+        <X size={17} />
+      </button>
+    </div>
+  )
+}
+
+/**
+ * The notification outside the app, once per version.
+ *
+ * Android 13 and later ask before an app may notify; the question is put the
+ * first time there is an update to tell about, and not again. Remembered
+ * either way, so a refusal is not met with a question on every launch.
+ */
+function useUpdateNotification(update: UpdateState): void {
+  const version = update.kind === 'available' ? update.release.version : null
+  useEffect(() => {
+    if (!version || !isAndroid() || remembered(NOTIFIED) === version) return
+    remember(NOTIFIED, version)
+    void (async () => {
+      if (!remembered(ASKED_NOTIFICATIONS)) {
+        remember(ASKED_NOTIFICATIONS, '1')
+        await android.requestNotifications().catch(() => null)
+      }
+      await android.notifyUpdate(version).catch(() => false)
+    })()
+  }, [version])
+}
+
+/** A tap on the update notification opens the update, whether the app was running or not. */
+function useNotificationTaps(showUpdate: () => void): void {
+  useEffect(() => {
+    if (!isAndroid()) return undefined
+    const take = async (): Promise<void> => {
+      if ((await android.takeAction().catch(() => null)) === 'update') showUpdate()
+    }
+    void take()
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') void take()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    let stop: (() => void) | undefined
+    void (async () => {
+      try {
+        const { addPluginListener } = await import('@tauri-apps/api/core')
+        const listener = await addPluginListener('basalt-android', 'action', () => void take())
+        stop = () => void listener.unregister()
+      } catch {
+        // Not on Android.
+      }
+    })()
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      stop?.()
+    }
+  }, [showUpdate])
+}
+
 function TransferStrip({ model, onOpen }: { model: AppModel; onOpen: () => void }): React.JSX.Element {
   const active = model.transfers.active
   const total = active.reduce((sum, t) => sum + t.total, 0)
@@ -1296,7 +1443,7 @@ function MoreScreen({ model, onTransfers }: { model: AppModel; onTransfers: () =
           </div>
         </Card>
 
-        <div className="rounded-2xl border border-white/[0.07] bg-[#141416] p-4">
+        <div id="basalt-update" className="scroll-mt-4 rounded-2xl border border-white/[0.07] bg-[#141416] p-4">
           <About product="Basalt" />
         </div>
 

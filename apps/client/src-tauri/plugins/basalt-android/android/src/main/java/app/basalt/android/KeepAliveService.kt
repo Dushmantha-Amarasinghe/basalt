@@ -147,7 +147,8 @@ class KeepAliveService : Service() {
           PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
       }
-      val icon = context.applicationInfo.icon.takeIf { it != 0 } ?: android.R.drawable.stat_sys_download
+      // The mark as a one-colour silhouette; the app icon came out as a disc.
+      val icon = R.drawable.ic_stat_basalt
       return NotificationCompat.Builder(context, CHANNEL)
         .setSmallIcon(icon)
         .setContentTitle(shown.title)

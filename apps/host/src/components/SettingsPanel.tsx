@@ -213,7 +213,9 @@ export function SettingsPanel({
         </div>
       </div>
 
-      <About product="Basalt Host" />
+      <div id="host-about" className="scroll-mt-6">
+        <About product="Basalt Host" />
+      </div>
     </div>
   )
 }

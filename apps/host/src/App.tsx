@@ -6,6 +6,7 @@ import { usePoll } from '@/lib/usePoll'
 import { DeviceList } from './components/DeviceList'
 import { PairingRequests } from './components/PairingRequests'
 import { SettingsPanel } from './components/SettingsPanel'
+import { UpdateBanner } from './components/UpdateBanner'
 import { ProfileList } from './components/ProfileList'
 import { Setup } from './components/Setup'
 import { TitleBar } from './components/TitleBar'
@@ -130,6 +131,8 @@ export function App(): React.JSX.Element {
               className="h-full overflow-y-auto"
             >
               <div className="mx-auto flex max-w-[740px] flex-col gap-6 px-8 py-7">
+                <UpdateBanner />
+
                 {!current.serving && current.problem && (
                   <div className="flex items-start gap-3 rounded-md bg-dangerBg px-4 py-3">
                     <span className="mt-0.5 shrink-0 text-danger">

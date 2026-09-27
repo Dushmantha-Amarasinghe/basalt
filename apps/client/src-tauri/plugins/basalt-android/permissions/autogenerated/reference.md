@@ -23,6 +23,8 @@ What the Basalt interface may ask of Android directly. Opening files and creatin
 - `allow-player-levels`
 - `allow-set-brightness`
 - `allow-set-volume`
+- `allow-notify-update`
+- `allow-take-action`
 - `allow-request-notifications`
 - `allow-insets`
 - `allow-register-listener`
@@ -462,6 +464,32 @@ Denies the mpv_set_property command without any pre-configured scope.
 <tr>
 <td>
 
+`basalt-android:allow-notify-update`
+
+</td>
+<td>
+
+Enables the notify_update command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-notify-update`
+
+</td>
+<td>
+
+Denies the notify_update command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `basalt-android:allow-open-download`
 
 </td>
@@ -845,6 +873,32 @@ Enables the share_download command without any pre-configured scope.
 <td>
 
 Denies the share_download command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-take-action`
+
+</td>
+<td>
+
+Enables the take_action command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-take-action`
+
+</td>
+<td>
+
+Denies the take_action command without any pre-configured scope.
 
 </td>
 </tr>

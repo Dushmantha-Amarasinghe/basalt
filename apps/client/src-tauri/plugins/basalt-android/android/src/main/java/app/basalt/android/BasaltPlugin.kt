@@ -2,10 +2,14 @@ package app.basalt.android
 
 import android.Manifest
 import android.app.Activity
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.Network
@@ -25,6 +29,7 @@ import android.view.WindowManager
 import android.webkit.MimeTypeMap
 import android.webkit.WebView
 import androidx.activity.result.ActivityResult
+import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -41,6 +46,7 @@ import app.tauri.plugin.JSArray
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import java.io.File
+import org.json.JSONObject
 
 @InvokeArg
 class PickArgs {
@@ -123,6 +129,11 @@ class HapticArgs {
 }
 
 @InvokeArg
+class NotifyUpdateArgs {
+  lateinit var version: String
+}
+
+@InvokeArg
 class LevelArgs {
   /** 0 to 1; for brightness, below 0 hands the screen back to the system. */
   var level: Double = -1.0
@@ -178,6 +189,8 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   private var multicast: WifiManager.MulticastLock? = null
   private var wifiCallback: ConnectivityManager.NetworkCallback? = null
   private val shared = mutableListOf<JSObject>()
+  /** What a notification asked the app to open, until the page takes it. */
+  private var pendingAction: String? = null
   private var lastInsets = JSObject()
   private val player by lazy { MpvPlayer(activity) { event -> trigger("mpv", event) } }
 
@@ -186,13 +199,25 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
     watchInsets(webView)
     bindToWifi()
     acquireMulticast()
-    activity.intent?.let { collectShared(it) }
+    activity.intent?.let {
+      collectShared(it)
+      collectAction(it)
+    }
   }
 
   override fun onNewIntent(intent: Intent) {
     if (collectShared(intent)) {
       trigger("shared", JSObject().put("count", shared.size))
     }
+    collectAction(intent)?.let { trigger("action", JSObject().put("action", it)) }
+  }
+
+  /** A tap on one of the app's own notifications, naming what to open. */
+  private fun collectAction(intent: Intent): String? {
+    val action = intent.getStringExtra(ACTION_EXTRA) ?: return null
+    intent.removeExtra(ACTION_EXTRA)
+    pendingAction = action
+    return action
   }
 
   override fun onResume() {
@@ -812,6 +837,61 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   // Updates
   // ---------------------------------------------------------------------------
 
+  /**
+   * "Basalt 1.4.2 is available", outside the app, once per version: the page
+   * remembers which versions it has announced. Its own channel, so it can be
+   * switched off in Android's settings without silencing transfers. Tapping it
+   * opens the app at the update.
+   */
+  @Command
+  fun notifyUpdate(invoke: Invoke) {
+    val args = invoke.parseArgs(NotifyUpdateArgs::class.java)
+    val context = activity.applicationContext
+    val allowed = Build.VERSION.SDK_INT < 33 ||
+      context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    if (!allowed) {
+      invoke.resolve(JSObject().put("shown", false))
+      return
+    }
+    val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    if (Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(UPDATE_CHANNEL) == null) {
+      manager.createNotificationChannel(
+        NotificationChannel(UPDATE_CHANNEL, "Updates", NotificationManager.IMPORTANCE_DEFAULT).apply {
+          description = "When a new version of Basalt is available."
+        }
+      )
+    }
+    val open = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
+      putExtra(ACTION_EXTRA, "update")
+      addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+    }
+    val tap = open?.let {
+      PendingIntent.getActivity(
+        context, UPDATE_NOTIFICATION, it,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+      )
+    }
+    // The mark as a one-colour silhouette; the app icon came out as a disc.
+    val icon = R.drawable.ic_stat_basalt
+    val notification = NotificationCompat.Builder(context, UPDATE_CHANNEL)
+      .setSmallIcon(icon)
+      .setContentTitle("Basalt ${args.version} is available")
+      .setContentText("Tap to see what's new and update.")
+      .setAutoCancel(true)
+      .setContentIntent(tap)
+      .build()
+    manager.notify(UPDATE_NOTIFICATION, notification)
+    invoke.resolve(JSObject().put("shown", true))
+  }
+
+  /** What a notification tap asked for, once: "update", or nothing. */
+  @Command
+  fun takeAction(invoke: Invoke) {
+    val action = pendingAction
+    pendingAction = null
+    invoke.resolve(JSObject().put("action", action ?: JSONObject.NULL))
+  }
+
   @Command
   fun canInstallApks(invoke: Invoke) {
     val can = Build.VERSION.SDK_INT < 26 || activity.packageManager.canRequestPackageInstalls()
@@ -896,5 +976,11 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   private fun mimeOf(name: String): String {
     val ext = name.substringAfterLast('.', "").lowercase()
     return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+  }
+
+  companion object {
+    private const val ACTION_EXTRA = "basalt.action"
+    private const val UPDATE_CHANNEL = "basalt-updates"
+    private const val UPDATE_NOTIFICATION = 7301
   }
 }

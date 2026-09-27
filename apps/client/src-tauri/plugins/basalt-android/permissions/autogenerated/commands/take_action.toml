@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-take-action"
+description = "Enables the take_action command without any pre-configured scope."
+commands.allow = ["take_action"]
+
+[[permission]]
+identifier = "deny-take-action"
+description = "Denies the take_action command without any pre-configured scope."
+commands.deny = ["take_action"]

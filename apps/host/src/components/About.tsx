@@ -1,8 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AlertCircle, ArrowUpCircle, Check, ExternalLink, Github, Loader2 } from 'lucide-react'
 import { api, inTauri, type Release } from '@/lib/api'
 import { parseNotes } from '@/lib/notes'
+import {
+  checkForUpdate,
+  downloadUpdate,
+  installUpdate,
+  offered,
+  useUpdate,
+  type UpdateState,
+} from '@/lib/updates'
 import { cn, formatBytes } from '@/lib/utils'
 
 export const WEBSITE = 'https://reforatech.com'
@@ -12,9 +20,9 @@ export const ISSUES = `${REPO}/issues/new`
 /**
  * Who made this, which version it is, and whether there is a newer one.
  *
- * Checked once on open rather than on a timer. An update is not urgent — it
- * is waiting whenever somebody next looks — and an app that polls a release
- * API in the background is an app making requests nobody asked for.
+ * The check itself lives in `lib/updates`, shared with the banner at the top
+ * of the window, and runs on its own when the host opens; this is where the
+ * whole offer is, release notes and all, and where to check by hand.
  *
  * Downloading and installing are separate presses. The download is verified
  * against the checksum published beside it, and only then is there anything
@@ -23,66 +31,13 @@ export const ISSUES = `${REPO}/issues/new`
  */
 export function About({ product }: { product: string }): React.JSX.Element {
   const [version, setVersion] = useState('')
-  const [state, setState] = useState<State>({ kind: 'idle' })
-  const progress = useRef<() => void>(() => {})
+  const state = useUpdate()
 
   useEffect(() => {
     void api.appVersion().then(setVersion).catch(() => {})
   }, [])
 
-  const check = useCallback(async (quiet: boolean) => {
-    setState(quiet ? { kind: 'idle' } : { kind: 'checking' })
-    try {
-      const release = await api.checkUpdate()
-      setState(release ? { kind: 'available', release } : { kind: 'current' })
-    } catch (e) {
-      // Only when somebody asked. A background check that cannot reach
-      // GitHub is not news, and saying so on every launch would train people
-      // to ignore the one time it matters.
-      setState(quiet ? { kind: 'idle' } : { kind: 'failed', why: String(e) })
-    }
-  }, [])
-
-  // One quiet look on open, so the offer is already there when wanted.
-  useEffect(() => {
-    void check(true)
-  }, [check])
-
-  // Progress arrives from the shell as the bytes land.
-  useEffect(() => {
-    const onProgress = ([had, total]: [number, number]): void => {
-      setState((s) => (s.kind === 'downloading' ? { ...s, had, total } : s))
-    }
-
-    // In a browser preview the same payload arrives as a window event, so the
-    // bar can be reviewed without a release to download.
-    if (!inTauri()) {
-      const relay = (event: Event): void =>
-        onProgress((event as CustomEvent<[number, number]>).detail)
-      window.addEventListener('basalt://update-progress', relay)
-      return () => window.removeEventListener('basalt://update-progress', relay)
-    }
-
-    let stop: (() => void) | undefined
-    void (async () => {
-      const { listen } = await import('@tauri-apps/api/event')
-      stop = await listen<[number, number]>('basalt://update-progress', (event) =>
-        onProgress(event.payload),
-      )
-    })()
-    progress.current = () => stop?.()
-    return () => stop?.()
-  }, [])
-
-  const download = async (release: Release): Promise<void> => {
-    setState({ kind: 'downloading', release, had: 0, total: release.installerBytes })
-    try {
-      const path = await api.downloadUpdate(release)
-      setState({ kind: 'ready', release, path })
-    } catch (e) {
-      setState({ kind: 'failed', why: String(e) })
-    }
-  }
+  const check = (quiet: boolean): Promise<void> => checkForUpdate(quiet)
 
   return (
     <div className="px-4 py-3.5">
@@ -123,14 +78,12 @@ export function About({ product }: { product: string }): React.JSX.Element {
             </Line>
           )}
 
-          {(state.kind === 'available' ||
-            state.kind === 'downloading' ||
-            state.kind === 'ready') && (
+          {offered(state) && (
             <Offer
               release={state.release}
               state={state}
-              onDownload={() => void download(state.release)}
-              onInstall={(path) => void api.installUpdate(path).catch(() => {})}
+              onDownload={() => void downloadUpdate()}
+              onInstall={() => void installUpdate()}
             />
           )}
         </motion.div>
@@ -160,14 +113,7 @@ export function About({ product }: { product: string }): React.JSX.Element {
   )
 }
 
-type State =
-  | { kind: 'idle' }
-  | { kind: 'checking' }
-  | { kind: 'current' }
-  | { kind: 'failed'; why: string }
-  | { kind: 'available'; release: Release }
-  | { kind: 'downloading'; release: Release; had: number; total: number }
-  | { kind: 'ready'; release: Release; path: string }
+type State = UpdateState
 
 /** The offer itself: what is new, and what to do about it. */
 function Offer({
@@ -179,7 +125,7 @@ function Offer({
   release: Release
   state: State
   onDownload: () => void
-  onInstall: (path: string) => void
+  onInstall: () => void
 }): React.JSX.Element {
   const busy = state.kind === 'downloading'
   const done = state.kind === 'ready'
@@ -203,7 +149,7 @@ function Offer({
 
         {done ? (
           <button
-            onClick={() => onInstall((state as { path: string }).path)}
+            onClick={onInstall}
             className="shrink-0 rounded-md border border-basalt/40 bg-basalt/15 px-3 py-1.5 text-[11.5px] text-text transition-colors hover:bg-basalt/25"
           >
             Install and restart

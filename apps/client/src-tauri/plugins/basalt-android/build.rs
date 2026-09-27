@@ -23,6 +23,8 @@ const COMMANDS: &[&str] = &[
     "player_levels",
     "set_brightness",
     "set_volume",
+    "notify_update",
+    "take_action",
     "request_notifications",
     "insets",
     "mpv_init",
