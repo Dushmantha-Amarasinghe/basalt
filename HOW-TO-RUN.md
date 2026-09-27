@@ -1,7 +1,7 @@
 # How to run Basalt
 
-Two programs. One on the laptop with the drive, one on the machine you browse
-from.
+Two programs. One on the laptop with the drive, one on each machine you browse
+from — a Windows PC, or an Android phone or tablet.
 
 **There is no address to type.** The client finds the host on the network by
 itself, and keeps finding it after the router hands out a different address.
@@ -13,7 +13,7 @@ itself, and keeps finding it after the router hands out a different address.
 Run the installer:
 
 ```
-apps\host\src-tauri\target\release\bundle\nsis\Basalt Host_1.3.0_x64-setup.exe
+apps\host\src-tauri\target\release\bundle\nsis\Basalt Host_1.4.0_x64-setup.exe
 ```
 
 It installs for your account only, so Windows does not ask for an
@@ -66,7 +66,7 @@ sharing settings, nothing on any other machine.
 Run the installer:
 
 ```
-apps\client\src-tauri\target\release\bundle\nsis\Basalt_1.3.0_x64-setup.exe
+apps\client\src-tauri\target\release\bundle\nsis\Basalt_1.4.0_x64-setup.exe
 ```
 
 It opens on the pairing screen.
@@ -109,6 +109,51 @@ name, and everything stays in **Files** regardless, recognised or not.
 A host that has not been given a drive yet is still listed, greyed out and
 labelled, rather than left out with no explanation.
 
+## On a phone or tablet — Basalt for Android
+
+Copy the app to the phone and open it:
+
+```
+apps\client\src-tauri\gen\android\app\build\outputs\apk\universal\release\app-universal-release.apk
+```
+
+It is published as `Basalt-Android-1.4.0.apk`. Android asks, once, to allow
+whatever opened it — the browser, or the Files app — to install apps. That
+permission is only for installing, and can be switched off again afterwards.
+It needs Android 8.0 or later on a 64-bit phone, which is every phone of the
+last several years.
+
+Pairing is the same as on a PC: the phone lists the hosts on the Wi-Fi, you
+tap yours, and type the PIN the host shows. The phone has to be on the same
+Wi-Fi as the host. If the list stays empty, **Enter the address instead** takes
+the host's address, as a last resort.
+
+Once in, there are four tabs — **Files**, **Library**, **Recent** and **More** —
+along the bottom on a phone, and down the side on a tablet.
+
+- **Tap** a folder to open it, a photo, film or song to play it, and anything
+  else for its menu. The **⋮** on each row is the same menu a right-click gives
+  on the desktop. **Long-press** to start choosing several.
+- **The + button** uploads into the folder you are in: photos and videos from
+  the gallery, any files, or a whole folder with everything inside it. Sharing
+  from any other app to **Basalt** works too; it offers to upload into the
+  folder you open next.
+- **Downloads** go to the phone's **Download/Basalt** folder, where every other
+  app can see them. **Transfers**, under **More** or on the strip above the
+  tabs, opens or shares what has finished.
+- **Films** play in the app, full screen, turned to suit the picture. Tap for
+  the controls; double-tap the left or right side to skip ten seconds, and
+  keep tapping to skip further. Back closes the player. **Play in your
+  player** hands the stream to VLC or MX Player instead.
+- **Photos** pinch to zoom, swipe to the next, and swipe down to close.
+- A transfer or a song carries on with the screen off. A notification says so
+  while it does; Android asks once whether Basalt may show one.
+
+**Updates** come from the same place as the desktop's. **More → Check for
+updates** downloads the new version, checks it against its published checksum,
+and hands it to Android's installer. The first time, Android asks you to allow
+Basalt to install apps.
+
 ---
 
 ## If something goes wrong
@@ -124,6 +169,18 @@ list is still empty, the firewall prompt was probably dismissed; see below.
 This is the case the whole design is built around, and it should just work: the
 client finds the host again wherever it has moved to. If it does not, the host
 is not running.
+
+**The phone lists no hosts**
+The phone has to be on the same Wi-Fi as the host, not on mobile data. Guest
+networks usually keep devices apart, as does "AP isolation" on some routers.
+**Enter the address instead** on the pairing screen takes the host's address
+(it is on the host's window) when discovery cannot get through.
+
+**Android says it cannot install the app or an update**
+Android blocks installing from anything it has not been told to trust. Tap
+**Settings** on its message, switch on **Allow from this source**, and go back.
+An update that Android refuses as a conflict was signed with a different key —
+a test build, usually; uninstall it and install the published one.
 
 **"That pairing request has expired"**
 Requests last three minutes. Ask again from the client and a fresh number
@@ -228,9 +285,11 @@ cannot tell you why.
 |---|---|
 | Host identity, drive and paired devices | `%APPDATA%\Basalt\host.json` on the host |
 | The media index | `%APPDATA%\Basalt\library-*.json` on the host, one per drive |
-| Downloaded posters | `%APPDATA%\Basaltrt\` on the host |
+| Downloaded posters | `%APPDATA%\Basalt\art\` on the host |
 | Where things were watched to | `%APPDATA%\Basalt\progress-*.json` on the host |
 | Paired hosts and their tokens | `%APPDATA%\Basalt\client.json` on the client |
+| The same, on a phone | The app's private storage, left out of backups |
+| Downloads on a phone | `Download/Basalt/` in the phone's storage |
 | The startup entry | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `Basalt Host` |
 
 Deleting the host's file changes its identity, and every device has to pair

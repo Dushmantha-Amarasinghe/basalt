@@ -3,6 +3,7 @@
   <p><b>One drive, on every device in the house. No addresses, no accounts, no setup.</b></p>
   <p>
     <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-blue?style=flat-square" alt="Windows 10/11" />
+    <img src="https://img.shields.io/badge/Android-8.0%2B-3ddc84?style=flat-square" alt="Android 8.0+" />
     <img src="https://img.shields.io/github/license/Dushmantha-Amarasinghe/basalt?style=flat-square" alt="License" />
     <img src="https://img.shields.io/github/v/release/Dushmantha-Amarasinghe/basalt?style=flat-square" alt="Release" />
     <img src="https://img.shields.io/github/downloads/Dushmantha-Amarasinghe/basalt/total?style=flat-square" alt="Downloads" />
@@ -19,7 +20,8 @@
 
 **Basalt** by Refora Technologies turns one spare machine into a drive your
 other devices can use. It comes in two halves: **Basalt Host** runs on the
-machine with the drive, and **Basalt** runs everywhere else.
+machine with the drive, and **Basalt** runs everywhere else — on Windows PCs,
+and on Android phones and tablets.
 
 The point of it is that there is nothing to configure. You pick a drive on the
 host; on another device you pick the host from a list and read a PIN across.
@@ -85,6 +87,14 @@ be today.
 - **A drive that comes and goes.** Unplug the host's drive and it says so, on
   the host and on every device; plug it back in and it is shared again, with
   nothing to redo.
+- **On your phone and tablet too.** The Android app is the same app, laid out
+  for touch: tabs along the bottom on a phone and a rail down the side on a
+  tablet, a tap to open, a long press to choose several. Upload from the
+  phone's own picker or share straight into Basalt from any other app;
+  downloads land in the phone's Download folder. Films play in the app on the
+  same mpv as the desktop — full screen, turned to suit the picture, with a
+  double tap either side to skip — and photos pinch, swipe and zoom. A
+  transfer or a song carries on with the screen off.
 - **Several devices at once.** There is no device limit and no connection
   limit; the host serves bytes and nothing more, so more viewers cost it
   almost nothing.
@@ -97,7 +107,8 @@ be today.
 | Transport | TCP, TLS 1.3 (rustls + ring), SPKI pinning, custom binary protocol |
 | Discovery | UDP beacon on the local network |
 | Desktop shells | Tauri v2, React 19, TypeScript, Tailwind, Framer Motion |
-| Playback | libmpv |
+| Android app | Tauri v2 mobile, the same React interface, a Kotlin plugin |
+| Playback | libmpv, on Windows and Android |
 | Integrity | BLAKE3 per transfer, SHA-256 on updates |
 
 ## Installation
@@ -106,16 +117,25 @@ Download the latest installers from the
 [releases page](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest):
 
 - **`Basalt-Host-x.y.z-setup.exe`** — on the machine with the drive.
-- **`Basalt-Client-x.y.z-setup.exe`** — on every device that should reach it.
+- **`Basalt-Client-x.y.z-setup.exe`** — on every Windows PC that should reach it.
+- **`Basalt-Android-x.y.z.apk`** — on Android phones and tablets (Android 8.0
+  or later, 64-bit).
 
-Both install per-user and need no administrator. Each release also publishes a
-`.sha256` beside each installer if you want to check what you downloaded.
+Both Windows installers install per-user and need no administrator. Each
+release also publishes a `.sha256` beside each file if you want to check what
+you downloaded.
+
+The Android app is not on the Play Store. Open the `.apk` on the phone and
+allow your browser or file manager to install it when Android asks; that
+permission is only for installing, and can be switched off again afterwards.
 
 Then: open Basalt Host, pick a drive, and open Basalt on another device. It
 will list the host; select it and type the PIN the host shows.
 
-Both apps check for updates on their own and will tell you what is in the new
-version before you install it.
+All three apps check for updates on their own and will tell you what is in the
+new version before you install it. On Android the update is downloaded,
+checked against its published checksum, and handed to Android's own installer;
+the first time, Android asks you to allow Basalt to install it.
 
 ## Configuration & Usage
 
@@ -132,6 +152,11 @@ Everything Basalt keeps lives in `%APPDATA%\Basalt\`:
 
 Deleting `host.json` regenerates the host's identity, which un-pairs every
 device. The rest can be deleted freely.
+
+On Android the app keeps what it needs in its own private storage, which is
+left out of phone backups, so its pairing never travels to another device.
+Clearing the app's storage, or **Forget this drive** under **More**, means
+pairing again.
 
 **Optional, and off by default:** recognising films and series reads the whole
 drive, and downloading posters sends each recognised title to a lookup service.
@@ -163,6 +188,39 @@ cargo run -p catalog-build --release
 
 `cargo test --all` runs the Rust suite; `npm test` in either app runs its own.
 
+### The Android app
+
+It needs the Android SDK with NDK 28, JDK 17, and Rust's Android targets:
+
+```
+rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+set NDK_HOME=%LOCALAPPDATA%\Android\Sdk\ndk\28.2.13676358
+set JAVA_HOME=C:\Program Files\Java\jdk-17
+cd apps/client && npx tauri android build --apk --target aarch64
+```
+
+The phone's player is mpv too, from the `dev.jdtech.mpv:libmpv` package, which
+Gradle fetches by itself; the desktop's Windows libraries are left out.
+
+Release builds are signed with a key kept outside the repository. Gradle reads
+its location and passwords from
+`%USERPROFILE%\.basalt\android-signing\keystore.properties`, or from the file
+`BASALT_SIGNING` names:
+
+```
+storeFile=D:/path/to/basalt-release.keystore
+storePassword=...
+keyAlias=basalt
+keyPassword=...
+```
+
+Without it the build is left unsigned. Keep the key safe: Android installs an
+update only over an app signed with the same key.
+
+`npx tauri android build --debug --apk --target x86_64` builds for the
+emulator. After regenerating icons with `npx tauri icon`, run
+`python tools/make-icons.py` again so the Android project has its own.
+
 ## License
 
 This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
@@ -171,8 +229,8 @@ You are free to use, modify and distribute this software, provided any
 derivative works are also open-source under the identical terms. See the
 `LICENSE` file for the complete terms.
 
-Basalt bundles libmpv (LGPL-2.1-or-later) and links a number of open-source
-libraries. See `THIRD-PARTY-NOTICES.txt` for full attribution.
+Basalt bundles libmpv (LGPL-2.1-or-later) — and, in the Android app, the
+libmpv-android build of it — and links a number of open-source libraries. See `THIRD-PARTY-NOTICES.txt` for full attribution.
 
 ---
 

@@ -6,8 +6,8 @@ License v3.0. It bundles and links to the components below. Each remains
 under its own licence, and nothing here overrides those terms.
 
 
-BUNDLED BINARIES (shipped inside the client installer)
-------------------------------------------------------
+BUNDLED BINARIES (shipped inside the client installer and the Android app)
+--------------------------------------------------------------------------
 
 libmpv  (mpv)                                   LGPL-2.1-or-later
   https://mpv.io  ·  https://github.com/mpv-player/mpv
@@ -22,6 +22,13 @@ libmpv  (mpv)                                   LGPL-2.1-or-later
 libmpv-wrapper                                  MPL-2.0
   https://github.com/nini22P/libmpv-wrapper
   A small shim between the Tauri plugin and libmpv.
+
+libmpv-android  (dev.jdtech.mpv:libmpv)         MIT
+  https://github.com/jarnedemeulemeester/libmpv-android
+  The Android app's player: mpv and FFmpeg built for Android, with a small
+  Java interface to them, shipped as shared libraries inside the app. The
+  packaging is MIT-licensed; the mpv and FFmpeg libraries inside it remain
+  under their own licences, as above.
 
 
 RUST CRATES
