@@ -36,7 +36,7 @@ const DEFAULT_ENDPOINT: &str = "https://qlever.dev/api/wikidata";
 const USER_AGENT: &str = concat!(
     "BasaltCatalogBuilder/",
     env!("CARGO_PKG_VERSION"),
-    " (https://github.com/Dushmantha-Amarasinghe/basalt)"
+    " (https://github.com/refora-technologies/basalt)"
 );
 
 const PREFIXES: &str = "PREFIX wd: <http://www.wikidata.org/entity/>

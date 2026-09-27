@@ -67,7 +67,7 @@ fn wanted(product: Product, platform: Platform) -> (&'static str, &'static str) 
 }
 
 /// Where releases are published.
-pub const OWNER: &str = "Dushmantha-Amarasinghe";
+pub const OWNER: &str = "refora-technologies";
 pub const REPO: &str = "basalt";
 
 /// How long any one request may take to begin answering.

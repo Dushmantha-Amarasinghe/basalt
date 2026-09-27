@@ -5,18 +5,18 @@
   <p>
     <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-blue?style=flat-square" alt="Windows 10/11" />
     <img src="https://img.shields.io/badge/Android-8.0%2B-3ddc84?style=flat-square" alt="Android 8.0+" />
-    <img src="https://img.shields.io/github/license/Dushmantha-Amarasinghe/basalt?style=flat-square" alt="License" />
-    <img src="https://img.shields.io/github/v/release/Dushmantha-Amarasinghe/basalt?style=flat-square" alt="Release" />
-    <img src="https://img.shields.io/github/downloads/Dushmantha-Amarasinghe/basalt/total?style=flat-square" alt="Downloads" />
+    <img src="https://img.shields.io/github/license/refora-technologies/basalt?style=flat-square" alt="License" />
+    <img src="https://img.shields.io/github/v/release/refora-technologies/basalt?style=flat-square" alt="Release" />
+    <img src="https://img.shields.io/github/downloads/refora-technologies/basalt/total?style=flat-square" alt="Downloads" />
   </p>
   <p>
-    <a href="https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Host-Setup.exe"><b>Host for Windows</b></a> &nbsp;·&nbsp;
-    <a href="https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Client-Setup.exe"><b>Basalt for Windows</b></a> &nbsp;·&nbsp;
-    <a href="https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Android.apk"><b>Basalt for Android</b></a>
+    <a href="https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Setup.exe"><b>Host for Windows</b></a> &nbsp;·&nbsp;
+    <a href="https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Setup.exe"><b>Basalt for Windows</b></a> &nbsp;·&nbsp;
+    <a href="https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk"><b>Basalt for Android</b></a>
   </p>
   <p>
     <a href="https://basalt.reforatech.com">basalt.reforatech.com</a> &nbsp;·&nbsp;
-    <a href="https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest">Release notes</a> &nbsp;·&nbsp;
+    <a href="https://github.com/refora-technologies/basalt/releases/latest">Release notes</a> &nbsp;·&nbsp;
     <a href="https://reforatech.com">Refora Technologies</a>
   </p>
 </div>
@@ -193,12 +193,12 @@ Download the latest version:
 
 | Download | Install on |
 |---|---|
-| **[`Basalt-Host-Setup.exe`](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Host-Setup.exe)** | The Windows PC with the drive |
-| **[`Basalt-Client-Setup.exe`](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Client-Setup.exe)** | Every Windows PC that should reach it |
-| **[`Basalt-Android.apk`](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest/download/Basalt-Android.apk)** | Android phones and tablets (Android 8.0 or later, 64-bit) |
+| **[`Basalt-Host-Setup.exe`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Setup.exe)** | The Windows PC with the drive |
+| **[`Basalt-Client-Setup.exe`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Setup.exe)** | Every Windows PC that should reach it |
+| **[`Basalt-Android.apk`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk)** | Android phones and tablets (Android 8.0 or later, 64-bit) |
 
 These links always give the newest release. Each file has a `.sha256` beside
-it on the [releases page](https://github.com/Dushmantha-Amarasinghe/basalt/releases/latest)
+it on the [releases page](https://github.com/refora-technologies/basalt/releases/latest)
 if you want to check what you downloaded.
 
 Both Windows installers install per user and need no administrator rights.

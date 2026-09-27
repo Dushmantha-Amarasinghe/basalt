@@ -6,7 +6,7 @@ import { parseNotes } from '@/lib/notes'
 import { cn, formatBytes } from '@/lib/utils'
 
 export const WEBSITE = 'https://reforatech.com'
-export const REPO = 'https://github.com/Dushmantha-Amarasinghe/basalt'
+export const REPO = 'https://github.com/refora-technologies/basalt'
 export const ISSUES = `${REPO}/issues/new`
 
 /**

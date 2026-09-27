@@ -49,7 +49,7 @@
     "publisher": "Refora Technologies",
     "copyright": "\u00a9 2026 Refora Technologies",
     "category": "Utility",
-    "homepage": "https://github.com/Dushmantha-Amarasinghe/basalt",
+    "homepage": "https://github.com/refora-technologies/basalt",
     "licenseFile": "../../../LICENSE",
     "shortDescription": "Your drive, on every device in the house.",
     "longDescription": "Basalt puts one drive on your home network and lets your own devices browse, stream and copy from it. Devices find the host by themselves, so there is no address to type and no account to make. Films and series get their own library, and the built-in player handles the formats a browser cannot."
