@@ -371,6 +371,8 @@ export const api = {
   connectTo: (hostId: string, address?: string) =>
     call<Status>('connect_to', { hostId, address: address ?? null }),
   disconnect: () => call<Status>('disconnect'),
+  /** Watches afresh, for an app coming back to the screen. */
+  rewatch: () => call<void>('rewatch'),
   forgetHost: (hostId: string) => call<Status>('forget_host', { hostId }),
 
   library: (knownRevision: number) =>

@@ -279,7 +279,8 @@ export function useVault(): Vault {
   // attempt and has already dropped the pairing.
   useAsyncSubscription(
     true,
-    useCallback(() => onRemoved((message) => setRemoved(message)), []),
+    // The first word on a removal stands: it is the one that names the host.
+    useCallback(() => onRemoved((message) => setRemoved((was) => was ?? message)), []),
   )
 
   useAsyncSubscription(

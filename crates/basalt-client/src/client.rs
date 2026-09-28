@@ -349,27 +349,34 @@ impl Basalt {
 
     /// Drops a host that has removed this device, and says which it was.
     pub async fn removed(&self, host_id: &str) -> ClientError {
-        let known = self
-            .store
-            .lock()
-            .expect("store lock")
-            .find(host_id)
-            .cloned();
+        self.drop_removed(host_id)
+            .await
+            .unwrap_or_else(|| ClientError::Removed {
+                host_name: "The host".into(),
+                vault: "the drive".into(),
+            })
+    }
+
+    /// [`Basalt::removed`], but `None` when the pairing had already been
+    /// dropped. Several connections can learn of one removal at once, a
+    /// watch and the one replacing it, and only the first can still name the
+    /// host: the rest must not report it again without the names.
+    async fn drop_removed(&self, host_id: &str) -> Option<ClientError> {
+        // Found and forgotten under one lock, so exactly one caller gets it.
+        let known = {
+            let mut store = self.store.lock().expect("store lock");
+            let known = store.find(host_id).cloned();
+            store.forget(host_id);
+            known
+        }?;
         if self.status().map(|i| i.host_id).as_deref() == Some(host_id) {
             self.disconnect().await;
         }
-        self.store.lock().expect("store lock").forget(host_id);
         let _ = self.save_store();
-        match known {
-            Some(host) => ClientError::Removed {
-                host_name: host.host_name,
-                vault: host.vault,
-            },
-            None => ClientError::Removed {
-                host_name: "The host".into(),
-                vault: "the drive".into(),
-            },
-        }
+        Some(ClientError::Removed {
+            host_name: known.host_name,
+            vault: known.vault,
+        })
     }
 
     async fn connect_known(&self, host_id: &str, address: Option<&str>) -> Result<SessionInfo> {
@@ -837,8 +844,10 @@ impl Basalt {
                     // The caller asked it to stop.
                     Ok(()) => return,
                     Err(e) if e.kind() == "unpaired" => {
-                        if let Some(host_id) = client.status().map(|i| i.host_id) {
-                            on_notice(WatchNotice::Removed(client.removed(&host_id).await));
+                        if let Some(host_id) = client.status().map(|i| i.host_id)
+                            && let Some(removed) = client.drop_removed(&host_id).await
+                        {
+                            on_notice(WatchNotice::Removed(removed));
                         }
                         return;
                     }

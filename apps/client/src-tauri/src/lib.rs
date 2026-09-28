@@ -153,6 +153,20 @@ async fn connect_to(
     Ok(status_of(&state.client))
 }
 
+/// Starts the watch again, for a phone coming back to the screen.
+///
+/// A phone asleep, or an app in the background, can lose its connection
+/// without either end noticing, and whatever the host said on it meanwhile
+/// (this device removed, made read-only) is lost with it. A fresh watch asks
+/// again: connecting is where the device learns both.
+#[tauri::command]
+async fn rewatch(state: State<'_, AppState>, app: tauri::AppHandle) -> Answer<()> {
+    if state.client.is_connected() {
+        start_watching(&state.client, &app);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn disconnect(state: State<'_, AppState>) -> Answer<Status> {
     // Dropped, not left running: a watch with nothing to watch is a retry loop.
@@ -1163,6 +1177,7 @@ pub fn run() {
             library_art,
             watch_progress,
             connect_to,
+            rewatch,
             disconnect,
             forget_host,
             list_dir,

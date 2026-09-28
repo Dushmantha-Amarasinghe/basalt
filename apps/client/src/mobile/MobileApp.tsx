@@ -76,6 +76,16 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
     document.documentElement.classList.add('mobile')
   }, [])
 
+  // Back on the screen: anything the host said while the phone slept may
+  // have been lost with its connection, so the watch starts again and asks.
+  useEffect(() => {
+    const onShow = (): void => {
+      if (document.visibilityState === 'visible') void api.rewatch().catch(() => {})
+    }
+    document.addEventListener('visibilitychange', onShow)
+    return () => document.removeEventListener('visibilitychange', onShow)
+  }, [])
+
   const { vault, identity, connected } = model
   // Choosing another drive from More: the drive list, with a way back.
   const [changingDrive, setChangingDrive] = useState(false)
