@@ -35,7 +35,7 @@ export function UpdateBanner(): React.JSX.Element {
               </div>
               <div className="tnum mt-0.5 font-mono text-[10.5px] text-textFaint">
                 {formatBytes(state.release.installerBytes)}
-                {state.kind === 'ready' && ' · the host closes while the installer runs'}
+                {state.kind === 'ready' && ' · closes, updates and opens again by itself'}
               </div>
             </div>
             <button

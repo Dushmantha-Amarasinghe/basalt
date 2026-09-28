@@ -984,7 +984,13 @@ async fn download_update(app: tauri::AppHandle, release: basalt_update::Release)
 /// exactly how somebody ends up "updating" and finding the same version.
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
+    // As an update, not a first install: /UPDATE goes over the installed copy
+    // without uninstalling it or asking anything, and keeps the user's
+    // shortcuts as they are; /P shows only a progress bar, closing this app if
+    // it is still running; /R starts it again when the new version is in.
+    // One press of "Restart to update", and nothing else to click.
     std::process::Command::new(&path)
+        .args(["/P", "/UPDATE", "/R"])
         .spawn()
         .map_err(|e| UiError {
             kind: "error".into(),
@@ -1031,7 +1037,17 @@ pub fn run() {
             let store_path = app.path().app_data_dir()?.join("client.json");
             #[cfg(desktop)]
             let store_path = basalt_client::store::default_path();
-            let client = Arc::new(Basalt::open(store_path)?);
+            // With the device's lasting id, so a reinstall is the same device
+            // on the host rather than another of the same name. On Android the
+            // id comes from the Java side; on Windows the client asks itself.
+            #[cfg(mobile)]
+            let hint = {
+                use tauri_plugin_basalt_android::BasaltAndroidExt;
+                app.basalt_android().device_hint().ok()
+            };
+            #[cfg(desktop)]
+            let hint: Option<String> = None;
+            let client = Arc::new(Basalt::open_as_this_device(store_path, hint.as_deref())?);
 
             // Registered **before** anything else in this closure.
             //

@@ -25,6 +25,8 @@ const COMMANDS: &[&str] = &[
     "set_volume",
     "notify_update",
     "take_action",
+    // Rust's alone: read once at startup, never by the page.
+    "device_hint",
     "request_notifications",
     "insets",
     "mpv_init",

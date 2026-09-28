@@ -71,6 +71,11 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[derive(Deserialize)]
+struct DeviceHint {
+    id: String,
+}
+
 /// The Android side, for the shell to call.
 pub struct BasaltAndroid<R: Runtime> {
     #[cfg(target_os = "android")]
@@ -100,12 +105,21 @@ impl<R: Runtime> BasaltAndroid<R> {
     /// wrapper: the caller owns it and must close it — turning it into a
     /// `std::fs::File` does that.
     pub fn open_fd(&self, uri: &str, mode: &str) -> Result<i32> {
-        self.call::<Fd>("openFd", OpenFdArgs { uri, mode }).map(|r| r.fd)
+        self.call::<Fd>("openFd", OpenFdArgs { uri, mode })
+            .map(|r| r.fd)
     }
 
     /// Creates `name` in Downloads/Basalt, hidden until finished.
     pub fn create_download(&self, name: &str, mime: &str) -> Result<NewDownload> {
         self.call("createDownload", CreateDownloadArgs { name, mime })
+    }
+
+    /// Android's id for this app on this phone: the same after a reinstall,
+    /// for as long as the app is signed with the same key. Only ever hashed
+    /// before use; see `basalt_client::store::lasting_device_id`.
+    pub fn device_hint(&self) -> Result<String> {
+        self.call::<DeviceHint>("deviceHint", serde_json::json!({}))
+            .map(|r| r.id)
     }
 
     /// Shows a finished download, or removes one that failed.

@@ -100,6 +100,32 @@ Denies the create_download command without any pre-configured scope.
 <tr>
 <td>
 
+`basalt-android:allow-device-hint`
+
+</td>
+<td>
+
+Enables the device_hint command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-device-hint`
+
+</td>
+<td>
+
+Denies the device_hint command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `basalt-android:allow-finish-download`
 
 </td>

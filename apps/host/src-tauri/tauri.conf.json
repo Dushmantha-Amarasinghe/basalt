@@ -50,7 +50,11 @@
       },
       "nsis": {
         "installMode": "currentUser",
-        "displayLanguageSelector": false
+        "displayLanguageSelector": false,
+        "template": "../../../tools/windows-installer/installer.nsi",
+        "sidebarImage": "installer/sidebar.bmp",
+        "headerImage": "installer/header.bmp",
+        "installerIcon": "icons/icon.ico"
       }
     },
     "publisher": "Refora Technologies",

@@ -319,6 +319,18 @@
           "markdownDescription": "Denies the create_download command without any pre-configured scope."
         },
         {
+          "description": "Enables the device_hint command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-device-hint",
+          "markdownDescription": "Enables the device_hint command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the device_hint command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-device-hint",
+          "markdownDescription": "Denies the device_hint command without any pre-configured scope."
+        },
+        {
           "description": "Enables the finish_download command without any pre-configured scope.",
           "type": "string",
           "const": "allow-finish-download",

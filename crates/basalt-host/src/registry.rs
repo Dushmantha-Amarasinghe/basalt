@@ -367,7 +367,12 @@ impl Registry {
         let mut changed = false;
 
         let device_id = sanitise_device_id(device_id);
-        if device.device_id.is_empty() && !device_id.is_empty() {
+        // Taken whenever it differs, not only when there was none: a device
+        // that paired with a random id reports its lasting one after an
+        // update, and a reinstall on the same device must then find this entry
+        // rather than become another. The connection has already shown this
+        // device's token, so the id is its own to change.
+        if !device_id.is_empty() && device.device_id != device_id {
             device.device_id = device_id;
             changed = true;
         }
@@ -1064,5 +1069,34 @@ mod tests {
         assert_eq!(registry.device(&hash).unwrap().key(), hash);
         registry.observe(&hash, DEVICE_B, "Old laptop");
         assert_eq!(registry.device(&hash).unwrap().key(), DEVICE_B);
+    }
+
+    /// A phone paired under a random id, updated to one that reports its
+    /// lasting id, and then reinstalled: one entry throughout, not one per
+    /// install.
+    #[test]
+    fn a_device_that_moves_to_its_lasting_id_is_found_again_after_a_reinstall() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let first = pair_as(&mut registry, now, "Phone", DEVICE_A);
+        let hash = hash_token(&first);
+
+        // The update: the same token, now with the lasting id.
+        assert!(registry.observe(&hash, DEVICE_B, "Phone"));
+        assert_eq!(registry.device(&hash).unwrap().device_id, DEVICE_B);
+
+        // The reinstall: its storage is gone, so it pairs again, with the
+        // same lasting id.
+        let second = pair_as(&mut registry, now, "Phone", DEVICE_B);
+        assert_eq!(
+            registry.device_count(),
+            1,
+            "the reinstall is the same device"
+        );
+        assert!(registry.authenticate(&second).is_some());
+        assert!(
+            registry.authenticate(&first).is_none(),
+            "the old install's token is replaced"
+        );
     }
 }

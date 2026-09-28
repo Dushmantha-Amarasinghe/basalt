@@ -884,6 +884,18 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
     invoke.resolve(JSObject().put("shown", true))
   }
 
+  /**
+   * Android's id for this app on this phone, which survives a reinstall and
+   * clearing the app's data, and changes only with a factory reset. The
+   * client hashes it into the device id the host knows it by. No permission
+   * is needed: it is the id Android gives apps signed with this key.
+   */
+  @Command
+  fun deviceHint(invoke: Invoke) {
+    val id = Settings.Secure.getString(activity.contentResolver, Settings.Secure.ANDROID_ID) ?: ""
+    invoke.resolve(JSObject().put("id", id))
+  }
+
   /** What a notification tap asked for, once: "update", or nothing. */
   @Command
   fun takeAction(invoke: Invoke) {

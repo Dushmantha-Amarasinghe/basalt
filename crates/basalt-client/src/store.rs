@@ -177,6 +177,78 @@ pub fn default_path() -> PathBuf {
     base.join("Basalt").join("client.json")
 }
 
+/// This device's lasting id: the same after Basalt is uninstalled and
+/// installed again, its data cleared, or its package renamed.
+///
+/// A random id kept in the app's own storage went with that storage, and every
+/// reinstall appeared on the host as another device of the same name. This is
+/// worked out from something the system keeps for the device instead: on
+/// Android, its ID for apps signed with Basalt's key, passed in as `hint`
+/// because only the Java side can read it; on Windows, the installation's
+/// MachineGuid together with the user's profile, so two people's accounts on
+/// one PC stay two devices.
+///
+/// Only a one-way hash of it leaves the device, in the same form as the random
+/// ids before it. It lets the host recognise a device it has seen; it proves
+/// nothing, and never lets a device in without pairing. `None` when there is
+/// nothing to work from, and the random id is used as before.
+pub fn lasting_device_id(hint: Option<&str>) -> Option<String> {
+    let source = match hint.map(str::trim) {
+        Some(hint) if usable_hint(hint) => hint.to_string(),
+        _ => system_hint()?,
+    };
+    let hash = blake3::derive_key("Basalt 2026-09-28 device id", source.as_bytes());
+    Some(hash[..16].iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Not empty, and not the one ANDROID_ID a batch of early phones all shared.
+fn usable_hint(hint: &str) -> bool {
+    !hint.is_empty() && hint != "9774d56d682e549c"
+}
+
+#[cfg(windows)]
+fn system_hint() -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+
+    fn wide(text: &str) -> Vec<u16> {
+        std::ffi::OsStr::new(text)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+    let subkey = wide(r"SOFTWARE\Microsoft\Cryptography");
+    let name = wide("MachineGuid");
+    let mut buffer = [0u16; 128];
+    let mut size = std::mem::size_of_val(&buffer) as u32;
+    // SAFETY: both strings are NUL-terminated and outlive the call, and the
+    // buffer and its size are consistent.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    let chars = (size as usize / 2).saturating_sub(1).min(buffer.len());
+    let machine = String::from_utf16_lossy(&buffer[..chars]);
+    let profile = std::env::var("USERPROFILE").unwrap_or_default();
+    let machine = machine.trim();
+    (!machine.is_empty()).then(|| format!("{machine}|{}", profile.to_lowercase()))
+}
+
+#[cfg(not(windows))]
+fn system_hint() -> Option<String> {
+    None
+}
+
 /// A fresh device id: sixteen random bytes, as hex.
 pub fn new_device_id() -> Result<String> {
     basalt_net::pairing::random_nonce()
@@ -541,5 +613,35 @@ mod tests {
     #[test]
     fn this_device_always_has_a_name() {
         assert!(!device_name().is_empty());
+    }
+
+    /// The same device is the same id however often its storage is wiped;
+    /// another device is another id; and only a hash leaves the device.
+    #[test]
+    fn a_lasting_id_follows_the_device_not_its_storage() {
+        let phone = lasting_device_id(Some("3f2a9c0d1b7e4a55")).unwrap();
+        assert_eq!(phone, lasting_device_id(Some("3f2a9c0d1b7e4a55")).unwrap());
+        assert_eq!(phone.len(), 32);
+        assert!(phone.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(!phone.contains("3f2a9c0d1b7e4a55"));
+        assert_ne!(phone, lasting_device_id(Some("0a0b0c0d0e0f1011")).unwrap());
+    }
+
+    /// The id every one of a batch of early Android phones reported is no
+    /// way to tell phones apart, and an empty one is none at all.
+    #[test]
+    fn a_useless_hint_is_not_used() {
+        assert!(!usable_hint("9774d56d682e549c"));
+        assert!(!usable_hint(""));
+        assert!(usable_hint("3f2a9c0d1b7e4a55"));
+    }
+
+    /// A Windows PC always has an installation id to work from, so its apps
+    /// never fall back to a random one.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_pc_has_a_lasting_id() {
+        let id = lasting_device_id(None).expect("MachineGuid is readable");
+        assert_eq!(id, lasting_device_id(None).unwrap());
     }
 }

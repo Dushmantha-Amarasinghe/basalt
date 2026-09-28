@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-device-hint"
+description = "Enables the device_hint command without any pre-configured scope."
+commands.allow = ["device_hint"]
+
+[[permission]]
+identifier = "deny-device-hint"
+description = "Denies the device_hint command without any pre-configured scope."
+commands.deny = ["device_hint"]

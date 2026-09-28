@@ -103,6 +103,33 @@ pub struct Basalt {
 }
 
 impl Basalt {
+    /// Opens the client for the device it runs on, with the device's lasting
+    /// id: see [`crate::store::lasting_device_id`]. `hint` is Android's id for
+    /// the app, which only the Java side can read; on Windows it is `None` and
+    /// the system is asked instead.
+    ///
+    /// The apps open this way. [`Basalt::open`] keeps a random id, which is
+    /// what tests and the command line want: several clients on one machine,
+    /// each its own device.
+    pub fn open_as_this_device(store_path: PathBuf, hint: Option<&str>) -> Result<Self> {
+        let client = Self::open(store_path)?;
+        if let Some(id) = crate::store::lasting_device_id(hint) {
+            let mut store = client.store.lock().expect("store lock");
+            if store.device_id.as_deref() != Some(id.as_str()) {
+                // A copy that paired with a random id moves to the lasting one;
+                // the host learns it on the next connection.
+                store.device_id = Some(id.clone());
+                store.save(&client.store_path)?;
+            }
+            drop(store);
+            return Ok(Self {
+                me: Me::new(client.me.name.clone(), id),
+                ..client
+            });
+        }
+        Ok(client)
+    }
+
     pub fn open(store_path: PathBuf) -> Result<Self> {
         let mut store = ClientStore::load(&store_path)?;
         let device_name = store

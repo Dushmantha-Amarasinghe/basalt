@@ -1111,6 +1111,36 @@ async fn two_devices_are_two_rows() {
     let _ = std::fs::remove_file(other_store);
 }
 
+/// Uninstalling the app takes its storage with it. A phone reinstalled and
+/// paired again was listed once more under the same name, every time; with
+/// its lasting id it is the one device it always was.
+#[tokio::test]
+async fn a_reinstalled_phone_is_still_one_device() {
+    let fixture = start_host().await;
+    let hint = "3f2a9c0d1b7e4a55";
+
+    let store = unique("phone-store").with_extension("json");
+    let phone = Arc::new(Basalt::open_as_this_device(store.clone(), Some(hint)).unwrap());
+    fixture.pair(&phone).await.expect("the phone pairs");
+    phone.disconnect().await;
+    drop(phone);
+    std::fs::remove_file(&store).expect("the uninstall takes the app's storage");
+
+    let reinstalled = unique("phone-store-again").with_extension("json");
+    let again = Arc::new(Basalt::open_as_this_device(reinstalled.clone(), Some(hint)).unwrap());
+    fixture
+        .pair(&again)
+        .await
+        .expect("the reinstalled app pairs");
+    assert_eq!(
+        fixture.host.devices().len(),
+        1,
+        "the same phone, not a second one"
+    );
+    assert!(again.list("").await.is_ok(), "and the new pairing works");
+    let _ = std::fs::remove_file(reinstalled);
+}
+
 /// Forgetting a host used to happen on the device alone, and the host kept a
 /// record that would never connect again.
 #[tokio::test]
