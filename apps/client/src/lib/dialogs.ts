@@ -67,7 +67,7 @@ export async function onExternalFileDrop(handlers: {
   onLeave: () => void
   onDrop: (paths: string[], x: number, y: number) => void
 }): Promise<() => void> {
-  if (!inTauri()) return () => {}
+  if (!inTauri()) return previewDrops(handlers)
   const { getCurrentWebview } = await import('@tauri-apps/api/webview')
   const webview = getCurrentWebview()
 
@@ -122,4 +122,30 @@ export function baseName(path: string): string {
 export function localJoin(dir: string, name: string): string {
   const sep = dir.includes('\\') ? '\\' : '/'
   return dir.endsWith(sep) ? `${dir}${name}` : `${dir}${sep}${name}`
+}
+
+/**
+ * Drops in the browser preview, where there is no Explorer to drag from.
+ *
+ * A `basalt-preview-drop` event on the window stands in for one of Tauri's,
+ * with the same `type`, `paths` and position (in CSS pixels): it is how the
+ * product videos show files being dropped on the window.
+ */
+function previewDrops(handlers: {
+  onEnter: () => void
+  onOver: (x: number, y: number) => void
+  onLeave: () => void
+  onDrop: (paths: string[], x: number, y: number) => void
+}): Promise<() => void> {
+  const listener = (e: Event): void => {
+    const { type, paths = [], x = -1, y = -1 } = (e as CustomEvent).detail ?? {}
+    if (type === 'enter') handlers.onEnter()
+    else if (type === 'over') {
+      handlers.onEnter()
+      handlers.onOver(x, y)
+    } else if (type === 'leave') handlers.onLeave()
+    else if (type === 'drop') handlers.onDrop(paths, x, y)
+  }
+  window.addEventListener('basalt-preview-drop', listener)
+  return Promise.resolve(() => window.removeEventListener('basalt-preview-drop', listener))
 }

@@ -447,7 +447,7 @@ export const api = {
 export async function onTransfer(
   handler: (event: TransferEvent) => void,
 ): Promise<() => void> {
-  if (!inTauri()) return () => {}
+  if (!inTauri()) return onPreview('transfer', handler)
   const { listen } = await import('@tauri-apps/api/event')
   const stop = await listen<TransferEvent>('basalt://transfer', (e) =>
     handler(e.payload),
@@ -480,7 +480,7 @@ export interface ByteWindow {
 export async function onBytes(
   handler: (window: ByteWindow) => void,
 ): Promise<() => void> {
-  if (!inTauri()) return () => {}
+  if (!inTauri()) return onPreview('bytes', handler)
   const { listen } = await import('@tauri-apps/api/event')
   const stop = await listen<ByteWindow>('basalt://bytes', (e) =>
     handler(e.payload),
@@ -592,6 +592,64 @@ function previewIsUnpaired(): boolean {
   return previewFlag('unpaired')
 }
 
+/**
+ * What the backend would push, in the browser preview.
+ *
+ * Nothing sends these unless `?transfers` is set: then an upload plays out as
+ * a real one would, with progress and a speed, so the transfer panel can be
+ * seen working in a browser, and filmed.
+ */
+const previewEvents = typeof window === 'undefined' ? null : new EventTarget()
+
+function onPreview<T>(name: string, handler: (value: T) => void): Promise<() => void> {
+  if (!previewEvents) return Promise.resolve(() => {})
+  const listener = (e: Event): void => handler((e as CustomEvent<T>).detail)
+  previewEvents.addEventListener(name, listener)
+  return Promise.resolve(() => previewEvents.removeEventListener(name, listener))
+}
+
+function emitPreview(name: string, detail: unknown): void {
+  previewEvents?.dispatchEvent(new CustomEvent(name, { detail }))
+}
+
+/**
+ * An upload over a good home network, for the preview: a film at about
+ * 230 MB/s once it gets going, anything else small and quick.
+ */
+async function previewUpload(args?: Record<string, unknown>): Promise<UploadOutcome> {
+  const id = String(args?.id ?? '')
+  const remote = String(args?.remote ?? '')
+  const name = remote.split('/').pop() ?? remote
+  const film = /\.(mkv|mp4|mov|avi)$/i.test(name)
+  const total = film ? 1_900_000_000 + (name.length % 7) * 83_000_000 : 24_000_000
+  const top = 231_000_000
+  const tick = 125
+  let transferred = 0
+  let elapsed = 0
+  while (transferred < total) {
+    await new Promise((resolve) => setTimeout(resolve, tick))
+    elapsed += tick
+    // Up to speed in the first second, then steady, give or take.
+    const ramp = Math.min(1, elapsed / 900)
+    const rate = top * ramp * (0.96 + 0.04 * Math.sin(elapsed / 170))
+    const step = Math.min(total - transferred, (rate * tick) / 1000)
+    transferred += step
+    emitPreview('bytes', { bytes: step, millis: tick })
+    emitPreview('transfer', {
+      id,
+      kind: 'upload',
+      name,
+      path: remote,
+      transferred,
+      total,
+      status: transferred >= total ? 'done' : 'active',
+      rate,
+      etaRate: top,
+    } satisfies TransferEvent)
+  }
+  return { bytes: total, files: 1, failed: [] }
+}
+
 function previewFlag(name: string): boolean {
   return (
     typeof window !== 'undefined' &&
@@ -675,6 +733,7 @@ const mockWatched = new Map<string, Watched>(showcase.watching().map((w) => [w.p
 let mockEntries: Entry[] | null = null
 
 async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (cmd === 'upload' && previewFlag('transfers')) return (await previewUpload(args)) as T
   switch (cmd) {
     case 'app_version':
       return MOCK_VERSION as T
