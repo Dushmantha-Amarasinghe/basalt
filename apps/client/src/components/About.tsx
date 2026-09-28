@@ -14,7 +14,7 @@ import {
 } from '@/lib/updates'
 import { cn, formatBytes } from '@/lib/utils'
 
-export const WEBSITE = 'https://reforatech.com'
+export const WEBSITE = 'https://basalt.reforatech.com'
 export const REPO = 'https://github.com/refora-technologies/basalt'
 export const ISSUES = `${REPO}/issues/new`
 
@@ -280,6 +280,13 @@ function Link({
   )
 }
 
+/**
+ * Opens a link in the default browser.
+ *
+ * Only the addresses listed in the app's capability file may be opened: the
+ * opener plugin's `allow-open-url` allows none by itself, which is how these
+ * buttons came to do nothing at all. A link added here needs adding there.
+ */
 async function openExternal(url: string): Promise<void> {
   if (!inTauri()) {
     window.open(url, '_blank')

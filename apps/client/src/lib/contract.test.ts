@@ -228,11 +228,17 @@ function pluginCalls(sources: string[]): Set<string> {
   return needed
 }
 
+/** A permission as a capability file lists it: a name, or a name with a scope. */
+type Permission = string | { identifier: string; allow?: Array<{ url?: string }> }
+
+function capabilityAt(file: string): Permission[] {
+  return (JSON.parse(read(file)) as { permissions: Permission[] }).permissions
+}
+
+const nameOf = (p: Permission): string => (typeof p === 'string' ? p : p.identifier)
+
 describe('plugin permissions', () => {
-  const capability = JSON.parse(
-    read('../../src-tauri/capabilities/default.json'),
-  ) as { permissions: string[] }
-  const granted = new Set(capability.permissions)
+  const granted = new Set(capabilityAt('../../src-tauri/capabilities/default.json').map(nameOf))
   const needed = [...pluginCalls(sourceFiles(path.resolve(here, '..')))]
 
   it('finds plugin calls at all, so an empty scan cannot pass', () => {
@@ -241,6 +247,38 @@ describe('plugin permissions', () => {
 
   it.each(needed)('%s is granted in the capability file', (permission) => {
     expect(granted).toContain(permission)
+  })
+})
+
+// `opener:allow-open-url` by itself allows no address at all: every link in
+// About was refused, silently, until each app listed the ones it opens. A link
+// added to About without adding it here would do nothing again.
+describe('links the app opens', () => {
+  const about = read('../components/About.tsx')
+  const constant = (name: string): string => {
+    const m = new RegExp(`export const ${name} = '([^']+)'`).exec(about)
+    if (!m?.[1]) throw new Error(`${name} not found in About.tsx`)
+    return m[1]
+  }
+  const repo = constant('REPO')
+  const links = [constant('WEBSITE'), repo, `${repo}/issues/new`]
+  // The plugin's own matching: a glob over the whole address, `*` crossing `/`.
+  const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const matches = (pattern: string, url: string): boolean =>
+    new RegExp(`^${pattern.split('*').map(escape).join('.*')}$`).test(url)
+
+  it.each([
+    ['desktop', '../../src-tauri/capabilities/default.json'],
+    ['mobile', '../../src-tauri/capabilities/mobile.json'],
+  ])('the %s capability allows every one of them', (_, file) => {
+    const scope = capabilityAt(file)
+      .filter((p): p is Exclude<Permission, string> => typeof p !== 'string' && p.identifier === 'opener:allow-open-url')
+      .flatMap((p) => p.allow ?? [])
+      .map((a) => a.url ?? '')
+    for (const url of links) {
+      expect(scope.some((pattern) => matches(pattern, url)), url).toBe(true)
+    }
+    expect(scope.some((pattern) => matches(pattern, 'https://example.com/'))).toBe(false)
   })
 })
 

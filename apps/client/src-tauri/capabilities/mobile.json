@@ -14,7 +14,23 @@
     "core:event:default",
     "dialog:allow-open",
     "dialog:allow-save",
-    "opener:allow-open-url",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://basalt.reforatech.com"
+        },
+        {
+          "url": "https://basalt.reforatech.com/*"
+        },
+        {
+          "url": "https://github.com/refora-technologies/basalt"
+        },
+        {
+          "url": "https://github.com/refora-technologies/basalt/*"
+        }
+      ]
+    },
     "basalt-android:default"
   ]
 }
