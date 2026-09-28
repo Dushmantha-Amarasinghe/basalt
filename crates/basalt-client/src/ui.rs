@@ -416,6 +416,7 @@ mod tests {
             host_name: "laptop-b".into(),
             last_address: Some("192.168.1.11:7742".into()),
             paired_at: 0,
+            used_at: 0,
             identity: Default::default(),
         }
     }

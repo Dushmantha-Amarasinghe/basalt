@@ -1294,6 +1294,8 @@ export function App(): React.JSX.Element {
 }
 
 function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
+  // Choosing another drive while connected: the drive list, with a way back.
+  const [changingDrive, setChangingDrive] = useState(false)
   const {
     vault,
     transfers,
@@ -1370,13 +1372,24 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
 
   if (!vault.status) return <Splash failed={vault.startupFailed} />
 
-  if (!connected && !vault.status.hasPaired) {
+  // The drive list: on first use, when the host has removed this device, and
+  // when changing drives from the sidebar or Settings.
+  if ((!connected && !vault.status.hasPaired) || vault.removed || changingDrive) {
     return (
       <div className="relative flex h-full flex-col">
         <div className="backdrop" />
         <TitleBar vaultName="Basalt" connected={false} />
         <div className="min-h-0 flex-1">
-          <PairingView onPaired={vault.adopt} />
+          <PairingView
+            notice={vault.removed}
+            onBack={changingDrive ? () => setChangingDrive(false) : undefined}
+            currentHostId={changingDrive ? vault.status.hostId : null}
+            onPaired={(next) => {
+              setChangingDrive(false)
+              setNav('files')
+              vault.switchTo(next)
+            }}
+          />
         </div>
       </div>
     )
@@ -1492,6 +1505,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
           driveTotal={vault.space ? vault.space[1] : 0}
           connected={connected}
           vaultName={vault.status.vault ?? 'Vault'}
+          onChangeDrive={() => setChangingDrive(true)}
         />
 
         <main className="flex min-w-0 min-h-0 flex-1 flex-col">
@@ -1613,6 +1627,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                 status={vault.status}
                 space={vault.space}
                 onForget={forgetVault}
+                onChangeDrive={() => setChangingDrive(true)}
               />
             ) : isMedia ? (
               <LibraryView
@@ -1899,7 +1914,7 @@ function ConnectionBanner({
   const kind = vault.error?.kind
   if (!kind) return null
 
-  const offline = kind === 'offline' || kind === 'unpaired'
+  const offline = kind === 'offline'
   const waiting = kind === 'unavailable'
   const text = offline
     ? vault.reconnecting

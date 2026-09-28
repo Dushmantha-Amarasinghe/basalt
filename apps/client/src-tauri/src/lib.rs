@@ -1113,9 +1113,17 @@ pub fn run() {
                 let client = Arc::clone(&client);
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let connected = client.connect_saved().await.is_ok();
+                    let result = client.connect_saved().await;
+                    // Removed while the app was closed: the pairing is already
+                    // gone, and the window says why as it goes back to
+                    // choosing a drive.
+                    if let Err(e) = &result {
+                        if e.kind() == "removed" {
+                            let _ = handle.emit("basalt://removed", e.to_string());
+                        }
+                    }
                     let _ = handle.emit("basalt://status", status_of(&client));
-                    if connected {
+                    if result.is_ok() {
                         start_watching(&client, &handle);
                     } else {
                         eprintln!("basalt: no saved host reachable at startup");

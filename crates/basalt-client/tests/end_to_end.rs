@@ -285,8 +285,18 @@ async fn a_revoked_device_stops_working() {
     assert!(fixture.host.revoke(&hash).unwrap());
     client.disconnect().await;
 
+    // Removed, not offline: the pairing is dropped here too, so the app goes
+    // back to choosing a drive instead of retrying at a host that says no.
     let err = client.connect_saved().await.unwrap_err();
-    assert_eq!(err.kind(), "unpaired", "got: {err}");
+    assert_eq!(err.kind(), "removed", "got: {err}");
+    assert!(
+        err.to_string().contains("removed this device"),
+        "got: {err}"
+    );
+    assert!(
+        client.known_hosts().is_empty(),
+        "the pairing is forgotten here as well"
+    );
 }
 
 // The check that makes the pin worth having: a host that is not the one this

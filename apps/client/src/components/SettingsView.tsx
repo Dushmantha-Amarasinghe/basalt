@@ -61,11 +61,14 @@ export function SettingsView({
   status,
   space,
   onForget,
+  onChangeDrive,
 }: {
   status: Status | null
   space: [number, number] | null
   /** Unpairs from this vault; pairing with another starts from there. */
   onForget: () => void
+  /** The drive list, to use another drive; this one stays paired. */
+  onChangeDrive: () => void
 }): React.JSX.Element {
   const [free, total] = space ?? [0, 0]
 
@@ -86,9 +89,10 @@ export function SettingsView({
             The address is where the host answered today, not something this app
             remembers and depends on. When the router gives it a different one,
             this app finds it again by its pinned identity — which is why you
-            were never asked to type one. To use a different vault, forget this
-            one and pair with the other.
+            were never asked to type one. To use another drive, change drive:
+            this one stays paired, so coming back to it is a click.
           </Note>
+          <Action label="Change drive" onClick={onChangeDrive} />
           <Action label="Forget this vault" danger onClick={onForget} />
         </Section>
 

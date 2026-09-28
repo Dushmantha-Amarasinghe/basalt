@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
+  ArrowLeft,
   ArrowRight,
   HardDrive,
   Loader2,
@@ -32,8 +33,20 @@ const PIN_LENGTH = 6
  */
 export function PairingView({
   onPaired,
+  notice,
+  onBack,
+  currentHostId,
 }: {
   onPaired: (status: Status) => void
+  /** Said above the list: why the app is back here, such as a host removing it. */
+  notice?: string | null
+  /**
+   * Opened to change drives rather than as the first screen: there is a way
+   * back, and a drive already paired opens straight away.
+   */
+  onBack?: () => void
+  /** The drive in use, marked as such when changing drives. */
+  currentHostId?: string | null
 }): React.JSX.Element {
   const [hosts, setHosts] = useState<DiscoveredHost[] | null>(null)
   const [scanning, setScanning] = useState(false)
@@ -72,12 +85,33 @@ export function PairingView({
     void scan()
   }, [scan])
 
-  /** Picking a host opens a request on it, and asks whether it wants a PIN. */
+  /**
+   * Picking a host opens a request on it, and asks whether it wants a PIN. A
+   * host this device has already paired with needs neither: it connects.
+   */
   const choose = useCallback(
     async (host: DiscoveredHost) => {
       if (busy) return
+      if (host.hostId && host.hostId === currentHostId && onBack) {
+        onBack()
+        return
+      }
       setBusy(true)
       setError(null)
+      if (host.paired && host.hostId) {
+        try {
+          onPaired(await api.connectTo(host.hostId, host.address))
+        } catch (e) {
+          if (!live.current) return
+          setError(e instanceof Error ? e.message : String(e))
+          // Removed by that host: it is no longer paired, so the list is
+          // looked at again and it shows as a new host to pair with.
+          if (e instanceof ApiError && e.kind === 'removed') void scan()
+        } finally {
+          if (live.current) setBusy(false)
+        }
+        return
+      }
       try {
         const wantsPin = await api.beginPairing(host.address)
         if (!live.current) return
@@ -104,7 +138,7 @@ export function PairingView({
         if (live.current) setBusy(false)
       }
     },
-    [busy, onPaired],
+    [busy, onPaired, onBack, currentHostId, scan],
   )
 
   const submitPin = useCallback(
@@ -156,23 +190,43 @@ export function PairingView({
             <HexMark size={34} />
           </motion.span>
           <h1 className="mt-4 font-display text-[19px] font-semibold tracking-tighter text-text">
-            {picking ? 'Choose your vault' : 'Enter the PIN'}
+            {picking ? (onBack ? 'Change drive' : 'Choose your vault') : 'Enter the PIN'}
           </h1>
           <p className="mt-1.5 max-w-[320px] text-[12px] leading-relaxed text-textDim">
             {picking
-              ? 'Every Basalt host on this network. Nothing to type.'
+              ? onBack
+                ? 'Every Basalt host on this network. One you have paired with opens straight away.'
+                : 'Every Basalt host on this network. Nothing to type.'
               : `The six digits showing on ${chosen.hostName}. This happens once.`}
           </p>
         </div>
 
+        {notice && picking && (
+          <div className="mb-4 rounded-lg border border-danger/25 bg-dangerBg px-3.5 py-3 text-[12px] leading-relaxed text-danger">
+            {notice}
+          </div>
+        )}
+
         {picking ? (
-          <HostList
-            hosts={hosts}
-            scanning={scanning}
-            busy={busy}
-            onChoose={(host) => void choose(host)}
-            onRescan={() => void scan()}
-          />
+          <>
+            <HostList
+              hosts={hosts}
+              scanning={scanning}
+              busy={busy}
+              currentHostId={currentHostId ?? null}
+              onChoose={(host) => void choose(host)}
+              onRescan={() => void scan()}
+            />
+            {onBack && (
+              <button
+                onClick={onBack}
+                className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md py-2 text-[11.5px] text-textDim transition-colors hover:text-text"
+              >
+                <ArrowLeft size={12} />
+                Back
+              </button>
+            )}
+          </>
         ) : (
           <motion.div
             initial={{ opacity: 0, x: 12 }}
@@ -242,12 +296,14 @@ function HostList({
   hosts,
   scanning,
   busy,
+  currentHostId,
   onChoose,
   onRescan,
 }: {
   hosts: DiscoveredHost[] | null
   scanning: boolean
   busy: boolean
+  currentHostId: string | null
   onChoose: (host: DiscoveredHost) => void
   onRescan: () => void
 }): React.JSX.Element {
@@ -272,7 +328,12 @@ function HostList({
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
           >
-            <HostRow host={host} busy={busy} onChoose={() => onChoose(host)} />
+            <HostRow
+              host={host}
+              busy={busy}
+              current={!!currentHostId && host.hostId === currentHostId}
+              onChoose={() => onChoose(host)}
+            />
           </motion.div>
         ))}
       </AnimatePresence>
@@ -375,10 +436,13 @@ function AddressEntry({
 function HostRow({
   host,
   busy,
+  current = false,
   onChoose,
 }: {
   host: DiscoveredHost
   busy: boolean
+  /** The drive this device is using now. */
+  current?: boolean
   onChoose: () => void
 }): React.JSX.Element {
   // A host with no drive chosen yet has nothing to offer. Listed anyway,
@@ -408,9 +472,9 @@ function HostRow({
           <span className="truncate text-[13px] font-medium text-text">
             {ready ? host.vault : host.hostName}
           </span>
-          {host.paired && (
+          {(current || host.paired) && (
             <span className="shrink-0 rounded-[4px] border border-white/[0.12] px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.1em] text-textFaint">
-              paired
+              {current ? 'in use' : 'paired'}
             </span>
           )}
         </div>
@@ -423,7 +487,7 @@ function HostRow({
 
       {ready && (
         <span className="shrink-0 text-textFaint">
-          {host.requiresPin ? (
+          {host.requiresPin && !host.paired ? (
             <span
               title="This host asks for a PIN"
               className="font-mono text-[9px] uppercase tracking-[0.1em]"

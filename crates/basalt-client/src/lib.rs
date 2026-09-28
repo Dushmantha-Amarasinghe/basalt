@@ -68,6 +68,14 @@ pub enum ClientError {
 
     #[error("no paired host was found on this network")]
     HostNotFound,
+
+    /// The host has removed this device. Its pairing is gone from here too,
+    /// so the app goes back to choosing a drive rather than trying again for
+    /// ever at a host that will keep saying no.
+    #[error(
+        "{host_name} removed this device, so it can no longer reach {vault}. Pair again to use it."
+    )]
+    Removed { host_name: String, vault: String },
 }
 
 impl ClientError {
@@ -93,6 +101,7 @@ impl ClientError {
             ClientError::Incompatible { .. } => "incompatible",
             ClientError::PairingClosed | ClientError::BadPin(_) => "pairing",
             ClientError::PinRequired => "pinrequired",
+            ClientError::Removed { .. } => "removed",
             ClientError::Net(e) => match e.code() {
                 Some(E::NotFound) => "notfound",
                 Some(E::Denied) => "denied",

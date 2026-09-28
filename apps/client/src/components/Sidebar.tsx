@@ -60,6 +60,7 @@ export function Sidebar({
   vaultName = 'Vault',
   hidden,
   who,
+  onChangeDrive,
 }: {
   /** Library sections the host's owner has chosen not to show. */
   hidden?: ReadonlySet<NavKey>
@@ -71,6 +72,8 @@ export function Sidebar({
   driveTotal: number
   connected: boolean
   vaultName?: string
+  /** Opens the drive list, to use another drive. */
+  onChangeDrive?: () => void
 }): React.JSX.Element {
   const usedPercent = driveTotal > 0 ? (driveUsed / driveTotal) * 100 : 0
 
@@ -122,6 +125,7 @@ export function Sidebar({
         total={driveTotal}
         usedPercent={usedPercent}
         vaultName={vaultName}
+        onClick={onChangeDrive}
       />
 
       <nav className="mt-1 flex flex-col gap-1">
@@ -192,15 +196,23 @@ function DriveStatus({
   total,
   usedPercent,
   vaultName,
+  onClick,
 }: {
   connected: boolean
   used: number
   total: number
   usedPercent: number
   vaultName: string
+  /** The card is also the way to another drive. */
+  onClick?: () => void
 }): React.JSX.Element {
   return (
-    <div className="glass rounded-md px-3 py-3">
+    <button
+      type="button"
+      onClick={onClick}
+      title="Change drive"
+      className="glass block w-full rounded-md px-3 py-3 text-left transition-colors hover:bg-white/[0.04]"
+    >
       <div className="flex items-center gap-2">
         <HardDrive size={14} className="shrink-0 text-textDim" />
         <span className="truncate text-xs font-semibold text-text">{vaultName}</span>
@@ -233,7 +245,7 @@ function DriveStatus({
           </span>
         )}
       </div>
-    </div>
+    </button>
   )
 }
 

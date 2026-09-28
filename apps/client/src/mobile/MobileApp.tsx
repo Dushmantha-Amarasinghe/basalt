@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  ArrowLeftRight,
   ArrowUpCircle,
   ArrowLeft,
   CheckSquare,
@@ -76,13 +77,29 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
   }, [])
 
   const { vault, identity, connected } = model
+  // Choosing another drive from More: the drive list, with a way back.
+  const [changingDrive, setChangingDrive] = useState(false)
+  useBack(changingDrive, () => {
+    setChangingDrive(false)
+    return true
+  })
 
   if (!vault.status) return <Splash />
 
-  if (!connected && !vault.status.hasPaired) {
+  // The drive list: on first use, when the host has removed this device, and
+  // when changing drives.
+  if ((!connected && !vault.status.hasPaired) || vault.removed || changingDrive) {
     return (
       <Safe>
-        <PairingView onPaired={vault.adopt} />
+        <PairingView
+          notice={vault.removed}
+          onBack={changingDrive ? () => setChangingDrive(false) : undefined}
+          currentHostId={changingDrive ? vault.status.hostId : null}
+          onPaired={(next) => {
+            setChangingDrive(false)
+            vault.switchTo(next)
+          }}
+        />
       </Safe>
     )
   }
@@ -114,7 +131,7 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
     )
   }
 
-  return <Shell model={model} />
+  return <Shell model={model} onChangeDrive={() => setChangingDrive(true)} />
 }
 
 /** Clear of the status bar and the gesture bar. */
@@ -149,7 +166,7 @@ function useWide(): boolean {
   return wide
 }
 
-function Shell({ model }: { model: AppModel }): React.JSX.Element {
+function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () => void }): React.JSX.Element {
   const {
     vault,
     nav,
@@ -384,7 +401,9 @@ function Shell({ model }: { model: AppModel }): React.JSX.Element {
             />
           )}
           {tab === 'library' && <LibraryScreen model={model} section={librarySection} wide={wide} />}
-          {tab === 'more' && <MoreScreen model={model} onTransfers={() => setTransfersOpen(true)} />}
+          {tab === 'more' && (
+            <MoreScreen model={model} onTransfers={() => setTransfersOpen(true)} onChangeDrive={onChangeDrive} />
+          )}
 
           {tab === 'files' && writable && !selecting && (
             <Fab onClick={() => setAdding(true)} raised={active.length > 0 || shared.length > 0 || actions.clipboard !== null} />
@@ -830,7 +849,7 @@ function Chips({
 function ConnectionLine({ model }: { model: AppModel }): React.JSX.Element | null {
   const kind = model.vault.error?.kind
   if (!kind) return null
-  const offline = kind === 'offline' || kind === 'unpaired'
+  const offline = kind === 'offline'
   return (
     <div className="flex shrink-0 items-center gap-2.5 border-y border-white/[0.06] bg-[#141416] px-4 py-2.5">
       <Loader2 size={14} className="shrink-0 animate-spin text-textFaint" />
@@ -1333,7 +1352,16 @@ function LibraryScreen({
 // More
 // ---------------------------------------------------------------------------
 
-function MoreScreen({ model, onTransfers }: { model: AppModel; onTransfers: () => void }): React.JSX.Element {
+function MoreScreen({
+  model,
+  onTransfers,
+  onChangeDrive,
+}: {
+  model: AppModel
+  onTransfers: () => void
+  /** The drive list, to use another drive; this one stays paired. */
+  onChangeDrive: () => void
+}): React.JSX.Element {
   const { vault, identity, transfers } = model
   const profile = identity.state?.profile ?? null
   const space = vault.space
@@ -1420,6 +1448,13 @@ function MoreScreen({ model, onTransfers }: { model: AppModel; onTransfers: () =
               </div>
             </>
           )}
+          <button
+            onClick={onChangeDrive}
+            className="mt-3.5 flex w-full items-center justify-center gap-2 rounded-xl border border-white/[0.08] py-2.5 text-[13.5px] text-textDim active:bg-white/[0.06]"
+          >
+            <ArrowLeftRight size={15} />
+            Change drive
+          </button>
         </Card>
 
         <Card onClick={onTransfers}>

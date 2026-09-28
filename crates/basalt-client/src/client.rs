@@ -303,6 +303,7 @@ impl Basalt {
                 host_name: info.host_name.clone(),
                 last_address: Some(addr.to_string()),
                 paired_at: unix_now(),
+                used_at: unix_now(),
                 identity: Default::default(),
             });
             store.device_name = Some(self.me.name.clone());
@@ -334,7 +335,44 @@ impl Basalt {
     /// costs one round trip. If it does not, the network is asked where the
     /// pinned key is *now* — which is what makes a changed address a non-event
     /// rather than something the user has to go and look up.
+    /// Connects to a host this device has paired with.
+    ///
+    /// A host that answers but no longer knows this device has removed it:
+    /// its pairing is dropped here as well, and [`ClientError::Removed`] says
+    /// so, naming the host and the drive.
     pub async fn connect(&self, host_id: &str, address: Option<&str>) -> Result<SessionInfo> {
+        match self.connect_known(host_id, address).await {
+            Err(e) if e.kind() == "unpaired" => Err(self.removed(host_id).await),
+            other => other,
+        }
+    }
+
+    /// Drops a host that has removed this device, and says which it was.
+    pub async fn removed(&self, host_id: &str) -> ClientError {
+        let known = self
+            .store
+            .lock()
+            .expect("store lock")
+            .find(host_id)
+            .cloned();
+        if self.status().map(|i| i.host_id).as_deref() == Some(host_id) {
+            self.disconnect().await;
+        }
+        self.store.lock().expect("store lock").forget(host_id);
+        let _ = self.save_store();
+        match known {
+            Some(host) => ClientError::Removed {
+                host_name: host.host_name,
+                vault: host.vault,
+            },
+            None => ClientError::Removed {
+                host_name: "The host".into(),
+                vault: "the drive".into(),
+            },
+        }
+    }
+
+    async fn connect_known(&self, host_id: &str, address: Option<&str>) -> Result<SessionInfo> {
         let known = self
             .store
             .lock()
@@ -389,6 +427,7 @@ impl Basalt {
         {
             let mut store = self.store.lock().expect("store lock");
             store.note_address(host_id, &addr.to_string());
+            store.note_used(host_id, unix_now());
         }
         // A failure to write the address cache must not fail the connection —
         // it is an optimisation, and the client works without it.
@@ -425,7 +464,7 @@ impl Basalt {
         Ok(info)
     }
 
-    /// Reconnects to the most recently paired host. What the app does on start.
+    /// Reconnects to the host used last. What the app does on start.
     pub async fn connect_saved(&self) -> Result<SessionInfo> {
         let primary = self
             .store

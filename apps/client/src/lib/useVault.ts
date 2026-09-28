@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Entry } from '@/components/FileList'
-import { ApiError, api, onStatus, toEntries, type Status } from './api'
+import { ApiError, api, onRemoved, onStatus, toEntries, type Status } from './api'
 import { useAsyncSubscription } from './useAsyncSubscription'
 
 /**
@@ -83,6 +83,14 @@ export interface Vault {
    * connected, does everything a connection needs done.
    */
   adopt: (status: Status) => void
+  /** Takes on another drive, starting at its top rather than the old folder. */
+  switchTo: (status: Status) => void
+  /**
+   * Set when the host has removed this device: the pairing is gone, and the
+   * app shows the drive list with this, which names the host and drive.
+   */
+  removed: string | null
+  clearRemoved: () => void
 }
 
 export function useVault(): Vault {
@@ -96,6 +104,9 @@ export function useVault(): Vault {
   const [reconnecting, setReconnecting] = useState(false)
   /** Set when the backend has not answered at all, after several attempts. */
   const [startupFailed, setStartupFailed] = useState(false)
+  const [removed, setRemoved] = useState<string | null>(null)
+  const current = useRef<Status | null>(null)
+  current.current = status
 
   // Which directory the newest request was for. A reply for anything else is
   // stale and must not be shown.
@@ -116,6 +127,10 @@ export function useVault(): Vault {
     } catch (e) {
       if (wanted.current !== target) return
       const err = e instanceof ApiError ? e : new ApiError('error', String(e))
+      if (err.kind === 'unpaired') {
+        void dropRemoved.current()
+        return
+      }
       setError(err)
       // Deliberately not clearing `entries`: keeping the last good listing on
       // screen under a banner is better than an empty window.
@@ -155,6 +170,37 @@ export function useVault(): Vault {
     [load, fetchSpace],
   )
 
+  /**
+   * The host no longer knows this device. Rather than retry for ever at a
+   * host that will keep saying no, its pairing goes and the drive list comes
+   * back, saying which host and drive it was.
+   */
+  const dropRemoved = useRef(async (): Promise<void> => {})
+  dropRemoved.current = async () => {
+    const was = current.current
+    if (!was?.hostId) return
+    setError(null)
+    setRemoved(
+      `${was.hostName ?? 'The host'} removed this device, so it can no longer reach ${was.vault ?? 'the drive'}. Pair again to use it.`,
+    )
+    const next = await api.forgetHost(was.hostId).catch(() => null)
+    setEntries([])
+    setDir('')
+    wanted.current = ''
+    if (next) setStatus(next)
+  }
+
+  const switchTo = useCallback(
+    (next: Status) => {
+      setRemoved(null)
+      setDir('')
+      setEntries([])
+      wanted.current = ''
+      adopt(next)
+    },
+    [adopt],
+  )
+
   // The size goes with the listing: whatever changed one — an upload, a
   // delete, something copied in on the host — probably changed the other.
   const refresh = useCallback(() => {
@@ -168,9 +214,19 @@ export function useVault(): Vault {
       const next = await api.connectSaved()
       setError(null)
       adopt(next)
-    } catch {
-      // Left to the retry loop below; a failed attempt is the normal case
-      // while the host is still waking up.
+    } catch (e) {
+      // Removed: the client has already dropped the pairing, and says why.
+      if (e instanceof ApiError && e.kind === 'removed') {
+        setError(null)
+        setRemoved(e.message)
+        setEntries([])
+        setDir('')
+        wanted.current = ''
+        const now = await api.status().catch(() => null)
+        if (now) setStatus(now)
+      }
+      // Anything else is left to the retry loop below; a failed attempt is
+      // the normal case while the host is still waking up.
     } finally {
       setReconnecting(false)
     }
@@ -219,6 +275,13 @@ export function useVault(): Vault {
   // the gap between the first status call answering "not yet" and this
   // listener existing, and a push nobody heard left the app offline for good:
   // nothing is retried while there is no error to retry.
+  // Removed while the app was closed: the backend found out on its first
+  // attempt and has already dropped the pairing.
+  useAsyncSubscription(
+    true,
+    useCallback(() => onRemoved((message) => setRemoved(message)), []),
+  )
+
   useAsyncSubscription(
     true,
     useCallback(
@@ -245,7 +308,7 @@ export function useVault(): Vault {
   // than wait for somebody to press refresh. The listing is simply asked for
   // again, more often, until it answers.
   useEffect(() => {
-    const offline = error?.kind === 'offline' || error?.kind === 'unpaired'
+    const offline = error?.kind === 'offline'
     const waiting = error?.kind === 'unavailable'
     if (!offline && !waiting) return undefined
 
@@ -277,5 +340,8 @@ export function useVault(): Vault {
     refresh,
     reconnect,
     adopt,
+    switchTo,
+    removed,
+    clearRemoved: () => setRemoved(null),
   }
 }

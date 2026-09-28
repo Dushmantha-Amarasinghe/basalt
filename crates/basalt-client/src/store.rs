@@ -26,6 +26,11 @@ pub struct KnownHost {
     /// address is a failed connection and never a wrong one.
     pub last_address: Option<String>,
     pub paired_at: i64,
+    /// When this device last connected to it. The host to reopen is the one
+    /// used last, not the one paired last: choosing another drive from the
+    /// list must stick, even when the drive chosen was paired long ago.
+    #[serde(default)]
+    pub used_at: i64,
     /// Who uses this device with this host: a remembered profile, the last
     /// one signed in to, or the device on its own.
     #[serde(default)]
@@ -162,9 +167,17 @@ impl ClientStore {
         }
     }
 
-    /// The host to reconnect to on startup: the most recently paired one.
+    /// The host to reconnect to on startup: the one used last, or paired
+    /// last if that was later.
     pub fn primary(&self) -> Option<&KnownHost> {
-        self.hosts.iter().max_by_key(|h| h.paired_at)
+        self.hosts.iter().max_by_key(|h| h.used_at.max(h.paired_at))
+    }
+
+    /// Records that this device has just connected to `host_id`.
+    pub fn note_used(&mut self, host_id: &str, now: i64) {
+        if let Some(host) = self.find_mut(host_id) {
+            host.used_at = now;
+        }
     }
 }
 
@@ -496,8 +509,21 @@ mod tests {
             host_name: "laptop-b".into(),
             last_address: None,
             paired_at,
+            used_at: 0,
             identity: Default::default(),
         }
+    }
+
+    /// Switching to a drive paired long ago must survive the app reopening,
+    /// rather than falling back to whichever was paired most recently.
+    #[test]
+    fn the_drive_used_last_is_the_one_reopened() {
+        let mut store = ClientStore::default();
+        store.remember(host("old", 100));
+        store.remember(host("new", 200));
+        assert_eq!(store.primary().unwrap().host_id, "new");
+        store.note_used("old", 300);
+        assert_eq!(store.primary().unwrap().host_id, "old");
     }
 
     #[test]

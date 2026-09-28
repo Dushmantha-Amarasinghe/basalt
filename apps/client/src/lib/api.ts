@@ -279,6 +279,8 @@ export type ErrorKind =
   | 'exists'
   | 'notempty'
   | 'unpaired'
+  /** The host removed this device; its pairing is gone here too. */
+  | 'removed'
   | 'wronghost'
   | 'incompatible'
   | 'pairing'
@@ -508,6 +510,16 @@ export async function onStatus(
   const { listen } = await import('@tauri-apps/api/event')
   const stop = await listen<Status>('basalt://status', (e) => handler(e.payload))
   return stop
+}
+
+/**
+ * Told when the host turns out to have removed this device while the app was
+ * closed. The message names the host and the drive.
+ */
+export async function onRemoved(handler: (message: string) => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<string>('basalt://removed', (e) => handler(e.payload))
 }
 
 // ---------------------------------------------------------------------------
