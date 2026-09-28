@@ -795,6 +795,23 @@ impl Basalt {
     where
         F: Fn(Change) + Send + Sync + 'static,
     {
+        self.watch_with(on_change, |_| {})
+    }
+
+    /// [`Basalt::watch`], and `on_notice` when the host changes its mind about
+    /// this device.
+    ///
+    /// The watch is the one connection open while nobody is doing anything,
+    /// so it is how that is noticed at once rather than on the next click.
+    /// The host ends it when the device's access changes, and connecting
+    /// again says what the access now is. Removed, the pairing is dropped
+    /// here, as [`Basalt::connect`] does, and the watch ends: retrying would
+    /// only be refused again.
+    pub fn watch_with<F, N>(self: &Arc<Self>, on_change: F, on_notice: N) -> WatchHandle
+    where
+        F: Fn(Change) + Send + Sync + 'static,
+        N: Fn(WatchNotice) + Send + Sync + 'static,
+    {
         let stop = Arc::new(tokio::sync::Notify::new());
         let client = Arc::clone(self);
         let signal = Arc::clone(&stop);
@@ -816,9 +833,16 @@ impl Basalt {
                 }
 
                 let started = std::time::Instant::now();
-                if client.watch_once(&on_change, &signal).await.is_ok() {
+                match client.watch_once(&on_change, &on_notice, &signal).await {
                     // The caller asked it to stop.
-                    return;
+                    Ok(()) => return,
+                    Err(e) if e.kind() == "unpaired" => {
+                        if let Some(host_id) = client.status().map(|i| i.host_id) {
+                            on_notice(WatchNotice::Removed(client.removed(&host_id).await));
+                        }
+                        return;
+                    }
+                    Err(_) => {}
                 }
                 reconnecting = true;
 
@@ -843,9 +867,15 @@ impl Basalt {
     }
 
     /// One watch connection, for as long as it lasts.
-    async fn watch_once<F>(&self, on_change: &F, stop: &tokio::sync::Notify) -> Result<()>
+    async fn watch_once<F, N>(
+        &self,
+        on_change: &F,
+        on_notice: &N,
+        stop: &tokio::sync::Notify,
+    ) -> Result<()>
     where
         F: Fn(Change) + Send + Sync,
+        N: Fn(WatchNotice) + Send + Sync,
     {
         let (addr, host_id, token) = {
             let pool = self.pool().await?;
@@ -860,6 +890,22 @@ impl Basalt {
         };
 
         let mut session = Session::connect(addr, &host_id, &token, &self.me).await?;
+        // What the host says about access now, which is newer than what the
+        // rest of the app was told when it connected.
+        let writable = session.info().writable;
+        let changed = {
+            let mut info = self.info.lock().expect("info lock");
+            match info.as_mut() {
+                Some(info) if info.host_id == host_id && info.writable != writable => {
+                    info.writable = writable;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if changed {
+            on_notice(WatchNotice::AccessChanged);
+        }
         session.watch_begin().await?;
 
         loop {
@@ -1487,6 +1533,16 @@ fn unix_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// What a watch says besides changes to the drive.
+#[derive(Debug)]
+pub enum WatchNotice {
+    /// The host removed this device. The pairing has been dropped here too,
+    /// and the watch has ended; the error names the host and drive.
+    Removed(ClientError),
+    /// The host changed what this device may do; [`Basalt::status`] has it.
+    AccessChanged,
 }
 
 /// Keeps a watch running. Dropping it stops the watch.

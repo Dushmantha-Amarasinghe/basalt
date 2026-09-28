@@ -811,3 +811,95 @@ async fn a_film_and_its_episodes_arrive_with_their_picture_size() {
     let episode = &show.seasons[0].episodes[0];
     assert_eq!(episode.resolution.map(|r| r.height), Some(720));
 }
+
+// ---------------------------------------------------------------------------
+// The host changing its mind about a device
+// ---------------------------------------------------------------------------
+
+/// Collects what a watch says besides changes.
+#[derive(Clone, Default)]
+struct Notices(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl Notices {
+    fn record(&self) -> impl Fn(basalt_client::WatchNotice) + Send + Sync + 'static {
+        let inner = Arc::clone(&self.0);
+        move |notice| {
+            let said = match notice {
+                basalt_client::WatchNotice::Removed(e) => format!("removed: {e}"),
+                basalt_client::WatchNotice::AccessChanged => "access".to_string(),
+            };
+            inner.lock().expect("notices lock").push(said);
+        }
+    }
+
+    async fn wait_for(&self, want: impl Fn(&str) -> bool) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if self.0.lock().expect("notices lock").iter().any(|n| want(n)) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+}
+
+// What was reported: a device made read-only went on uploading and deleting,
+// and one removed went on browsing, because both were read when it connected.
+#[tokio::test]
+async fn a_device_made_read_only_is_refused_on_the_connections_it_already_has() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+    assert!(client.mkdir("before").await.is_ok());
+    let hash = fixture.host.devices()[0].token_hash.clone();
+
+    assert!(fixture.host.set_writable(&hash, false).unwrap());
+    let err = client.mkdir("after").await.expect_err("read-only now");
+    assert_eq!(err.kind(), "denied", "got: {err}");
+    assert!(client.list("").await.is_ok(), "reading goes on");
+
+    assert!(fixture.host.set_writable(&hash, true).unwrap());
+    assert!(client.mkdir("allowed-again").await.is_ok());
+
+    assert!(fixture.host.revoke(&hash).unwrap());
+    let err = client.list("").await.expect_err("removed now");
+    assert_eq!(err.kind(), "unpaired", "got: {err}");
+}
+
+// Nothing happened on the device when it was removed: nobody was clicking, and
+// the one connection it had open, the watch, was never told.
+#[tokio::test]
+async fn a_watching_device_hears_at_once_that_its_access_changed_or_it_was_removed() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+    assert!(client.status().unwrap().writable);
+    let hash = fixture.host.devices()[0].token_hash.clone();
+
+    let notices = Notices::default();
+    let _watch = client.watch_with(|_| {}, notices.record());
+    settle().await;
+
+    assert!(fixture.host.set_writable(&hash, false).unwrap());
+    assert!(
+        notices.wait_for(|n| n == "access").await,
+        "made read-only, the device must hear of it"
+    );
+    assert!(
+        !client.status().unwrap().writable,
+        "and what it shows must follow"
+    );
+
+    settle().await;
+    assert!(fixture.host.revoke(&hash).unwrap());
+    assert!(
+        notices
+            .wait_for(|n| n.starts_with("removed:") && n.contains("removed this device"))
+            .await,
+        "removed, the device must hear of it"
+    );
+    assert!(
+        client.known_hosts().is_empty(),
+        "the pairing is dropped here"
+    );
+    assert!(!client.is_connected());
+}

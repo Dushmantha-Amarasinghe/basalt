@@ -789,8 +789,9 @@ async fn a_read_only_device_can_browse_but_not_change_anything() {
     let client = fixture.paired_client().await;
     assert!(client.mkdir("while-writable").await.is_ok());
 
-    // Demote the device, then reconnect: the grant is read at authentication,
-    // so an open session keeps the access it was given.
+    // Demote the device, then reconnect: connecting is where the client is
+    // told its access. (The host refuses writes on open connections at once
+    // too: see the sync tests.)
     let hash = fixture.host.devices()[0].token_hash.clone();
     assert!(fixture.host.set_writable(&hash, false).unwrap());
     client.disconnect().await;

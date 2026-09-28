@@ -191,9 +191,24 @@ fn status_of(client: &Arc<Basalt>) -> Status {
 /// subscriptions delivering everything twice.
 fn start_watching(client: &Arc<Basalt>, app: &tauri::AppHandle) {
     let emitter = app.clone();
-    let handle = client.watch(move |change| {
-        let _ = emitter.emit("basalt://change", change);
-    });
+    let told = app.clone();
+    let watched = Arc::clone(client);
+    // Removed by the host while open, or its access changed: the window goes
+    // to the drive list, or shows the buttons it now may, without waiting for
+    // the next thing somebody clicks.
+    let handle = client.watch_with(
+        move |change| {
+            let _ = emitter.emit("basalt://change", change);
+        },
+        move |notice| {
+            if let basalt_client::WatchNotice::Removed(removed) = notice {
+                let _ = told.emit("basalt://removed", removed.to_string());
+            }
+            // Removed or made read-only: either way the window's status is
+            // out of date, and with it which buttons it shows.
+            let _ = told.emit("basalt://status", status_of(&watched));
+        },
+    );
     if let Some(state) = app.try_state::<AppState>() {
         // Assigning drops the previous handle, which stops the old watch.
         *state.watch.lock().expect("watch lock") = Some(handle);

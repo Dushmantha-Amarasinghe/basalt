@@ -18,7 +18,7 @@ pub mod session;
 pub mod store;
 pub mod ui;
 
-pub use client::{Basalt, IdentityState, Progress, TransferKind, TreeUpload};
+pub use client::{Basalt, IdentityState, Progress, TransferKind, TreeUpload, WatchNotice};
 pub use pool::Pool;
 pub use session::{Session, SessionInfo};
 pub use store::{ClientStore, KnownHost};

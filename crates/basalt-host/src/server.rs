@@ -44,6 +44,10 @@ pub struct Host {
     /// Bumped each time the watcher is replaced, so anything following it can
     /// move to the new one. See [`Host::keep_library_current`].
     watch_generation: tokio::sync::watch::Sender<u64>,
+    /// The token hash of each device as it is removed or its access changes,
+    /// so a connection it holds open waiting for changes is ended: see
+    /// [`stream_changes`].
+    access_changes: tokio::sync::broadcast::Sender<String>,
     /// Whether the chosen drive was missing the last time anyone looked.
     drive_lost: std::sync::atomic::AtomicBool,
     /// The media index, and whether a scan is running.
@@ -181,6 +185,7 @@ impl Host {
             traffic: Traffic::default(),
             watch: tokio::sync::RwLock::new(watch),
             watch_generation: tokio::sync::watch::Sender::new(0),
+            access_changes: tokio::sync::broadcast::Sender::new(16),
             drive_lost: std::sync::atomic::AtomicBool::new(drive_lost),
             library: std::sync::Mutex::new(library),
             collections: std::sync::Mutex::new(collections),
@@ -1603,9 +1608,8 @@ impl Host {
 
     /// Grants or withdraws write access for one device.
     ///
-    /// Takes effect on the device's next connection: the grant is copied into
-    /// the session at authentication so it does not have to be looked up on
-    /// every single request.
+    /// Takes effect at once, on connections the device already has open: each
+    /// request looks the device up again. See [`serve_connection`].
     pub fn set_writable(&self, token_hash: &str, writable: bool) -> Result<bool> {
         let changed = self
             .registry
@@ -1614,6 +1618,7 @@ impl Host {
             .set_writable(token_hash, writable);
         if changed {
             self.persist()?;
+            let _ = self.access_changes.send(token_hash.to_string());
         }
         Ok(changed)
     }
@@ -1634,6 +1639,8 @@ impl Host {
         if removed {
             self.traffic.forget(token_hash);
             self.persist()?;
+            // Nobody listening is the normal case: the device is not connected.
+            let _ = self.access_changes.send(token_hash.to_string());
         }
         Ok(removed)
     }
@@ -1970,6 +1977,20 @@ where
             counted = Some(key);
         }
 
+        // What the host decides about a device applies at once, not from its
+        // next connection. It used to be copied in when the device connected,
+        // so one made read-only went on writing, and one removed went on
+        // browsing, for as long as it kept its connections open. Looked up
+        // again for every request, which is a lock and a short search.
+        if let Some(key) = session.device_key() {
+            session.device = host
+                .registry
+                .lock()
+                .expect("registry lock")
+                .device(&key)
+                .cloned();
+        }
+
         if !op.allowed_unauthenticated() && session.device.is_none() {
             write_err(
                 &mut stream,
@@ -2290,7 +2311,7 @@ where
         // for as long as the client wants it and writes a response per change.
         Op::Watch => {
             let _: WatchRequest = decode(payload).unwrap_or_default();
-            stream_changes(stream, host).await?;
+            stream_changes(stream, host, session.device_key()).await?;
         }
 
         Op::Library => {
@@ -2401,10 +2422,19 @@ where
 /// alternative — dropping the changes it missed — leaves that client showing a
 /// listing the drive stopped agreeing with, which is the single failure this
 /// whole mechanism exists to prevent.
-async fn stream_changes<S>(stream: &mut S, host: &Arc<Host>) -> Result<()>
+/// Changes, for as long as the client wants them, or until the host changes
+/// its mind about the device the connection is for.
+///
+/// Removed, it is told so, in the answer every other request would now get.
+/// Made read-only or allowed changes again, the watch ends and the client
+/// connects again, which is where it learns its access: that is how the
+/// interface hides or shows its buttons without waiting for a restart. Both
+/// work with clients older than this, which reconnect after any failure.
+async fn stream_changes<S>(stream: &mut S, host: &Arc<Host>, device: Option<String>) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let mut access_changes = host.access_changes.subscribe();
     let mut events = match host.watch().await {
         Some(watch) => watch.subscribe(),
         None => {
@@ -2415,7 +2445,31 @@ where
     };
 
     loop {
-        let change = match events.recv().await {
+        let event = tokio::select! {
+            changed = access_changes.recv() => {
+                // Missed notices count as ours: reconnecting costs little.
+                let ours = match changed {
+                    Ok(hash) => device.as_deref() == Some(hash.as_str()),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => false,
+                };
+                if !ours {
+                    continue;
+                }
+                let gone = device.as_deref().is_none_or(|key| {
+                    host.registry.lock().expect("registry lock").device(key).is_none()
+                });
+                let (code, message) = if gone {
+                    (ErrorCode::Unauthenticated, "this host has removed this device")
+                } else {
+                    (ErrorCode::Unavailable, "the access of this device has changed; connect again")
+                };
+                let _ = write_err(stream, code, message).await;
+                return Ok(());
+            }
+            event = events.recv() => event,
+        };
+        let change = match event {
             Ok(change) => change,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
                 tracing::debug!("a watcher fell {missed} changes behind");
