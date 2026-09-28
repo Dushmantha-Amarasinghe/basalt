@@ -1873,11 +1873,14 @@ function DropOverlay({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.12 }}
-          className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-lg border-2 border-dashed border-basalt/40 bg-ink/70 backdrop-blur-[1px]"
+          // A tint, not a blur, and the words at the bottom rather than over
+          // the middle of the list: the rows underneath are how somebody
+          // finds the folder to drop on, so they have to stay readable.
+          className="pointer-events-none absolute inset-2 z-30 flex items-end justify-center rounded-lg border-2 border-dashed border-basalt/40 bg-ink/35 pb-5"
         >
-          <div className="max-w-[80%] text-center">
-            <Upload size={26} className="mx-auto text-basaltDeep" />
-            <p className="mt-3 text-sm text-text">
+          <div className="max-w-[80%] rounded-xl border border-white/[0.1] bg-panel/95 px-5 py-3.5 text-center shadow-lg shadow-black/40">
+            <Upload size={20} className="mx-auto text-basaltDeep" />
+            <p className="mt-2 text-sm text-text">
               Drop to upload into {dir ? nameOf(dir) : 'the vault'}
             </p>
             {/* The whole path, not just the last part of it.
