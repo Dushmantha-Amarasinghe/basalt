@@ -4,8 +4,8 @@
 ; CLI is upgraded, then reapply those changes.
 ;
 ; What they do: run over an older installed copy, the installer is an
-; upgrade. It skips the welcome, the "uninstall first?" question, and the
-; folder and Start menu pages, installs into the same place without
+; upgrade. It skips the welcome, the licence accepted at the first install,
+; the "uninstall first?" question, and the folder and Start menu pages, installs into the same place without
 ; uninstalling, keeps the user's shortcuts as they were, and finishes with the
 ; "Run" box. First installs, reinstalls and downgrades are as Tauri has them.
 ; The apps' own "Restart to update" runs it with /P /UPDATE /R instead, which
@@ -186,13 +186,13 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 
 ; 2. License Page (if defined)
 !if "${LICENSE}" != ""
-  !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+  !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassiveOrUpgrading ; Basalt: accepted at the first install
   !insertmacro MUI_PAGE_LICENSE "${LICENSE}"
 !endif
 
 ; 3. Install mode (if it is set to `both`)
 !if "${INSTALLMODE}" == "both"
-  !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+  !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassiveOrUpgrading ; Basalt
   !insertmacro MULTIUSER_PAGE_INSTALLMODE
 !endif
 
@@ -765,7 +765,9 @@ Section Install
   !endif
 
   ; Auto close this page for passive mode
+  ; Basalt: and for an upgrade, which then goes straight to Finish.
   ${If} $PassiveMode = 1
+  ${OrIf} $Upgrading = 1
     SetAutoClose true
   ${EndIf}
 SectionEnd
