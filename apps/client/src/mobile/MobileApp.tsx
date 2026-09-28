@@ -125,6 +125,10 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
               void identity.refresh()
               void identity.reloadProfiles()
             }}
+            onChangeDrive={() => {
+              model.setSigningIn(false)
+              setChangingDrive(true)
+            }}
           />
         </div>
       </Safe>

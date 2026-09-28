@@ -6,6 +6,7 @@ import { PROFILE_COLORS, profileColor, validPin } from '@/lib/useIdentity'
 import { EASE_OUT } from '@/lib/motion'
 import { cn } from '@/lib/utils'
 import { HexMark } from './HexMark'
+import { useBack } from '@/mobile/useBack'
 
 /**
  * Who is using Basalt: a profile, or this device on its own.
@@ -33,6 +34,7 @@ export function ProfileGate({
   lastProfile,
   ended,
   onDone,
+  onChangeDrive,
 }: {
   vaultName: string
   deviceName: string
@@ -42,10 +44,20 @@ export function ProfileGate({
   ended: boolean
   /** Signed in, or carrying on as the device. */
   onDone: () => void
+  /** Back to the drive list, for a drive other than this one. */
+  onChangeDrive?: () => void
 }): React.JSX.Element {
   const [step, setStep] = useState<Step>(() => previewStep(profiles))
   const [always, setAlways] = useState(false)
   const [busy, setBusy] = useState(false)
+
+  // A phone's back gesture: out of a PIN or a new profile first, then to the
+  // drive list. Nothing on a desktop, which has the button.
+  useBack(!!onChangeDrive, () => {
+    if (step.kind !== 'choose') setStep({ kind: 'choose' })
+    else onChangeDrive?.()
+    return true
+  })
 
   // The one last used here first; the rest as the host lists them.
   const ordered = useMemo(() => {
@@ -66,6 +78,15 @@ export function ProfileGate({
   return (
     <div className="relative flex h-full flex-col items-center justify-center overflow-y-auto px-8 py-10">
       <div className="backdrop" />
+      {onChangeDrive && step.kind === 'choose' && (
+        <button
+          onClick={onChangeDrive}
+          className="absolute left-5 top-4 z-20 flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] text-textDim transition-colors hover:bg-white/[0.05] hover:text-text"
+        >
+          <ArrowLeft size={14} />
+          Drives
+        </button>
+      )}
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
           key={step.kind === 'pin' ? `pin-${step.profile.id}` : step.kind}

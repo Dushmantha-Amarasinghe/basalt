@@ -1421,6 +1421,10 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
               void identity.refresh()
               void identity.reloadProfiles()
             }}
+            onChangeDrive={() => {
+              setSigningIn(false)
+              setChangingDrive(true)
+            }}
           />
         </div>
       </div>
