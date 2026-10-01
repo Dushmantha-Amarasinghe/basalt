@@ -169,7 +169,8 @@ function Row({
       className={cn(
         'flex select-none items-center gap-3.5 px-4 transition-colors duration-100',
         selected ? 'bg-white/[0.08]' : 'active:bg-white/[0.04]',
-        cut && 'opacity-45',
+        // Hidden items, when shown at all, are faded as Explorer fades them.
+        cut ? 'opacity-45' : entry.hidden && 'opacity-60',
       )}
     >
       <div className="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[10px] bg-white/[0.05]">

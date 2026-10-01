@@ -66,7 +66,11 @@ pub enum ClientError {
     #[error("not connected to a host")]
     NotConnected,
 
-    #[error("no paired host was found on this network")]
+    /// Shown as it stands when a drive is chosen, so it says what to do: the
+    /// usual reasons are a computer asleep or on another network.
+    #[error(
+        "The drive's computer did not answer. Check that it is on, awake and on this network, then try again."
+    )]
     HostNotFound,
 
     /// The host has removed this device. Its pairing is gone from here too,

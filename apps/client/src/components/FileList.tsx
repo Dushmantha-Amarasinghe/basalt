@@ -176,7 +176,8 @@ const Row = memo(function Row({
           ? 'bg-white/[0.075] text-text ring-1 ring-inset ring-white/[0.12]'
           : 'text-textDim hover:bg-white/[0.035] hover:text-text',
         dropTarget && 'bg-basalt/[0.14] ring-1 ring-inset ring-basalt/45',
-        cut && 'opacity-45',
+        // Hidden items, when shown at all, are faded as Explorer fades them.
+        cut ? 'opacity-45' : entry.hidden && 'opacity-60',
       )}
     >
       <Icon

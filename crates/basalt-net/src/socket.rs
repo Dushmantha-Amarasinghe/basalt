@@ -45,10 +45,27 @@ pub async fn connect(addr: SocketAddr) -> Result<TcpStream> {
     // nothing useful to do about it if it does.
     let _ = socket.set_recv_buffer_size(RECV_BUFFER);
 
-    let stream = socket.connect(addr).await?;
+    // A host on the same network answers in milliseconds. One that has gone
+    // to sleep, or moved, leaves the request unanswered, and the operating
+    // system waits for it: about twenty seconds on Windows, two minutes on
+    // Android, with the app showing nothing but a dimmed screen. Given up on
+    // here instead, as the transient failure it is, so the caller can look
+    // for the host elsewhere or say it is offline.
+    let stream = tokio::time::timeout(CONNECT_TIMEOUT, socket.connect(addr))
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("{addr} did not answer"),
+            )
+        })??;
     tune(&stream);
     Ok(stream)
 }
+
+/// How long a connection may take to open. Generous for a home network, where
+/// it takes a few milliseconds, and short enough that nobody gives up first.
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Binds a listener for the host.
 pub async fn listen(addr: SocketAddr) -> Result<TcpListener> {
@@ -119,6 +136,24 @@ fn has_explicit_port(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // An address nothing answers at: a host asleep, or gone from the network.
+    // The connection gives up in seconds, as a failure worth retrying
+    // elsewhere, rather than leaving the app waiting on the operating system.
+    #[tokio::test]
+    async fn a_host_that_never_answers_is_given_up_on_in_seconds() {
+        // Reserved for documentation, so never routed to anything.
+        let silent: SocketAddr = "192.0.2.1:7742".parse().unwrap();
+        let started = std::time::Instant::now();
+        let outcome = connect(silent).await;
+        let took = started.elapsed();
+        let error = outcome.expect_err("nothing is there to answer");
+        assert!(error.is_transient(), "a reason to look elsewhere: {error}");
+        assert!(
+            took < CONNECT_TIMEOUT + std::time::Duration::from_secs(2),
+            "waited {took:?}"
+        );
+    }
 
     // A connection that dies silently is only noticed if both ends probe it:
     // the app for its requests, the host to let go of devices that are gone.
