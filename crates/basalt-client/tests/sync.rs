@@ -280,6 +280,45 @@ async fn dropping_the_handle_stops_the_watch() {
 // The media library
 // ---------------------------------------------------------------------------
 
+/// A different made-up word for every number: 0 is "Ba", 1 is "Be", and so on.
+fn made_up(mut n: usize) -> String {
+    const SYLLABLES: [&str; 20] = [
+        "ba", "be", "bo", "da", "de", "do", "ka", "ke", "ko", "la", "le", "lo", "ma", "me", "mo",
+        "ra", "re", "ro", "sa", "so",
+    ];
+    let mut word = String::new();
+    loop {
+        word.push_str(SYLLABLES[n % SYLLABLES.len()]);
+        n /= SYLLABLES.len();
+        if n == 0 {
+            break;
+        }
+    }
+    let mut chars = word.chars();
+    let first = chars.next().unwrap().to_ascii_uppercase();
+    std::iter::once(first).chain(chars).collect()
+}
+
+/// A feature-sized file that takes no space on the disk: marked sparse
+/// before it is lengthened, as NTFS otherwise allocates every byte.
+fn sparse_feature(path: &Path) -> PathBuf {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::File::create(path).unwrap();
+    #[cfg(windows)]
+    {
+        let marked = std::process::Command::new("fsutil")
+            .args(["sparse", "setflag"])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(marked.status.success(), "fsutil sparse setflag");
+    }
+    let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.set_len(basalt_host::media::index::MIN_FEATURE_BYTES + 1)
+        .unwrap();
+    path.to_path_buf()
+}
+
 /// Big enough to count as a feature rather than a sample.
 fn put_feature(path: &Path) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1015,5 +1054,151 @@ async fn a_host_that_changes_drive_gives_the_new_drives_films() {
         titles,
         Some(vec!["Dune".to_string()]),
         "a client holding the old drive's revision gets the new drive's films"
+    );
+}
+
+// A drive changed while the last one was still being scanned. The scan used to
+// finish anyway and put the old drive's films into the new drive's library,
+// and save them under its name, until the scan after; and that scan waited out
+// the usual rest first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scan_of_the_last_drive_never_lands_on_the_new_one() {
+    let fixture = start_host().await;
+    let base = sparse_feature(&fixture.dir.join("base.mkv"));
+    // Enough folders that the walk is still going when the drive changes.
+    for i in 0..1_000 {
+        let film = fixture.vault_path(&format!(
+            "films/The {} (2026)/The {} (2026) 1080p WEB-DL.mkv",
+            made_up(i),
+            made_up(i)
+        ));
+        std::fs::create_dir_all(film.parent().unwrap()).unwrap();
+        std::fs::hard_link(&base, &film).unwrap();
+        for extra in ["Featurettes", "Interviews", "Scenes", "Trailers"] {
+            std::fs::create_dir(film.parent().unwrap().join(extra)).unwrap();
+        }
+    }
+    let client = fixture.paired_client().await;
+
+    let other = fixture.dir.join("other-drive");
+    sparse_feature(&other.join("films/Dune.2021.mkv"));
+    // The walk at start-up first, so the one looking for films starts at once
+    // rather than being queued behind it.
+    while client.library(0).await.unwrap().scanning {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    fixture.host.set_library_enabled(true).await.unwrap();
+    assert!(
+        fixture.host.is_scanning(),
+        "the first drive is being scanned"
+    );
+    // Under way, rather than merely asked for.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    fixture
+        .host
+        .set_vault(&other, "Other Drive")
+        .await
+        .expect("the host takes the new drive");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut last = Vec::new();
+    while std::time::Instant::now() < deadline {
+        let response = client.library(0).await.expect("the library answers");
+        last = response
+            .items
+            .unwrap_or_default()
+            .into_iter()
+            .map(|i| i.title)
+            .collect::<Vec<_>>();
+        assert!(
+            !last.iter().any(|t| t.starts_with("The ")),
+            "the last drive's films showed on the new one: {} of them",
+            last.len()
+        );
+        if !response.scanning && last == ["Dune"] {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(last, ["Dune"], "the new drive's films, in good time");
+
+    // And on disk, under the new drive's name, nothing of the old one.
+    let saved = basalt_host::media::index::index_path(&fixture.dir, &other);
+    let text = std::fs::read_to_string(&saved).unwrap_or_default();
+    assert!(text.contains("Dune"), "the new drive's library is saved");
+    assert!(
+        !text.contains("WEB-DL"),
+        "the old drive's films were saved as the new one's"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A large library
+// ---------------------------------------------------------------------------
+
+// Two thousand films and two hundred series of ten episodes: a big collection,
+// but a real one. The scan has to finish in reasonable time, and the list the
+// apps are sent has to stay a size a phone can take in.
+#[tokio::test]
+async fn a_large_library_scans_quickly_and_travels_light() {
+    let fixture = start_host().await;
+    // Four thousand two hundred files of feature size would be two hundred
+    // gigabytes. They are hard links to a few sparse files instead: the same
+    // size to the scanner, and almost nothing on the disk. (Windows allows
+    // 1023 links to one file.)
+    let bases: Vec<PathBuf> = (0..5)
+        .map(|n| sparse_feature(&fixture.dir.join(format!("base-{n}.mkv"))))
+        .collect();
+    let mut made = 0usize;
+    let mut link = |rel: String| {
+        let target = fixture.vault_path(&rel);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::hard_link(&bases[made / 1_000], &target).unwrap();
+        made += 1;
+    };
+    // Invented titles, so none is in the catalogue: they are kept as films
+    // because they are this year's and carry release tags, which is how a new
+    // download looks. Letters rather than numbers, as "Film 105" would rightly
+    // read as an episode.
+    for i in 0..2_000 {
+        link(format!("films/The {} (2026) 1080p WEB-DL.mkv", made_up(i)));
+    }
+    for s in 0..200 {
+        let title = format!("House of {}", made_up(s));
+        for e in 1..=10 {
+            link(format!("shows/{title}/Season 01/{title} S01E{e:02}.mkv"));
+        }
+    }
+    let client = fixture.paired_client().await;
+
+    let started = std::time::Instant::now();
+    fixture.host.set_library_enabled(true).await.unwrap();
+    let deadline = started + Duration::from_secs(120);
+    let mut response = client.library(0).await.unwrap();
+    while (response.scanning || response.items.as_ref().map_or(0, |i| i.len()) < 2_200)
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        response = client.library(0).await.unwrap();
+    }
+    let took = started.elapsed();
+    let items = response.items.unwrap_or_default();
+    let films = items.iter().filter(|i| i.kind == LibraryKind::Film).count();
+    let series = items
+        .iter()
+        .filter(|i| i.kind == LibraryKind::Series)
+        .count();
+    assert_eq!((films, series), (2_000, 200), "every film and series");
+    assert!(took < Duration::from_secs(60), "the scan took {took:?}");
+
+    let bytes = serde_json::to_vec(&items).unwrap().len();
+    println!("large library: scanned in {took:?}, {bytes} bytes for the whole list");
+    assert!(bytes < 8 * 1024 * 1024, "the list is {bytes} bytes");
+
+    // Asked again with what it has: nothing to send.
+    let again = client.library(response.revision).await.unwrap();
+    assert!(
+        again.items.is_none(),
+        "an unchanged library is not sent twice"
     );
 }

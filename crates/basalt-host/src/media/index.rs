@@ -242,7 +242,10 @@ pub struct Walk {
 }
 
 /// The whole walk: films, collections and leftovers, in one pass.
-pub fn walk(vault: &Vault, films: bool, now: i64) -> Walk {
+///
+/// `keep_going` is asked every so often, and the walk ends when it says no:
+/// the drive it is walking is no longer the one being served.
+pub fn walk(vault: &Vault, films: bool, now: i64, keep_going: &dyn Fn() -> bool) -> Walk {
     walk_within(
         vault,
         MAX_DIRS,
@@ -250,6 +253,7 @@ pub fn walk(vault: &Vault, films: bool, now: i64) -> Walk {
         Catalog::bundled(),
         films,
         now,
+        keep_going,
     )
 }
 
@@ -260,7 +264,7 @@ pub fn scan_within(
     max_duration: std::time::Duration,
     catalog: Option<&Catalog>,
 ) -> Vec<LibraryItem> {
-    walk_within(vault, max_dirs, max_duration, catalog, true, 0).items
+    walk_within(vault, max_dirs, max_duration, catalog, true, 0, &|| true).items
 }
 
 /// The walk, with its limits passed in so a test can reach them.
@@ -291,6 +295,7 @@ pub fn walk_within(
     catalog: Option<&Catalog>,
     films: bool,
     now: i64,
+    keep_going: &dyn Fn() -> bool,
 ) -> Walk {
     let started = std::time::Instant::now();
     let mut found = Vec::new();
@@ -314,6 +319,10 @@ pub fn walk_within(
         }
         // Checked every so often rather than every directory: the clock itself
         // is cheap, but not as cheap as not reading it.
+        if visited.is_multiple_of(64) && !keep_going() {
+            tracing::info!("stopped walking a drive no longer served");
+            break;
+        }
         if visited.is_multiple_of(64) && started.elapsed() > max_duration {
             tracing::warn!(
                 "stopped after {:?} with {} directories still to look at",

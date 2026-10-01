@@ -50,6 +50,12 @@ pub struct Host {
     access_changes: tokio::sync::broadcast::Sender<String>,
     /// Whether the chosen drive was missing the last time anyone looked.
     drive_lost: std::sync::atomic::AtomicBool,
+    /// Bumped whenever the drive served is replaced or let go, always while
+    /// holding `vault` for writing. See [`Host::serving`].
+    drive_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// The folder the served drive's library, collections and the rest are
+    /// saved under, as chosen: the same value their file names were made from.
+    state_root: std::sync::Mutex<Option<std::path::PathBuf>>,
     /// The media index, and whether a scan is running.
     library: std::sync::Mutex<crate::media::Library>,
     /// Every video, song and photo on the drive, and the newest files.
@@ -175,6 +181,7 @@ impl Host {
             None => crate::media::Progress::default(),
         };
 
+        let state_root = config.vault_path.clone();
         let host = Arc::new(Self {
             identity,
             config_path,
@@ -187,6 +194,8 @@ impl Host {
             watch_generation: tokio::sync::watch::Sender::new(0),
             access_changes: tokio::sync::broadcast::Sender::new(16),
             drive_lost: std::sync::atomic::AtomicBool::new(drive_lost),
+            drive_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            state_root: std::sync::Mutex::new(state_root),
             library: std::sync::Mutex::new(library),
             collections: std::sync::Mutex::new(collections),
             thumb_gate: tokio::sync::Semaphore::new(2),
@@ -353,6 +362,22 @@ impl Host {
         ))
     }
 
+    /// Saves the collections of the drive `serving` describes, if it is still
+    /// the one in memory. The copy is taken under the lock that says so.
+    fn save_collections_for(&self, serving: &Serving) {
+        let snapshot = {
+            let stored = self.collections.lock().expect("collections lock");
+            if !self.still_serving(serving) {
+                return;
+            }
+            stored.clone()
+        };
+        let path = crate::media::collect::stored_path(self.config_dir(), &serving.root);
+        if let Err(e) = snapshot.save(&path) {
+            tracing::warn!("could not save the collections: {e}");
+        }
+    }
+
     fn save_collections(&self) {
         let snapshot = self.collections.lock().expect("collections lock").clone();
         if let Some(path) = self.collections_path()
@@ -363,8 +388,8 @@ impl Host {
     }
 
     /// Adds files that just arrived to the collections.
-    async fn collect_arrivals(&self, vault: &Arc<Vault>, paths: &[String]) -> bool {
-        let (vault, paths) = (Arc::clone(vault), paths.to_vec());
+    async fn collect_arrivals(&self, serving: &Serving, paths: &[String]) -> bool {
+        let (vault, paths) = (Arc::clone(&serving.vault), paths.to_vec());
         let existing = self
             .collections
             .lock()
@@ -409,13 +434,16 @@ impl Host {
         let Some(next) = next else {
             return false;
         };
-        let changed = self
-            .collections
-            .lock()
-            .expect("collections lock")
-            .replace(next);
+        let changed = {
+            let mut stored = self.collections.lock().expect("collections lock");
+            // Arrived on a drive no longer served: not this drive's files.
+            if !self.still_serving(serving) {
+                return false;
+            }
+            stored.replace(next)
+        };
         if changed {
-            self.save_collections();
+            self.save_collections_for(serving);
         }
         changed
     }
@@ -872,10 +900,11 @@ impl Host {
 
     /// Files videos that just arrived, without walking the drive.
     async fn file_arrivals(self: &Arc<Self>, paths: Vec<String>) {
-        let Some(vault) = self.vault().await else {
+        let Some(serving) = self.serving().await else {
             return;
         };
-        if self.collect_arrivals(&vault, &paths).await {
+        let vault = Arc::clone(&serving.vault);
+        if self.collect_arrivals(&serving, &paths).await {
             self.announce(basalt_proto::msg::Change::LibraryChanged)
                 .await;
         }
@@ -918,6 +947,9 @@ impl Host {
 
             let snapshot = {
                 let mut library = self.library.lock().expect("library lock");
+                if !self.still_serving(&serving) {
+                    return;
+                }
                 if library.revision != revision {
                     continue;
                 }
@@ -925,7 +957,7 @@ impl Host {
                 library.replace(items, scanned_at);
                 library.clone()
             };
-            self.save_library(&snapshot);
+            self.save_library_for(&serving, &snapshot);
             tracing::info!("filed new arrivals without a scan");
             self.announce(basalt_proto::msg::Change::LibraryChanged)
                 .await;
@@ -990,9 +1022,10 @@ impl Host {
     }
 
     async fn measure_pending(&self) {
-        let Some(vault) = self.vault().await else {
+        let Some(serving) = self.serving().await else {
             return;
         };
+        let vault = Arc::clone(&serving.vault);
         let files =
             crate::media::quality::files_of(&self.library.lock().expect("library lock").items);
         let pending: Vec<(String, String)> = {
@@ -1009,6 +1042,10 @@ impl Host {
         tracing::info!("measuring {} videos for their picture size", pending.len());
 
         for (done, (key, path)) in pending.into_iter().enumerate() {
+            // The drive changed: what is left to measure is on the last one.
+            if !self.still_serving(&serving) {
+                return;
+            }
             let size = match vault.resolve(&path) {
                 Ok(file) => {
                     let _turn = self.thumb_gate.acquire().await;
@@ -1061,6 +1098,13 @@ impl Host {
         }
     }
 
+    /// Saves a library to the files of the drive it was made from.
+    fn save_library_for(&self, serving: &Serving, snapshot: &crate::media::Library) {
+        if let Err(e) = snapshot.save(&self.library_path_for(&serving.root)) {
+            tracing::warn!("could not save the library index: {e}");
+        }
+    }
+
     fn save_library(&self, snapshot: &crate::media::Library) {
         if let Some(path) = self.library_path()
             && let Err(e) = snapshot.save(&path)
@@ -1090,8 +1134,10 @@ impl Host {
 
         let host = Arc::clone(self);
         tokio::spawn(async move {
+            let began_on = host.drive_generation.load(Ordering::SeqCst);
             let outcome = host.scan_once().await;
             host.scanning.store(false, Ordering::SeqCst);
+            let moved = host.drive_generation.load(Ordering::SeqCst) != began_on;
             host.measure_library();
             match outcome {
                 Ok(true) => {
@@ -1103,7 +1149,13 @@ impl Host {
             }
 
             if host.rescan_wanted.swap(false, Ordering::SeqCst) {
-                let wait = host.rest_before_next_scan();
+                // A new drive has never been scanned: the rest is for not
+                // walking the same drive over and over, not for keeping
+                // somebody waiting for theirs.
+                let wait = match moved {
+                    true => std::time::Duration::ZERO,
+                    false => host.rest_before_next_scan(),
+                };
                 tokio::time::sleep(wait).await;
                 host.start_scan();
             }
@@ -1111,9 +1163,10 @@ impl Host {
     }
 
     async fn scan_once(&self) -> Result<bool> {
-        let Some(vault) = self.vault().await else {
+        let Some(serving) = self.serving().await else {
             return Ok(false);
         };
+        let vault = Arc::clone(&serving.vault);
         self.arrived_during_scan
             .lock()
             .expect("arrivals lock")
@@ -1122,13 +1175,33 @@ impl Host {
         let films = self.library_enabled();
         let now = unix_now();
         let walked = Arc::clone(&vault);
+        // Stops early once the drive is no longer the one served, so the new
+        // one is not kept waiting behind a walk of the last.
+        let generation = Arc::clone(&self.drive_generation);
+        let began_on = serving.generation;
         let crate::media::index::Walk {
             mut items,
             gathered,
             stale_parts,
-        } = tokio::task::spawn_blocking(move || crate::media::index::walk(&walked, films, now))
-            .await
-            .map_err(|e| HostError::BadRequest(format!("the scan panicked: {e}")))?;
+        } = tokio::task::spawn_blocking(move || {
+            crate::media::index::walk(&walked, films, now, &|| {
+                generation.load(std::sync::atomic::Ordering::SeqCst) == began_on
+            })
+        })
+        .await
+        .map_err(|e| HostError::BadRequest(format!("the scan panicked: {e}")))?;
+
+        if !self.still_serving(&serving) {
+            return Ok(false);
+        }
+        // Unplugged during the walk, before anyone noticed: every folder
+        // failed to read, which looks exactly like a drive with nothing on
+        // it. Keeping that would empty the library until it was rescanned.
+        if !vault.root().is_dir() {
+            return Err(HostError::Unavailable(
+                "the drive went away during the scan".into(),
+            ));
+        }
 
         // Partial uploads nobody came back for. Looked at again first: one the
         // walk saw may have been resumed since. An upload still in progress
@@ -1175,19 +1248,21 @@ impl Host {
         })
         .await
         .map_err(|e| HostError::BadRequest(format!("the scan panicked: {e}")))?;
-        let mut collections_changed = self
-            .collections
-            .lock()
-            .expect("collections lock")
-            .replace(collections);
+        let mut collections_changed = {
+            let mut stored = self.collections.lock().expect("collections lock");
+            if !self.still_serving(&serving) {
+                return Ok(false);
+            }
+            stored.replace(collections)
+        };
 
         // Anything that landed while the walk was under way, filed on top.
         let arrived = std::mem::take(&mut *self.arrived_during_scan.lock().expect("arrivals lock"));
         if !arrived.is_empty() {
-            collections_changed |= self.collect_arrivals(&vault, &arrived).await;
+            collections_changed |= self.collect_arrivals(&serving, &arrived).await;
         }
         if collections_changed {
-            self.save_collections();
+            self.save_collections_for(&serving);
         }
 
         if !films {
@@ -1223,10 +1298,13 @@ impl Host {
 
         let (changed, snapshot) = {
             let mut library = self.library.lock().expect("library lock");
+            if !self.still_serving(&serving) {
+                return Ok(false);
+            }
             let changed = library.replace(items, now);
             (changed, library.clone())
         };
-        self.save_library(&snapshot);
+        self.save_library_for(&serving, &snapshot);
 
         *self.last_scan.lock().expect("scan clock") =
             Some((std::time::Instant::now(), began.elapsed()));
@@ -1247,6 +1325,41 @@ impl Host {
 
     pub async fn vault(&self) -> Option<Arc<Vault>> {
         self.vault.read().await.clone()
+    }
+
+    /// The drive served now, for work that runs in the background.
+    ///
+    /// A scan takes minutes, and the drive can be changed, or unplugged,
+    /// before it ends. It used to finish regardless and put what it found on
+    /// the old drive into the library, collections and files of the new one:
+    /// a drive change that showed the last drive's films until the next scan,
+    /// and saved them under the new drive's name. Work started on a drive now
+    /// carries which one it was: it writes into memory only while that drive
+    /// is still the one served, and saves only to that drive's own files.
+    async fn serving(&self) -> Option<Serving> {
+        let slot = self.vault.read().await;
+        let vault = Arc::clone(slot.as_ref()?);
+        let root = self
+            .state_root
+            .lock()
+            .expect("state root lock")
+            .clone()
+            .unwrap_or_else(|| vault.root().to_path_buf());
+        Some(Serving {
+            generation: self
+                .drive_generation
+                .load(std::sync::atomic::Ordering::SeqCst),
+            vault,
+            root,
+        })
+    }
+
+    /// Whether the drive work began on is still the one served. Checked while
+    /// holding the lock on whatever is about to be written.
+    fn still_serving(&self, serving: &Serving) -> bool {
+        self.drive_generation
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == serving.generation
     }
 
     /// Locks in a drive, replacing whatever was being served.
@@ -1272,7 +1385,15 @@ impl Host {
         use std::sync::atomic::Ordering;
 
         let vault = Arc::new(vault);
-        *self.vault.write().await = Some(Arc::clone(&vault));
+        let root = self
+            .vault_path()
+            .unwrap_or_else(|| vault.root().to_path_buf());
+        {
+            let mut slot = self.vault.write().await;
+            *slot = Some(Arc::clone(&vault));
+            *self.state_root.lock().expect("state root lock") = Some(root.clone());
+            self.drive_generation.fetch_add(1, Ordering::SeqCst);
+        }
         self.drive_lost.store(false, Ordering::SeqCst);
 
         // A new watcher, and the old one dropped. That closes every watch
@@ -1288,9 +1409,6 @@ impl Host {
         // The history used to stay behind: switching drives kept the previous
         // drive's resume points in memory and saved them under the new one's
         // name, so neither drive's file was right afterwards.
-        let root = self
-            .vault_path()
-            .unwrap_or_else(|| vault.root().to_path_buf());
         let library = match self.library_enabled() {
             true => crate::media::index::Library::load(&self.library_path_for(&root)),
             false => crate::media::index::Library::default(),
@@ -1351,7 +1469,11 @@ impl Host {
                     // missing rather than failing with a path error, and the
                     // watcher stops holding a handle on a device Windows
                     // wants to release.
-                    *host.vault.write().await = None;
+                    {
+                        let mut slot = host.vault.write().await;
+                        *slot = None;
+                        host.drive_generation.fetch_add(1, Ordering::SeqCst);
+                    }
                     host.replace_watch(None).await;
                 } else if present && lost {
                     match Vault::open(&path, &name) {
@@ -2573,4 +2695,11 @@ fn build_batch(vault: &Vault, req: BatchRequest) -> Result<Vec<u8>> {
 
     writer.finish()?;
     Ok(out)
+}
+
+/// One drive as background work saw it when it began. See [`Host::serving`].
+struct Serving {
+    vault: Arc<Vault>,
+    generation: u64,
+    root: std::path::PathBuf,
 }
