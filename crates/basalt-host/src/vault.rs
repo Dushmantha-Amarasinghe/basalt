@@ -182,6 +182,30 @@ impl Vault {
         Ok(entries)
     }
 
+    /// Whether `rel`, or any folder it is inside, is hidden or a system item.
+    ///
+    /// A listing marks each entry, which is enough for a walk: it never goes
+    /// into a hidden folder. A file that arrives on its own carries no such
+    /// context, and a browser's cache under a hidden `AppData` writes them
+    /// all day, so each folder on the way is looked at. Unreadable counts as
+    /// not hidden: the caller's own checks decide what happens then.
+    pub fn is_hidden_path(&self, rel: &str) -> bool {
+        let mut prefix = String::new();
+        for part in rel.split('/').filter(|p| !p.is_empty()) {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(part);
+            let Ok(path) = self.resolve(&prefix) else {
+                return false;
+            };
+            if std::fs::symlink_metadata(&path).is_ok_and(|meta| is_hidden(&meta)) {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn stat(&self, rel: &str) -> Result<DirEntry> {
         let path = self.resolve(rel)?;
         let meta = std::fs::metadata(&path).map_err(|e| from_io(rel, e))?;
@@ -483,6 +507,29 @@ mod tests {
     }
 
     /// A vault with a small tree in it, in a uniquely named temp directory.
+    // A file arriving deep inside a hidden folder is hidden too, though its
+    // own attributes are ordinary: that is how a browser's cache looks.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_inside_a_hidden_folder_counts_as_hidden() {
+        let t = temp_vault();
+        std::fs::create_dir_all(t.dir.join("AppData/cache")).unwrap();
+        std::fs::write(t.dir.join("AppData/cache/thumb.jpg"), b"x").unwrap();
+        let hid = std::process::Command::new("attrib")
+            .args(["+h"])
+            .arg(t.dir.join("AppData"))
+            .output()
+            .unwrap();
+        assert!(hid.status.success());
+
+        assert!(t.vault.is_hidden_path("AppData/cache/thumb.jpg"));
+        assert!(t.vault.is_hidden_path("AppData"));
+        assert!(!t.vault.is_hidden_path("films/a.mkv"));
+        assert!(!t.vault.is_hidden_path("notes.txt"));
+        // Gone, or never there: not hidden, and not an error.
+        assert!(!t.vault.is_hidden_path("films/missing.mkv"));
+    }
+
     fn temp_vault() -> TempVault {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);

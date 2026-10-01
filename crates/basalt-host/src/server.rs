@@ -405,6 +405,8 @@ impl Host {
                         && !crate::media::parse::is_system(path)
                         && basalt_proto::media::kind_of(path).is_some()
                 })
+                // As the walk does: nothing inside a hidden folder.
+                .filter(|path| !vault.is_hidden_path(path))
                 .filter_map(|path| {
                     let entry = vault.stat(path).ok()?;
                     (entry.kind == basalt_proto::msg::EntryKind::File).then(|| {

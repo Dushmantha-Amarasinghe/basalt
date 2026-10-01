@@ -51,16 +51,25 @@ pub async fn connect(addr: SocketAddr) -> Result<TcpStream> {
     // Android, with the app showing nothing but a dimmed screen. Given up on
     // here instead, as the transient failure it is, so the caller can look
     // for the host elsewhere or say it is offline.
-    let stream = tokio::time::timeout(CONNECT_TIMEOUT, socket.connect(addr))
-        .await
-        .map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("{addr} did not answer"),
-            )
-        })??;
+    let stream = give_up_after(CONNECT_TIMEOUT, addr, socket.connect(addr)).await?;
     tune(&stream);
     Ok(stream)
+}
+
+/// Waits `wait` for a connection to open, and fails as a transient I/O error
+/// if it has not.
+async fn give_up_after<T>(
+    wait: std::time::Duration,
+    addr: SocketAddr,
+    connecting: impl std::future::Future<Output = std::io::Result<T>>,
+) -> Result<T> {
+    let opened = tokio::time::timeout(wait, connecting).await.map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("{addr} did not answer"),
+        )
+    })??;
+    Ok(opened)
 }
 
 /// How long a connection may take to open. Generous for a home network, where
@@ -137,22 +146,20 @@ fn has_explicit_port(host: &str) -> bool {
 mod tests {
     use super::*;
 
-    // An address nothing answers at: a host asleep, or gone from the network.
-    // The connection gives up in seconds, as a failure worth retrying
-    // elsewhere, rather than leaving the app waiting on the operating system.
+    // A host asleep, or gone from the network, never answers. The connection
+    // gives up, as a failure worth retrying elsewhere, rather than leaving the
+    // app waiting on the operating system. A connection that never completes
+    // stands in for it, so the test sends nothing anywhere.
     #[tokio::test]
-    async fn a_host_that_never_answers_is_given_up_on_in_seconds() {
-        // Reserved for documentation, so never routed to anything.
-        let silent: SocketAddr = "192.0.2.1:7742".parse().unwrap();
-        let started = std::time::Instant::now();
-        let outcome = connect(silent).await;
-        let took = started.elapsed();
-        let error = outcome.expect_err("nothing is there to answer");
+    async fn a_host_that_never_answers_is_given_up_on() {
+        let addr: SocketAddr = "127.0.0.1:7742".parse().unwrap();
+        let never = std::future::pending::<std::io::Result<()>>();
+        let wait = std::time::Duration::from_millis(50);
+        let error = give_up_after(wait, addr, never)
+            .await
+            .expect_err("nothing answered");
         assert!(error.is_transient(), "a reason to look elsewhere: {error}");
-        assert!(
-            took < CONNECT_TIMEOUT + std::time::Duration::from_secs(2),
-            "waited {took:?}"
-        );
+        assert!(CONNECT_TIMEOUT <= std::time::Duration::from_secs(5));
     }
 
     // A connection that dies silently is only noticed if both ends probe it:

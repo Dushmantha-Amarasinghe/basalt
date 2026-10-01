@@ -446,7 +446,10 @@ pub fn add(
 
     for path in paths {
         let name = path.rsplit('/').next().unwrap_or(path);
-        if crate::uploads::is_temp_name(name) || parse::is_system(path) {
+        if crate::uploads::is_temp_name(name)
+            || parse::is_system(path)
+            || vault.is_hidden_path(path)
+        {
             continue;
         }
         let Ok(entry) = vault.stat(path) else {

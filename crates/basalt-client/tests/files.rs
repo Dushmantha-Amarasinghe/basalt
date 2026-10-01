@@ -533,7 +533,9 @@ async fn hidden_items_are_marked_and_kept_out_of_the_collections() {
                 .collections
                 .map(|c| c.photos.into_iter().map(|p| p.path).collect::<Vec<_>>())
                 .unwrap_or_default();
-            if !photos.is_empty() {
+            // Until the scan has settled on it: the files were noticed
+            // arriving before they were hidden, as they never are in life.
+            if photos == ["Photos/beach.jpg"] {
                 break;
             }
         }
