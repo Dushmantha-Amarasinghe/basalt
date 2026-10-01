@@ -89,12 +89,12 @@ impl Library {
             return false;
         }
         self.items = items;
-        self.revision += 1;
+        self.revision = super::next_revision(self.revision);
         true
     }
 
     pub fn load(path: &Path) -> Self {
-        match std::fs::read(path) {
+        let mut library: Self = match std::fs::read(path) {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
                 // A corrupt index costs a rescan, nothing more, so there is no
                 // reason to stop the host over it the way a corrupt identity
@@ -103,7 +103,9 @@ impl Library {
                 Self::default()
             }),
             Err(_) => Self::default(),
-        }
+        };
+        library.revision = super::reloaded_revision(library.revision);
+        library
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -1146,7 +1148,35 @@ mod tests {
 
         put(&dir.0, "Films/Dune.2021.mkv");
         assert!(library.replace(scan(&vault), 2));
-        assert_eq!(library.revision, revision + 1);
+        assert!(library.revision > revision);
+    }
+
+    // What went wrong: the host changed drive, the new drive's index was on
+    // the same count as the old one's, and a client holding the old films was
+    // told it already had these.
+    #[test]
+    fn two_drives_never_share_a_revision() {
+        let one = temp_dir();
+        let two = temp_dir();
+        put(&one.0, "Films/Arrival.2016.mkv");
+        put(&two.0, "Films/Dune.2021.mkv");
+
+        let mut first = Library::default();
+        first.replace(scan(&vault_of(&one)), 1);
+        let path = one.0.join("index.json");
+        first.save(&path).unwrap();
+
+        let mut second = Library::default();
+        second.replace(scan(&vault_of(&two)), 1);
+        // The same number of changes each, which a plain counter numbers alike.
+        assert_ne!(first.revision, second.revision);
+
+        // Loaded back later, as when the host returns to that drive, it is not
+        // a number any client could still hold for the other.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let reloaded = Library::load(&path);
+        assert!(reloaded.revision > second.revision);
+        assert_eq!(reloaded.items, first.items);
     }
 
     #[test]
@@ -1194,7 +1224,10 @@ mod tests {
         library.save(&path).unwrap();
 
         let back = Library::load(&path);
-        assert_eq!(back.revision, library.revision);
+        // Never earlier than it was; usually later, as a loaded index is given
+        // a revision no client can hold for another drive. A client asks once
+        // more after a restart, which is the price of that.
+        assert!(back.revision >= library.revision);
         assert_eq!(back.items, library.items);
         assert_eq!(back.scanned_at, 99);
     }

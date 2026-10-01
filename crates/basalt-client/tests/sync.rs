@@ -903,3 +903,117 @@ async fn a_watching_device_hears_at_once_that_its_access_changed_or_it_was_remov
     );
     assert!(!client.is_connected());
 }
+
+// ---------------------------------------------------------------------------
+// Changing drive
+// ---------------------------------------------------------------------------
+
+/// Pairs an existing client with another host, leaving it connected there.
+async fn pair_with(client: &Arc<Basalt>, fixture: &Fixture) {
+    let requires_pin = client
+        .begin_pairing(fixture.addr)
+        .await
+        .expect("pairing opens");
+    let pin = requires_pin.then(|| {
+        fixture
+            .host
+            .pending_pairings()
+            .into_iter()
+            .find_map(|r| r.pin)
+            .expect("the host displays a PIN")
+    });
+    client
+        .finish_pairing(pin.as_deref())
+        .await
+        .expect("pairing completes");
+}
+
+/// The titles a host gives a client holding `known`, scanning or not.
+async fn titles_for(client: &Arc<Basalt>, known: u64) -> Option<Vec<String>> {
+    let response = client.library(known).await.expect("the library answers");
+    response
+        .items
+        .map(|items| items.into_iter().map(|i| i.title).collect())
+}
+
+// What was reported: after changing drive, Movies still showed the last
+// drive's films. Here the client holds the first host's revision when it asks
+// the second, which with a counter per drive was the same number: the second
+// host answered "you have it", and the first host's films stayed.
+#[tokio::test]
+async fn another_host_never_answers_with_the_last_hosts_films() {
+    let first = start_host().await;
+    let second = start_host().await;
+    put_feature(&first.vault_path("films/Arrival.2016.mkv"));
+    put_feature(&second.vault_path("films/Dune.2021.mkv"));
+    first.host.set_library_enabled(true).await.unwrap();
+    second.host.set_library_enabled(true).await.unwrap();
+
+    let client = first.paired_client().await;
+    let items = library_of(&client, 1).await;
+    assert_eq!(items[0].title, "Arrival");
+    let held = client.library(0).await.unwrap().revision;
+    let first_id = client.status().unwrap().host_id;
+
+    // Change drive: on to the second host, without disconnecting first.
+    pair_with(&client, &second).await;
+    assert_eq!(library_of(&client, 1).await[0].title, "Dune");
+    assert_eq!(
+        titles_for(&client, held).await,
+        Some(vec!["Dune".to_string()]),
+        "the first host's revision must not count as having the second's films"
+    );
+
+    // And back again, holding the second's.
+    let held = client.library(0).await.unwrap().revision;
+    client
+        .connect(&first_id, Some(&first.addr.to_string()))
+        .await
+        .expect("back to the first");
+    assert_eq!(
+        titles_for(&client, held).await,
+        Some(vec!["Arrival".to_string()])
+    );
+}
+
+// The same, with one host changing its own drive: its new drive's index was
+// numbered like the old one's, so a client was told it already had it.
+#[tokio::test]
+async fn a_host_that_changes_drive_gives_the_new_drives_films() {
+    let fixture = start_host().await;
+    put_feature(&fixture.vault_path("films/Arrival.2016.mkv"));
+    fixture.host.set_library_enabled(true).await.unwrap();
+    let client = fixture.paired_client().await;
+    assert_eq!(library_of(&client, 1).await[0].title, "Arrival");
+    let held = client.library(0).await.unwrap().revision;
+
+    let other = unique("sync-other-drive");
+    put_feature(&other.join("films/Dune.2021.mkv"));
+    fixture
+        .host
+        .set_vault(&other, "Other Drive")
+        .await
+        .expect("the host takes the new drive");
+
+    // The scan of the new drive, then the question a watching client asks.
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut titles = None;
+    while std::time::Instant::now() < deadline {
+        let response = client.library(held).await.expect("the library answers");
+        if !response.scanning {
+            titles = response
+                .items
+                .map(|items| items.into_iter().map(|i| i.title).collect::<Vec<_>>());
+            if titles.as_deref() == Some(&["Dune".to_string()][..]) {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = std::fs::remove_dir_all(&other);
+    assert_eq!(
+        titles,
+        Some(vec!["Dune".to_string()]),
+        "a client holding the old drive's revision gets the new drive's films"
+    );
+}

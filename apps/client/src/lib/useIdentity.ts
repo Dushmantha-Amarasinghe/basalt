@@ -24,12 +24,15 @@ export interface Identity {
 
 const RECHECK_MS = 30_000
 
-export function useIdentity(connected: boolean): Identity {
+/** `host` is the id of the host connected to, or null: see `useMediaLibrary`. */
+export function useIdentity(host: string | null): Identity {
   const [state, setState] = useState<IdentityState | null>(null)
   const [profiles, setProfiles] = useState<ProfileView[]>([])
   const [supported, setSupported] = useState(true)
   const [loaded, setLoaded] = useState(false)
   const live = useRef(true)
+  const current = useRef(host)
+  current.current = host
 
   useEffect(() => {
     live.current = true
@@ -39,35 +42,39 @@ export function useIdentity(connected: boolean): Identity {
   }, [])
 
   const reloadProfiles = useCallback(async () => {
+    const asked = current.current
     try {
       const list = await api.profiles()
-      if (!live.current) return
+      // The last host's profiles are never offered on this one.
+      if (!live.current || current.current !== asked) return
       setProfiles(list)
       setSupported(true)
     } catch {
-      if (live.current) setSupported(false)
+      if (live.current && current.current === asked) setSupported(false)
     }
   }, [])
 
   const refresh = useCallback(async () => {
+    const asked = current.current
     try {
       const next = await api.identity()
       // About to ask who is using the device: with the host's list as it is
       // now, not as it was — a profile removed on the host must not be
       // offered.
       if (next.choose) await reloadProfiles()
-      if (live.current) setState(next)
+      if (live.current && current.current === asked) setState(next)
     } catch {
       // Not connected: asked again when it is.
     }
   }, [reloadProfiles])
 
   useEffect(() => {
-    if (!connected) {
-      setState(null)
-      setLoaded(false)
-      return undefined
-    }
+    // Another host has other profiles: nothing of the last one's carries over.
+    setState(null)
+    setProfiles([])
+    setSupported(true)
+    setLoaded(false)
+    if (!host) return undefined
     let cancelled = false
     void Promise.all([refresh(), reloadProfiles()]).then(() => {
       if (!cancelled) setLoaded(true)
@@ -77,7 +84,7 @@ export function useIdentity(connected: boolean): Identity {
       cancelled = true
       clearInterval(timer)
     }
-  }, [connected, refresh, reloadProfiles])
+  }, [host, refresh, reloadProfiles])
 
   return { state, profiles, supported, loaded, refresh, reloadProfiles }
 }

@@ -57,12 +57,13 @@ export interface Scan {
 }
 
 /**
- * Scans once per connection and caches the result.
+ * Scans once per host and caches the result.
  *
  * `enabled` is false until something actually needs it, so opening the app on
- * the Files view never pays for a scan the user may not want.
+ * the Files view never pays for a scan the user may not want. `host` is the id
+ * of the host connected to, or null.
  */
-export function useLibraryScan(enabled: boolean, connected: boolean): Scan {
+export function useLibraryScan(enabled: boolean, host: string | null): Scan {
   const [files, setFiles] = useState<Entry[]>([])
   const [scanning, setScanning] = useState(false)
   const [done, setDone] = useState(false)
@@ -103,17 +104,18 @@ export function useLibraryScan(enabled: boolean, connected: boolean): Scan {
   }, [])
 
   useEffect(() => {
-    if (!enabled || !connected || done || scanning) return
+    if (!enabled || !host || done || scanning) return
     void scan()
-  }, [enabled, connected, done, scanning, scan])
+  }, [enabled, host, done, scanning, scan])
 
-  // A new connection means a possibly different drive.
+  // Another host is another drive: what was found goes, and a scan of the
+  // last one still running is abandoned.
   useEffect(() => {
-    if (!connected) {
-      setDone(false)
-      setFiles([])
-    }
-  }, [connected])
+    run.current += 1
+    setDone(false)
+    setScanning(false)
+    setFiles([])
+  }, [host])
 
   const rescan = useCallback(() => {
     setDone(false)

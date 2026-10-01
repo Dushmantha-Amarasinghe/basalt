@@ -66,15 +66,17 @@ impl Stored {
             return false;
         }
         self.collections = collections;
-        self.revision += 1;
+        self.revision = super::next_revision(self.revision);
         true
     }
 
     pub fn load(path: &Path) -> Self {
-        std::fs::read(path)
+        let mut stored: Self = std::fs::read(path)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        stored.revision = super::reloaded_revision(stored.revision);
+        stored
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {

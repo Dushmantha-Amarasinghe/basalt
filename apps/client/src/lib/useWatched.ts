@@ -32,10 +32,14 @@ export interface WatchedLibrary {
  * `who` is whose history this is — a profile's id, or empty for the device —
  * so a change of profile shows the new person's list straight away.
  */
-export function useWatched(connected: boolean, who = ''): WatchedLibrary {
+export function useWatched(host: string | null, who = ''): WatchedLibrary {
   const [all, setAll] = useState<Watched[]>([])
   const live = useRef(true)
-  const inFlight = useRef(false)
+  /** Whose list a plain poll is out for, so a second is not sent alongside. */
+  const inFlight = useRef<string | null>(null)
+  /** Whose list on which host is wanted now, for discarding a late answer. */
+  const current = useRef(`${host ?? ''}|${who}`)
+  current.current = `${host ?? ''}|${who}`
   /** Set while the in-app player is running, to poll a little faster. */
   const playing = useRef(false)
 
@@ -48,34 +52,38 @@ export function useWatched(connected: boolean, who = ''): WatchedLibrary {
 
   const sync = useCallback(
     async (update?: Watched, forget?: string) => {
-      if (!connected) return
+      if (!host) return
+      const asked = current.current
       // A report must never be dropped for being concurrent with a poll, so
-      // only the plain polls skip.
-      if (inFlight.current && !update && !forget) return
-      inFlight.current = true
+      // only the plain polls skip — and only for a poll out for this same
+      // list: one still out to the last host must not stop this one asking.
+      if (inFlight.current === asked && !update && !forget) return
+      inFlight.current = asked
       try {
         const entries = await api.watchProgress(update, forget)
-        if (live.current) setAll(entries)
+        // Another drive's or another person's list: not to be shown here.
+        if (live.current && current.current === asked) setAll(entries)
       } catch {
         // The host being briefly unreachable costs a resume point being a few
         // seconds stale, which is not worth telling anyone about.
       } finally {
-        inFlight.current = false
+        if (inFlight.current === asked) inFlight.current = null
       }
     },
-    [connected],
+    [host],
   )
 
   useEffect(() => {
-    // Someone else's list is never shown while this one loads.
+    // Someone else's list, or another drive's, is never shown while this one
+    // loads.
     setAll([])
-    if (!connected) return
+    if (!host) return
     void sync()
     const timer = setInterval(() => {
       void sync()
     }, playing.current ? WHILE_PLAYING_MS : IDLE_MS)
     return () => clearInterval(timer)
-  }, [connected, sync, who])
+  }, [host, sync, who])
 
   const report = useCallback(
     (path: string, position: number, duration: number) => {

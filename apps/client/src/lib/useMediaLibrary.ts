@@ -45,8 +45,15 @@ export function withEmptyLists(items: LibraryItem[]): LibraryItem[] {
  * Fetched once and then only when the host says it changed, which is what the
  * revision is for: the answer to "anything new?" is a few bytes when there is
  * not. No polling — the watch already tells this client when to ask.
+ *
+ * `host` is the id of the host connected to, or null. Everything here belongs
+ * to one host: a different one starts from nothing. It used to be keyed on
+ * being connected at all, and changing drive goes from one host to another
+ * without ever disconnecting — so the old drive's films stayed on screen, and
+ * the old revision was sent to the new host, which could answer "nothing
+ * changed" and leave them there.
  */
-export function useMediaLibrary(connected: boolean): MediaLibrary {
+export function useMediaLibrary(host: string | null): MediaLibrary {
   const [state, setState] = useState<{
     enabled: boolean
     scanning: boolean
@@ -58,7 +65,11 @@ export function useMediaLibrary(connected: boolean): MediaLibrary {
 
   const revision = useRef(0)
   const live = useRef(true)
-  const inFlight = useRef(false)
+  /** The host a request is out to, so a second one is not sent alongside. */
+  const inFlight = useRef<string | null>(null)
+  /** The host connected to now, for discarding a late answer from another. */
+  const current = useRef(host)
+  current.current = host
 
   useEffect(() => {
     live.current = true
@@ -68,12 +79,14 @@ export function useMediaLibrary(connected: boolean): MediaLibrary {
   }, [])
 
   const load = useCallback(async () => {
-    if (!connected || inFlight.current) return
-    inFlight.current = true
+    const asked = current.current
+    if (!asked || inFlight.current === asked) return
+    inFlight.current = asked
     setLoading(true)
     try {
       const response: LibraryResponse = await api.library(revision.current)
-      if (!live.current) return
+      // Answered by the host before a drive change: not this library.
+      if (!live.current || current.current !== asked) return
       revision.current = response.revision
       setState((previous) => ({
         enabled: response.enabled,
@@ -86,23 +99,25 @@ export function useMediaLibrary(connected: boolean): MediaLibrary {
       }))
       setError(null)
     } catch (e) {
-      if (live.current) setError(e instanceof Error ? e.message : String(e))
+      if (live.current && current.current === asked) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
     } finally {
-      inFlight.current = false
-      if (live.current) setLoading(false)
+      if (inFlight.current === asked) inFlight.current = null
+      if (live.current && current.current === asked) setLoading(false)
     }
-  }, [connected])
+  }, [])
 
   useEffect(() => {
-    if (!connected) {
-      // A fresh connection may be a different host with a different library,
-      // so the revision cannot carry over.
-      revision.current = 0
-      setState({ enabled: false, scanning: false, items: [], sections: ALL_SECTIONS })
-      return
-    }
-    void load()
-  }, [connected, load])
+    // Another host, or none: nothing of the last library carries over, the
+    // revision least of all.
+    revision.current = 0
+    inFlight.current = null
+    setState({ enabled: false, scanning: false, items: [], sections: ALL_SECTIONS })
+    setError(null)
+    setLoading(false)
+    if (host) void load()
+  }, [host, load])
 
   // A scan in progress is the one time polling is right: the host has nothing
   // to announce until it finishes, and the screen is saying "scanning".

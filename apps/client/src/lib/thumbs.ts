@@ -8,18 +8,27 @@ export const GRID_THUMB = 320
 export const VIEW_THUMB = 1600
 
 /**
- * The start of every media URL, fetched once per connection.
+ * Which host the pictures are from, in every thumbnail URL.
+ *
+ * The media proxy lives as long as the app, so its address is the same for
+ * every host. Without this, the browser's cache would hand one drive's
+ * picture to another drive's file of the same name and date.
+ */
+let hostTag = ''
+
+/**
+ * The start of every media URL, fetched once per host.
  *
  * Empty until known, and empty in the browser preview — where every tile
  * shows its placeholder, which is also what a host without pictures shows.
+ * `host` is the id of the host connected to, or null.
  */
-export function useMediaBase(connected: boolean): string {
+export function useMediaBase(host: string | null): string {
   const [base, setBase] = useState('')
   useEffect(() => {
-    if (!connected) {
-      setBase('')
-      return undefined
-    }
+    hostTag = host ? host.slice(0, 12) : ''
+    setBase('')
+    if (!host) return undefined
     let cancelled = false
     void api
       .mediaBase()
@@ -30,7 +39,7 @@ export function useMediaBase(connected: boolean): string {
     return () => {
       cancelled = true
     }
-  }, [connected])
+  }, [host])
   return base
 }
 
@@ -52,7 +61,8 @@ export function thumbUrl(base: string, path: string, mtime: number, size = GRID_
   if (!base && showcase.showcaseAssets()) {
     return size > GRID_THUMB ? showcase.photoFor(path) : showcase.thumbFor(path)
   }
-  return base ? `${base}${encodeURIComponent(path)}?thumb=${size}&v=${mtime}` : ''
+  const tag = hostTag ? `&h=${hostTag}` : ''
+  return base ? `${base}${encodeURIComponent(path)}?thumb=${size}&v=${mtime}${tag}` : ''
 }
 
 /** Photos the webview can show as they are. Everything else goes through

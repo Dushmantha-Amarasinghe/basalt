@@ -43,6 +43,14 @@ zstd = "0.13"
 
 # Release profile tuned for measurement: we want the benchmark binary to be
 # representative of a shipped build, not of a debug build.
+# The compressor is C, and unoptimised it runs at a tenth of its real speed.
+# Tests and debug builds get it optimised regardless, so the compression
+# policy tests measure what the apps actually do (they failed whenever the
+# machine was busy, timing a debug build), and a debug app transfers at a
+# speed worth testing against.
+[profile.dev.package.zstd-sys]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 lto = "thin"

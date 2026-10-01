@@ -21,6 +21,7 @@ import {
   Upload,
   X,
 } from 'lucide-react'
+import { forgetPosters } from '@/components/Poster'
 import { TitleBar } from '@/components/TitleBar'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { Sidebar, type NavKey } from '@/components/Sidebar'
@@ -136,6 +137,13 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
 
   const connected = vault.status?.connected ?? false
   const writable = vault.status?.writable ?? false
+  /**
+   * The host connected to, or null. What is on every drive-specific screen
+   * belongs to this one host, and is dropped when it changes — including when
+   * the drive is changed, which goes from one host to the next without ever
+   * being disconnected.
+   */
+  const host = connected ? (vault.status?.hostId ?? null) : null
 
   const { confirm, dialog: confirmDialog } = useConfirm()
   const actions = useFileActions({
@@ -144,21 +152,21 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     confirm,
   })
 
-  const identity = useIdentity(connected)
+  const identity = useIdentity(host)
   const profileId = identity.state?.profile?.id ?? null
   /** "Sign in to a profile" from the sidebar, while carrying on as the device. */
   const [signingIn, setSigningIn] = useState(false)
 
   const stars = useStars(vault.status?.hostId, nav === 'starred', profileId)
 
-  const collections = useCollections(connected)
-  const mediaBase = useMediaBase(connected)
+  const collections = useCollections(host)
+  const mediaBase = useMediaBase(host)
   // Only for a host too old to sort the drive itself.
   const needsScan =
     collections.unsupported && (nav === 'recent' || LIBRARY_KEYS.includes(nav))
-  const scan = useLibraryScan(needsScan, connected)
+  const scan = useLibraryScan(needsScan, host)
 
-  const media = useMediaLibrary(connected)
+  const media = useMediaLibrary(host)
 
   /** Sections the host's owner chose not to show. */
   const hiddenSections = useMemo(() => {
@@ -178,7 +186,25 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
   }, [hiddenSections, nav])
   const isMedia = MEDIA_KEYS.includes(nav)
 
-  const watched = useWatched(connected, profileId ?? '')
+  const watched = useWatched(host, profileId ?? '')
+
+  // A change of host leaves nothing of the last drive open: not a film
+  // playing, a photo up, a selection or a search, nor its posters.
+  const lastHost = useRef(host)
+  useEffect(() => {
+    if (lastHost.current === host) return
+    const wasHost = lastHost.current
+    lastHost.current = host
+    // Losing the connection to the same host keeps what is on screen: the
+    // rule for an outage is to show the last good state under a banner.
+    if (host === null || wasHost === null) return
+    forgetPosters()
+    setPlaying(null)
+    setViewer(null)
+    setSelected(new Set())
+    setQuery('')
+    setProperties(null)
+  }, [host])
   const watchedByPath = useMemo(
     () => new Map(watched.all.map((entry) => [entry.path, entry])),
     [watched.all],

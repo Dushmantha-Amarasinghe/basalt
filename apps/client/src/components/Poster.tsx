@@ -32,6 +32,16 @@ function initialsOf(title: string): string {
  */
 const fetched = new Map<string, string | null>()
 
+/**
+ * Forgets every poster fetched, for a change of host.
+ *
+ * Another host's library may hold a film with the same id and a poster this
+ * one never had, and a remembered "no poster" would stop it being asked for.
+ */
+export function forgetPosters(): void {
+  fetched.clear()
+}
+
 /** Fetches a poster once, however many components ask for it. */
 function useArtwork(id: string | undefined, hasArt: boolean): string | null {
   const [url, setUrl] = useState<string | null>(() =>

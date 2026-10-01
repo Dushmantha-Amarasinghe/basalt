@@ -24,14 +24,17 @@ export interface CollectionsState {
 
 const EMPTY: Collections = { videos: [], music: [], photos: [], recent: [], truncated: false }
 
-export function useCollections(connected: boolean): CollectionsState {
+/** `host` is the id of the host connected to, or null: see `useMediaLibrary`. */
+export function useCollections(host: string | null): CollectionsState {
   const [collections, setCollections] = useState<Collections>(EMPTY)
   const [scanning, setScanning] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [unsupported, setUnsupported] = useState(false)
   const revision = useRef(0)
-  const inFlight = useRef(false)
+  const inFlight = useRef<string | null>(null)
   const live = useRef(true)
+  const current = useRef(host)
+  current.current = host
 
   useEffect(() => {
     live.current = true
@@ -41,11 +44,13 @@ export function useCollections(connected: boolean): CollectionsState {
   }, [])
 
   const load = useCallback(async () => {
-    if (!connected || inFlight.current) return
-    inFlight.current = true
+    const asked = current.current
+    if (!asked || inFlight.current === asked) return
+    inFlight.current = asked
     try {
       const response = await api.collections(revision.current)
-      if (!live.current) return
+      // Answered by the host before a drive change: not these collections.
+      if (!live.current || current.current !== asked) return
       revision.current = response.revision
       setScanning(response.scanning)
       // Nothing back means "you already have them", not "there are none".
@@ -53,27 +58,27 @@ export function useCollections(connected: boolean): CollectionsState {
       setUnsupported(false)
       setLoaded(true)
     } catch {
-      if (!live.current) return
+      if (!live.current || current.current !== asked) return
       // A host from before collections cannot answer: it refuses, or hangs
       // up. Either way the sections fall back to scanning for themselves,
       // and a later answer — once the host is updated — switches them back.
       setUnsupported(true)
       setLoaded(true)
     } finally {
-      inFlight.current = false
+      if (inFlight.current === asked) inFlight.current = null
     }
-  }, [connected])
+  }, [])
 
   useEffect(() => {
-    if (!connected) {
-      revision.current = 0
-      setCollections(EMPTY)
-      setLoaded(false)
-      setScanning(false)
-      return
-    }
-    void load()
-  }, [connected, load])
+    // Another host, or none: the last drive's lists and revision go.
+    revision.current = 0
+    inFlight.current = null
+    setCollections(EMPTY)
+    setLoaded(false)
+    setScanning(false)
+    setUnsupported(false)
+    if (host) void load()
+  }, [host, load])
 
   // While the host is walking, it has nothing to announce until it finishes.
   useEffect(() => {
