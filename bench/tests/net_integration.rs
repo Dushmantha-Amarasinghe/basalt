@@ -29,6 +29,13 @@ struct Harness {
     root: PathBuf,
 }
 
+impl Drop for Harness {
+    fn drop(&mut self) {
+        // Best effort: a server task may still hold a file open on Windows.
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
 impl Harness {
     fn plain_addr(&self) -> String {
         self.plain.to_string()

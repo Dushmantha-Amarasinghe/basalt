@@ -210,14 +210,17 @@ function Card({
 
   return (
     <motion.button
-      initial={{ opacity: 0, y: 8 }}
+      // Animated in over the first screenful only: a library of two thousand
+      // must not start two thousand animations to show twenty cards.
+      initial={index < 24 ? { opacity: 0, y: 8 } : false}
       animate={{ opacity: 1, y: 0 }}
-      // Staggered, but only over the first screenful: a library of nine
-      // hundred must not animate for half a minute.
       transition={{ duration: 0.3, delay: Math.min(index, 18) * 0.02, ease: [0.22, 1, 0.36, 1] }}
       whileHover={{ y: -3 }}
       onClick={onOpen}
       className="group block text-left"
+      // Cards far off screen are neither laid out nor painted until they come
+      // near, so a long library scrolls like a short one.
+      style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 320px' }}
     >
       <div className="relative overflow-hidden rounded-md">
         <Poster

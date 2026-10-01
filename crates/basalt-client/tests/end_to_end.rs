@@ -197,10 +197,13 @@ async fn a_pin_pairs_exactly_one_device() {
     client.finish_pairing(Some(&pin)).await.unwrap();
 
     // The same number, tried by somebody else, is spent.
-    let second = Arc::new(Basalt::open(unique("second").with_extension("json")).unwrap());
+    let second_store = unique("second").with_extension("json");
+    let second = Arc::new(Basalt::open(second_store.clone()).unwrap());
     second.begin_pairing(fixture.addr).await.unwrap();
+    let refused = second.finish_pairing(Some(&pin)).await.is_err();
+    let _ = std::fs::remove_file(&second_store);
     assert!(
-        second.finish_pairing(Some(&pin)).await.is_err(),
+        refused,
         "a PIN belongs to one request and is consumed by it"
     );
 }

@@ -61,9 +61,29 @@ pub async fn listen(addr: SocketAddr) -> Result<TcpListener> {
 /// latency-bound request/response exchanges, and Nagle's algorithm would add up
 /// to 40 ms to each one. Bulk transfers write in megabyte chunks and never form
 /// the small segments Nagle exists to coalesce, so there is nothing to lose.
+///
+/// Keepalive is for a connection that dies without saying so: Wi-Fi dropping,
+/// a laptop going to sleep, a router restarting. Nothing is sent to close it,
+/// so without probes a request in flight waits for its answer for ever — a
+/// transfer stuck at the same percentage, a folder that never finishes
+/// loading, a watch that stops hearing of changes. With them the operating
+/// system notices within about a minute, the request fails as offline, and
+/// the apps retry as they do for any outage. It cannot cut off anything slow
+/// but alive, such as the host copying a large folder: a live peer answers
+/// the probes however long the work takes.
 pub fn tune(stream: &TcpStream) {
     let _ = stream.set_nodelay(true);
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(KEEPALIVE_IDLE)
+        .with_interval(KEEPALIVE_INTERVAL);
+    let _ = socket2::SockRef::from(stream).set_tcp_keepalive(&keepalive);
 }
+
+/// Silence before the first keepalive probe.
+pub const KEEPALIVE_IDLE: std::time::Duration = std::time::Duration::from_secs(15);
+/// Between probes once silence has gone on. Windows gives up after ten
+/// unanswered, Android after nine: roughly a minute in all.
+pub const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Resolves a host string to a socket address, defaulting the port.
 ///
@@ -99,6 +119,27 @@ fn has_explicit_port(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A connection that dies silently is only noticed if both ends probe it:
+    // the app for its requests, the host to let go of devices that are gone.
+    #[tokio::test]
+    async fn both_ends_of_a_connection_probe_for_a_silent_death() {
+        let listener = listen("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (client, accepted) = tokio::join!(connect(addr), listener.accept());
+        let client = client.unwrap();
+        let (host_side, _) = accepted.unwrap();
+        tune(&host_side);
+
+        assert!(
+            socket2::SockRef::from(&client).keepalive().unwrap(),
+            "the app's end"
+        );
+        assert!(
+            socket2::SockRef::from(&host_side).keepalive().unwrap(),
+            "the host's end"
+        );
+    }
 
     #[test]
     fn explicit_ports_are_recognised() {

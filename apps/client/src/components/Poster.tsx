@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { api } from '@/lib/api'
 
@@ -27,10 +27,22 @@ function initialsOf(title: string): string {
  *
  * Module-level rather than React state: the same film appears on the grid and
  * again in the series sheet, and both should draw from one fetch. Entries are
- * data URLs of about 50 KB, so a library of a thousand would be 50 MB — which
- * is why only what has actually been looked at is ever in here.
+ * data URLs of about 50 KB, so the newest few hundred are kept and the oldest
+ * let go: a library of two thousand would otherwise hold 100 MB of pictures,
+ * which on a phone is the difference between scrolling and being closed.
  */
 const fetched = new Map<string, string | null>()
+const KEEP = 400
+
+function remember(id: string, data: string | null): void {
+  fetched.delete(id)
+  fetched.set(id, data)
+  while (fetched.size > KEEP) {
+    const oldest = fetched.keys().next().value
+    if (oldest === undefined) break
+    fetched.delete(oldest)
+  }
+}
 
 /**
  * Forgets every poster fetched, for a change of host.
@@ -40,36 +52,112 @@ const fetched = new Map<string, string | null>()
  */
 export function forgetPosters(): void {
   fetched.clear()
+  waiting.length = 0
+  pending.clear()
 }
 
-/** Fetches a poster once, however many components ask for it. */
-function useArtwork(id: string | undefined, hasArt: boolean): string | null {
-  const [url, setUrl] = useState<string | null>(() =>
-    id ? (fetched.get(id) ?? null) : null,
-  )
+/**
+ * At most a few posters are asked for at once, newest request first.
+ *
+ * Opening Movies on a large library used to ask for every poster in it at the
+ * same moment — two thousand requests, each a round trip to the host and a
+ * picture back across the bridge into the page — and the window froze while
+ * they came in.
+ */
+const AT_ONCE = 4
+let running = 0
+const waiting: string[] = []
+const pending = new Map<string, Array<(data: string | null) => void>>()
+
+function fetchArt(id: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const callbacks = pending.get(id)
+    if (callbacks) {
+      callbacks.push(resolve)
+      return
+    }
+    pending.set(id, [resolve])
+    waiting.push(id)
+    pump()
+  })
+}
+
+function pump(): void {
+  while (running < AT_ONCE && waiting.length > 0) {
+    // The most recently wanted first: what was scrolled past matters less.
+    const id = waiting.pop()!
+    running += 1
+    void api
+      .art(id)
+      .catch(() => null)
+      .then((data) => {
+        remember(id, data)
+        const callbacks = pending.get(id) ?? []
+        pending.delete(id)
+        for (const done of callbacks) done(data)
+      })
+      .finally(() => {
+        running -= 1
+        pump()
+      })
+  }
+}
+
+/**
+ * Fetches a poster once, however many components ask for it, and only once
+ * its card is near the screen.
+ */
+function useArtwork(
+  id: string | undefined,
+  hasArt: boolean,
+): [string | null, React.RefCallback<Element>] {
+  const [url, setUrl] = useState<string | null>(() => (id ? (fetched.get(id) ?? null) : null))
+  const [near, setNear] = useState(false)
+  const observer = useRef<IntersectionObserver | null>(null)
+
+  // Watches the card until it comes within a screen of view, then stops.
+  const watch: React.RefCallback<Element> = (element) => {
+    observer.current?.disconnect()
+    observer.current = null
+    if (!element || near) return
+    if (typeof IntersectionObserver === 'undefined') {
+      setNear(true)
+      return
+    }
+    const seen = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          seen.disconnect()
+          setNear(true)
+        }
+      },
+      { rootMargin: '600px' },
+    )
+    seen.observe(element)
+    observer.current = seen
+  }
+
+  useEffect(() => () => observer.current?.disconnect(), [])
 
   useEffect(() => {
     // Asking for a poster the host has already said it does not have is a
     // round trip guaranteed to come back empty.
-    if (!id || !hasArt || fetched.has(id)) return
-
+    if (!id || !hasArt) return
+    if (fetched.has(id)) {
+      setUrl(fetched.get(id) ?? null)
+      return
+    }
+    if (!near) return
     let live = true
-    void api
-      .art(id)
-      .then((data) => {
-        fetched.set(id, data)
-        if (live) setUrl(data)
-      })
-      // A poster that will not load is not worth a message anywhere; the
-      // generated one takes over.
-      .catch(() => fetched.set(id, null))
-
+    void fetchArt(id).then((data) => {
+      if (live) setUrl(data)
+    })
     return () => {
       live = false
     }
-  }, [id, hasArt])
+  }, [id, hasArt, near])
 
-  return url
+  return [url, watch]
 }
 
 /**
@@ -103,12 +191,13 @@ export function Poster({
   /** Whether the host has a poster for it. */
   hasArt?: boolean
 }): React.JSX.Element {
-  const artwork = useArtwork(id, hasArt)
+  const [artwork, watch] = useArtwork(id, hasArt)
   const hash = hashOf(title.toLowerCase())
 
   if (artwork) {
     return (
       <motion.img
+        ref={watch}
         src={artwork}
         alt=""
         initial={{ opacity: 0 }}
@@ -135,6 +224,7 @@ export function Poster({
 
   return (
     <div
+      ref={watch}
       className="relative flex aspect-[2/3] w-full items-end overflow-hidden"
       style={{
         background: `linear-gradient(${angle}deg, hsl(${tint} 6% ${top}%), hsl(${tint} 4% ${bottom}%))`,

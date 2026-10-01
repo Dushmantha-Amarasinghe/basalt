@@ -346,8 +346,19 @@ async fn an_empty_file_and_a_five_gigabyte_one_read_correctly() {
     fixture.put("sizes/empty.txt", b"");
     let big = fixture.vault().join("sizes/big.bin");
     {
-        let file = std::fs::File::create(&big).unwrap();
-        // Sparse: five gigabytes on paper, nothing on the disk.
+        std::fs::File::create(&big).unwrap();
+        // Sparse: five gigabytes on paper, nothing on the disk. NTFS only
+        // leaves the length unallocated for a file marked sparse first.
+        #[cfg(windows)]
+        {
+            let marked = std::process::Command::new("fsutil")
+                .args(["sparse", "setflag"])
+                .arg(&big)
+                .output()
+                .unwrap();
+            assert!(marked.status.success(), "fsutil sparse setflag");
+        }
+        let file = std::fs::OpenOptions::new().write(true).open(&big).unwrap();
         file.set_len(5 * 1024 * 1024 * 1024).unwrap();
     }
     {
