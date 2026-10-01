@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
-import { HardDrive, Info, Laptop, Shield, Volume2, Wifi, Zap } from 'lucide-react'
+import {
+  FolderOpen, HardDrive, Info, Laptop, Shield, Volume2, Wifi, Zap } from 'lucide-react'
+import { Switch } from './Switch'
+import { setShowHidden, useShowHidden } from '@/lib/showHidden'
 import type { Status } from '@/lib/api'
 import {
   audioDevices,
@@ -71,6 +74,7 @@ export function SettingsView({
   onChangeDrive: () => void
 }): React.JSX.Element {
   const [free, total] = space ?? [0, 0]
+  const showHidden = useShowHidden()
 
   return (
     <div className="h-full overflow-y-auto px-8 py-6">
@@ -98,6 +102,15 @@ export function SettingsView({
 
         <Section icon={Info} title="About" hint="Basalt, by Refora Technologies">
           <About product="Basalt" />
+        </Section>
+
+        <Section icon={FolderOpen} title="Files" hint="What folders show">
+          <Switch
+            label="Show hidden files"
+            description="Items Windows keeps out of sight, such as desktop.ini and the Recycle Bin. Off, as in Explorer."
+            checked={showHidden}
+            onChange={setShowHidden}
+          />
         </Section>
 
         <Section icon={Volume2} title="Playback" hint="Where the sound goes">

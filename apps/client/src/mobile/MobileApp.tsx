@@ -26,6 +26,8 @@ import {
   Video,
   X,
 } from 'lucide-react'
+import { Switch } from '@/components/Switch'
+import { setShowHidden, useShowHidden } from '@/lib/showHidden'
 import { musicItem, type AppModel } from '@/App'
 import { HexMark } from '@/components/HexMark'
 import { PairingView } from '@/components/PairingView'
@@ -1376,6 +1378,7 @@ function MoreScreen({
   /** The drive list, to use another drive; this one stays paired. */
   onChangeDrive: () => void
 }): React.JSX.Element {
+  const showHidden = useShowHidden()
   const { vault, identity, transfers } = model
   const profile = identity.state?.profile ?? null
   const space = vault.space
@@ -1469,6 +1472,16 @@ function MoreScreen({
             <ArrowLeftRight size={15} />
             Change drive
           </button>
+        </Card>
+
+        <Card>
+          <Switch
+            label="Show hidden files"
+            description="Items Windows keeps out of sight on the host, such as desktop.ini and the Recycle Bin."
+            checked={showHidden}
+            onChange={setShowHidden}
+            className="py-0"
+          />
         </Card>
 
         <Card onClick={onTransfers}>

@@ -110,6 +110,9 @@ impl Vault {
             Some((p, n)) => (p.to_string(), n.to_string()),
             None => (String::new(), safe.clone()),
         };
+        if let Some(problem) = name_problem(&name) {
+            return Err(HostError::BadRequest(problem));
+        }
 
         let parent_path = if parent.is_empty() {
             self.root.clone()
@@ -168,6 +171,7 @@ impl Vault {
                 size: if meta.is_dir() { 0 } else { meta.len() },
                 mtime: mtime_of(&meta),
                 readonly: meta.permissions().readonly(),
+                hidden: is_hidden(&meta),
             });
         }
 
@@ -196,6 +200,7 @@ impl Vault {
             size: if meta.is_dir() { 0 } else { meta.len() },
             mtime: mtime_of(&meta),
             readonly: meta.permissions().readonly(),
+            hidden: is_hidden(&meta),
         })
     }
 
@@ -240,7 +245,13 @@ impl Vault {
         self.require_writable()?;
         let source = self.resolve(from)?;
         let target = self.resolve_new(to)?;
-        if target.exists() {
+        // On a drive that ignores case, `IMG_001.jpg` already "exists" when
+        // renaming `IMG_001.JPG` to it: it is the same file. That is a rename
+        // Explorer makes without a word, so it is not refused here either.
+        let same_file = target
+            .canonicalize()
+            .is_ok_and(|existing| existing == source);
+        if target.exists() && !same_file {
             return Err(HostError::Exists(to.to_string()));
         }
         std::fs::rename(&source, &target).map_err(|e| from_io(from, e))
@@ -358,8 +369,106 @@ fn mtime_of(meta: &std::fs::Metadata) -> i64 {
     }
 }
 
+/// Whether Windows marks this hidden or as part of the system, which is what
+/// Explorer leaves out of a folder unless asked.
+fn is_hidden(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const HIDDEN: u32 = 0x2;
+        const SYSTEM: u32 = 0x4;
+        meta.file_attributes() & (HIDDEN | SYSTEM) != 0
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = meta;
+        false
+    }
+}
+
+/// Why Windows would refuse `name` for a new file or folder, in words, or
+/// `None` when it is fine.
+///
+/// Checked before anything touches the disk. A phone allows names Windows
+/// does not, and one sent up as it was came back as "The filename, directory
+/// name, or volume label syntax is incorrect. (os error 123)" — true, and of
+/// no use to the person holding the phone.
+pub fn name_problem(name: &str) -> Option<String> {
+    const FORBIDDEN: &[char] = &['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
+    if let Some(c) = name
+        .chars()
+        .find(|c| FORBIDDEN.contains(c) || (*c as u32) < 32)
+    {
+        let shown = if (c as u32) < 32 {
+            "a control character".to_string()
+        } else {
+            format!("\u{201c}{c}\u{201d}")
+        };
+        return Some(format!(
+            "\u{201c}{name}\u{201d} cannot be used as a name on the host's drive: Windows does not allow {shown} in a name. Rename it and try again."
+        ));
+    }
+    if name.ends_with('.') || name.ends_with(' ') {
+        return Some(format!(
+            "\u{201c}{name}\u{201d} cannot be used as a name on the host's drive: Windows does not allow a name to end in a dot or a space."
+        ));
+    }
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end()
+        .to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0');
+    if reserved {
+        return Some(format!(
+            "\u{201c}{name}\u{201d} is a name Windows keeps for itself, so it cannot be used on the host's drive. Rename it and try again."
+        ));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn names_windows_refuses_are_caught_before_the_disk_with_a_reason() {
+        for bad in [
+            "what?.txt",
+            "a:b",
+            "pipe|",
+            "star*",
+            "q\"",
+            "<x>",
+            "trailing.",
+            "trailing ",
+            "CON",
+            "nul.txt",
+            "COM1",
+            "lpt9.log",
+            "tab	name",
+        ] {
+            let problem = super::name_problem(bad).unwrap_or_else(|| panic!("{bad} passed"));
+            assert!(!problem.contains("os error"), "{problem}");
+        }
+        for fine in [
+            "Café.txt",
+            "COM0",
+            "COMPUTER.txt",
+            "console.log",
+            "50% off.txt",
+            "a#b&c+d.txt",
+            ".hidden",
+            "no extension",
+            "   leading.txt",
+        ] {
+            assert_eq!(super::name_problem(fine), None, "{fine}");
+        }
+    }
+
     use super::*;
 
     struct TempVault {

@@ -147,6 +147,12 @@ pub struct DirEntry {
     /// delete will fail before attempting it.
     #[serde(default)]
     pub readonly: bool,
+    /// Windows' hidden or system attribute: `desktop.ini`, `Thumbs.db`, the
+    /// Recycle Bin. Lists leave these out unless asked, as Explorer does, and
+    /// the library never looks inside them. Left out of the message when
+    /// false, and read as false from a host too old to send it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -844,6 +850,17 @@ mod tests {
         assert!(parse_upload_id("zz").is_err());
     }
 
+    // A host from before the hidden flag, and one leaving it out for the
+    // usual case: both read as not hidden, and false is never sent.
+    #[test]
+    fn the_hidden_flag_is_optional_both_ways() {
+        let old: DirEntry =
+            serde_json::from_str(r#"{"name":"a","kind":"file","size":1,"mtime":0}"#).unwrap();
+        assert!(!old.hidden);
+        let json = serde_json::to_string(&old).unwrap();
+        assert!(!json.contains("hidden"), "{json}");
+    }
+
     #[test]
     fn a_listing_round_trips_through_json() {
         let response = ListResponse {
@@ -854,6 +871,7 @@ mod tests {
                     size: 0,
                     mtime: 1_700_000_000,
                     readonly: false,
+                    hidden: false,
                 },
                 DirEntry {
                     name: "notes.txt".into(),
@@ -861,6 +879,7 @@ mod tests {
                     size: 1024,
                     mtime: -86_400,
                     readonly: true,
+                    hidden: true,
                 },
             ],
         };

@@ -22,6 +22,7 @@ import {
   X,
 } from 'lucide-react'
 import { forgetPosters } from '@/components/Poster'
+import { useShowHidden, visibleEntries } from '@/lib/showHidden'
 import { TitleBar } from '@/components/TitleBar'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { Sidebar, type NavKey } from '@/components/Sidebar'
@@ -144,6 +145,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
    * being disconnected.
    */
   const host = connected ? (vault.status?.hostId ?? null) : null
+  const showHidden = useShowHidden()
 
   const { confirm, dialog: confirmDialog } = useConfirm()
   const actions = useFileActions({
@@ -354,8 +356,10 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         : collections.collections.recent.map(fileToEntry)
     }
     if (nav === 'starred') return stars.entries
-    return vault.entries
-  }, [nav, scan.files, stars.entries, vault.entries, collections])
+    // Windows' own hidden and system items, out of sight as in Explorer
+    // unless asked for in Settings.
+    return visibleEntries(vault.entries, showHidden)
+  }, [nav, scan.files, stars.entries, vault.entries, collections, showHidden])
 
   const entries = useMemo(() => {
     const needle = query.trim().toLowerCase()

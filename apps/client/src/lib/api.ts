@@ -23,6 +23,8 @@ export interface DirEntry {
   /** Unix seconds, as the host reports them. */
   mtime: number
   readonly: boolean
+  /** Windows' hidden or system attribute. Absent from older hosts. */
+  hidden?: boolean
 }
 
 export interface Status {
@@ -540,6 +542,7 @@ export function toEntries(dir: string, entries: DirEntry[]): Entry[] {
     // The host speaks Unix seconds; everything in the interface is
     // milliseconds, and mixing the two silently shows dates in 1970.
     modified: e.mtime * 1000,
+    ...(e.hidden ? { hidden: true } : {}),
   }))
 }
 

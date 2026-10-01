@@ -23,6 +23,8 @@ export interface Entry {
   kind: 'dir' | 'file'
   size: number
   modified: number
+  /** Windows' hidden or system item, left out unless asked for. */
+  hidden?: boolean
 }
 
 /**

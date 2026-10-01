@@ -348,6 +348,12 @@ pub fn walk_within(
         }
 
         for entry in entries {
+            // Hidden and system items are the computer's, not the person's:
+            // a shared user folder holds AppData, and a browser's cache in it
+            // is thousands of pictures nobody took.
+            if entry.hidden {
+                continue;
+            }
             let path = if dir.is_empty() {
                 entry.name.clone()
             } else {

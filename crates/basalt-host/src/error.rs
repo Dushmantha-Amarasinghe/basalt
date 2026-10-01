@@ -76,6 +76,30 @@ impl HostError {
 /// found" and "access denied" are the two the user sees most and the two they
 /// can act on.
 pub fn from_io(path: &str, e: std::io::Error) -> HostError {
+    // The causes a person can do something about, in words rather than a
+    // system error number: they came through as "(os error 32)".
+    match e.raw_os_error() {
+        // Sharing and lock violations: another program has the file open.
+        Some(32) | Some(33) if cfg!(windows) => {
+            return HostError::Denied(format!(
+                "{path} is open in another program on the host. Close it there and try again."
+            ));
+        }
+        // A name Windows will not take. Checked before writing (see
+        // `vault::name_problem`); this is for any the check does not know.
+        Some(123) if cfg!(windows) => {
+            return HostError::BadRequest(format!(
+                "{path} cannot be used as a name on the host's drive. Rename it and try again."
+            ));
+        }
+        // The drive the host shares has no room left.
+        Some(39) | Some(112) if cfg!(windows) => {
+            return HostError::Denied(format!(
+                "The drive is full, so {path} could not be written. Free some space on it and try again."
+            ));
+        }
+        _ => {}
+    }
     match e.kind() {
         std::io::ErrorKind::NotFound => HostError::NotFound(path.to_string()),
         std::io::ErrorKind::PermissionDenied => {
@@ -91,6 +115,21 @@ pub type Result<T> = std::result::Result<T, HostError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_open_elsewhere_and_a_full_drive_are_said_in_words() {
+        let busy = from_io("films/a.mkv", std::io::Error::from_raw_os_error(32));
+        assert_eq!(busy.code(), ErrorCode::Denied);
+        assert!(
+            busy.to_string().contains("open in another program"),
+            "{busy}"
+        );
+        assert!(!busy.to_string().contains("os error"), "{busy}");
+
+        let full = from_io("films/a.mkv", std::io::Error::from_raw_os_error(112));
+        assert!(full.to_string().contains("drive is full"), "{full}");
+    }
 
     #[test]
     fn each_variant_maps_to_its_own_code() {

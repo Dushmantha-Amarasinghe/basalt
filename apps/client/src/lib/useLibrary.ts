@@ -76,8 +76,9 @@ export function useLibraryScan(enabled: boolean, host: string | null): Scan {
       const root = await api.list('')
       if (run.current !== generation) return
 
-      const found: Entry[] = toEntries('', root).filter((e) => e.kind === 'file')
-      const dirs = root.filter((e) => e.kind === 'dir').slice(0, MAX_DIRS)
+      // Hidden and system items are the computer's, not the person's.
+      const found: Entry[] = toEntries('', root).filter((e) => e.kind === 'file' && !e.hidden)
+      const dirs = root.filter((e) => e.kind === 'dir' && !e.hidden).slice(0, MAX_DIRS)
 
       // Sequential rather than all at once. The pool holds four connections,
       // and firing sixty requests at it would open and close connections
@@ -88,7 +89,7 @@ export function useLibraryScan(enabled: boolean, host: string | null): Scan {
         try {
           const listing = await api.list(dir.name)
           found.push(
-            ...toEntries(dir.name, listing).filter((e) => e.kind === 'file'),
+            ...toEntries(dir.name, listing).filter((e) => e.kind === 'file' && !e.hidden),
           )
         } catch {
           // A folder that will not open is not a reason to abandon the scan.
