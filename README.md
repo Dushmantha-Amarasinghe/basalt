@@ -137,10 +137,17 @@ encrypted, and that is all it does.
 
 - **Plays what a browser cannot.** Built on **mpv**, on Windows and Android
   alike, so HEVC, HDR, E-AC3, DTS, MKV and the rest play straight from the
-  drive, with nothing downloaded first and nothing transcoded on the host.
+  drive, with nothing downloaded first.
+- **4K on any phone.** When a device cannot keep up with a film, the host
+  converts it to 1080p as it plays, on its graphics where it has them, with
+  the sound and subtitles untouched. The player says so while it prepares,
+  picks the film up again if the connection drops, and a quality button
+  switches back to the original at any time. The host measures how many films
+  its computer can convert at once, and converting can be switched off.
 - **Subtitles done properly.** Tracks named by language, remembered on or off
-  from one video to the next, found beside the video on the drive or dropped
-  onto it, and nudged into sync when they drift.
+  from one video to the next, found anywhere on the drive by the film's or
+  episode's name or dropped onto the video, and nudged into sync when they
+  drift.
 - **Made for the keyboard.** Space to pause, arrow keys to seek and change
   volume, `C` for subtitles, Shift+P and Shift+N for the previous and next
   episode, and `,` and `.` to step one frame at a time. Pausing shows what is
