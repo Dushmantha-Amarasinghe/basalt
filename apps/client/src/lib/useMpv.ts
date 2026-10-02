@@ -94,6 +94,23 @@ async function readProperty(
   }
 }
 
+/**
+ * Whether the file has a real picture (not cover art) that is not selected.
+ *
+ * Music carries its cover as a "video" track that is deliberately left off,
+ * so cover art does not count.
+ */
+async function videoSwitchedOff(): Promise<boolean> {
+  if ((await readProperty('vid', 'string')) !== 'no') return false
+  const count = Number(await readProperty('track-list/count', 'int64')) || 0
+  for (let i = 0; i < count; i++) {
+    const type = await readProperty(`track-list/${i}/type`, 'string')
+    const art = await readProperty(`track-list/${i}/albumart`, 'flag')
+    if (type === 'video' && art !== true) return true
+  }
+  return false
+}
+
 /** Switches output, and remembers it for next time. */
 export async function setAudioDevice(name: string): Promise<void> {
   try {
@@ -640,6 +657,7 @@ function useAppMpv(): Mpv {
   /** Looks at mpv until the file is on screen, has failed, or is replaced. */
   const watchOpening = useCallback(async (url: string, mine: number) => {
     let watch = OPENING
+    let rescued = false
     while (generation.current === mine) {
       await new Promise((resolve) => setTimeout(resolve, PROBE_MS))
       if (generation.current !== mine) return
@@ -662,6 +680,18 @@ function useAppMpv(): Mpv {
       watch = next.watch
       if (next.verdict === 'waiting') continue
       if (generation.current !== mine) return
+
+      // Sound alone from a file that has a picture: its video was switched
+      // off. mpv does that when the picture output fails to start, as it did
+      // for a video opened on a phone before the phone had a surface for it,
+      // and the film then played as a black screen with sound. Turned back
+      // on once; a second failure is reported as what it is.
+      if (next.verdict === 'sound' && !rescued && (await videoSwitchedOff())) {
+        rescued = true
+        await mpv.command('set', ['vid', 'auto'])
+        watch = OPENING
+        continue
+      }
 
       if (next.verdict === 'failed') {
         setState((s) => ({ ...s, loadFailed: 'This file could not be opened.' }))

@@ -49,7 +49,14 @@ class MpvPlayer(
       if (name !in desktopOnly) MPVLib.setOptionString(name, value)
     }
     // A phone's GPU, its hardware decoders, its audio.
-    MPVLib.setOptionString("vo", "gpu")
+    //
+    // No picture output until there is a surface to draw on: `surfaceCreated`
+    // switches it on. Starting with `gpu` meant a video opened before Android
+    // had handed the surface over failed to set up its output, and mpv then
+    // dropped the video track for good: the first video after pairing played
+    // as sound alone. With `null` the track stays, and the picture appears
+    // the moment the surface does.
+    MPVLib.setOptionString("vo", "null")
     MPVLib.setOptionString("gpu-context", "android")
     MPVLib.setOptionString("opengl-es", "yes")
     MPVLib.setOptionString("hwdec", "mediacodec,mediacodec-copy")
