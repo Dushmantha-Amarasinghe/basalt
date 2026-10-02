@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   Gauge,
+  Sparkles,
   AlertCircle,
   Check,
   ExternalLink,
@@ -36,8 +37,12 @@ import {
   cannotConvert,
   pictureNote,
   rememberCannotConvert,
+  rememberStrain,
+  sizeFromName,
   sizeName,
+  strainsAt,
   whyNotConverted,
+  whyNotOptimized,
   type ConversionStatus,
   type NotConverted,
   type PictureHelp,
@@ -56,6 +61,7 @@ import { cn } from '@/lib/utils'
 import { android } from '@/lib/android'
 import { getProperty } from '@/lib/mpvBackend'
 import { isMobileShell } from '@/lib/platform'
+import { useBack } from '@/mobile/useBack'
 
 /**
  * A phone or tablet: fingers, not a pointer.
@@ -98,6 +104,7 @@ export function PlayerOverlay({
   onPlayNext,
   previous,
   subtitles = [],
+  resolution = null,
 }: {
   item: MediaItem | null
   onClose: () => void
@@ -114,10 +121,13 @@ export function PlayerOverlay({
   previous?: { path: string; label: string } | null
   /** Subtitle files the host found beside this file. */
   subtitles?: SubtitleTrack[]
+  /** The picture size the host measured, when it has. */
+  resolution?: { width: number; height: number } | null
 }): React.JSX.Element {
   const mpv = useMpv()
   const [failed, setFailed] = useState<string | null>(null)
   const [menu, setMenu] = useState(false)
+  const [qualityMenu, setQualityMenu] = useState(false)
 
   /**
    * Whether the controls are on screen.
@@ -168,7 +178,14 @@ export function PlayerOverlay({
     setShowControls(false)
   }, [])
 
-  const pinned = mpv.paused || menu || overBar || !mpv.picture
+  const pinned = mpv.paused || menu || qualityMenu || overBar || !mpv.picture
+
+  // On a phone, back puts an open menu away before it closes the film.
+  useBack(menu || qualityMenu, () => {
+    setMenu(false)
+    setQualityMenu(false)
+    return true
+  })
   const controlsUp = showControls || pinned
   const open = item !== null
 
@@ -277,7 +294,24 @@ export function PlayerOverlay({
           setFailed('This file could not be opened for streaming.')
           return
         }
-        await load(url, resumeAt > 0 ? resumeAt : 0)
+        const at = resumeAt > 0 ? resumeAt : 0
+        // A device that has struggled with pictures this large starts with
+        // the host's conversion, when the host can give one: opening the file
+        // first only to find it cannot keep up cost seconds every episode.
+        // The size the library measured, or failing that the one its name gives.
+        const size = resolution ?? sizeFromName(item.id)
+        if (inTauri() && size && strainsAt(size)) {
+          const check = await api.conversionCheck(item.id).catch(() => null)
+          if (cancelled) return
+          if (check?.duration) {
+            triedConverting.current = item.id
+            converting.current = { path: item.id, base: url, at, size }
+            await load(url, at, { base: url, duration: check.duration })
+            if (!cancelled) playingNow.current = item.id
+            return
+          }
+        }
+        await load(url, at)
         if (!cancelled) playingNow.current = item.id
       })
       .catch((e: unknown) => {
@@ -762,6 +796,8 @@ export function PlayerOverlay({
    * opened again where it was and played lighter, and the note says why.
    */
   const [help, setHelp] = useState<PictureHelp | null>(null)
+  /** Arranging a conversion: the original is struggling and about to go. */
+  const [preparing, setPreparing] = useState(false)
   /** The file a conversion has been tried for, so it is tried once. */
   const triedConverting = useRef<string | null>(null)
   /** A conversion asked for and not yet seen to start or fail. */
@@ -771,6 +807,7 @@ export function PlayerOverlay({
 
   useEffect(() => {
     setHelp(null)
+    setPreparing(false)
     triedConverting.current = null
     converting.current = null
     lightenWhenBack.current = null
@@ -803,6 +840,9 @@ export function PlayerOverlay({
     const at = mpv.position
     const duration = mpv.duration
     const path = item.id
+    // Remembered, so the next film this large starts as a conversion.
+    rememberStrain(size)
+    setPreparing(true)
     void (async () => {
       // A host already known not to convert is not asked again this run: the
       // file is playing, and only needs lightening.
@@ -810,6 +850,7 @@ export function PlayerOverlay({
       const known = cannotConvert(host)
       if (known) {
         setHelp({ mode: 'lighter', size, why: known })
+        setPreparing(false)
         await pictureLighten()
         return
       }
@@ -834,15 +875,21 @@ export function PlayerOverlay({
         const why = whyNotConverted(status)
         rememberCannotConvert(host, why)
         setHelp({ mode: 'lighter', size, why })
+        setPreparing(false)
         await pictureLighten()
         return
       }
       const base = await api.mediaUrl(path)
-      if (!base) return
+      if (!base) {
+        setPreparing(false)
+        return
+      }
       const asked = { path, base, at, size }
       converting.current = asked
       const since = Date.now() - 1000
       await pictureLoad(base, at, { base, duration })
+      // Opening the conversion now: the screen says so by itself from here.
+      setPreparing(false)
       // A refusal is known the moment the host gives it; waiting for the
       // player to give up on the stream cost several seconds more.
       for (let tries = 0; tries < 20 && converting.current === asked; tries++) {
@@ -872,6 +919,44 @@ export function PlayerOverlay({
         .then((status) => fallBack(asked, status))
     }
   }, [item, mpv.converted, mpv.started, mpv.loadFailed, fallBack])
+
+  /**
+   * A conversion that did not open part-way through a film: a seek past what
+   * had arrived, refused or failed. Once more, unless the host said it never
+   * will, and otherwise the file itself from the same point, lighter, as when
+   * a conversion does not start. Never "this file could not be opened".
+   */
+  const retriedAt = useRef<number | null>(null)
+  /** The failure being dealt with, so it is dealt with once. */
+  const recovering = useRef<string | null>(null)
+  useEffect(() => {
+    if (!item || !mpv.converted || !mpv.loadFailed || converting.current) return
+    if (recovering.current === mpv.loadFailed) return
+    recovering.current = mpv.loadFailed
+    const at = mpv.position
+    const duration = mpv.duration
+    const path = item.id
+    void (async () => {
+      const status = await api.conversionStatus(path).catch(() => null)
+      const why = whyNotConverted(status)
+      const base = await api.mediaUrl(path)
+      if (!base) return
+      // Busy is the old place not yet given up, and a failure with no reason
+      // a moment's trouble; either is worth a second try where it was.
+      const passing = why === 'busy' || why === 'failed'
+      if (passing && retriedAt.current !== Math.round(at)) {
+        retriedAt.current = Math.round(at)
+        await new Promise((resolve) => setTimeout(resolve, 1500))
+        recovering.current = null
+        await pictureLoad(base, at, { base, duration })
+        return
+      }
+      recovering.current = null
+      lightenWhenBack.current = { path, why }
+      setHelp((was) => ({ mode: 'lighter', size: was?.size ?? resolution ?? { width: 0, height: 0 }, why }))
+      await pictureLoad(base, at)
+    })()
+  }, [item, mpv.converted, mpv.loadFailed, mpv.position, mpv.duration, pictureLoad, resolution])
 
   // Back on the original after a conversion did not start: lighter, now.
   useEffect(() => {
@@ -907,12 +992,17 @@ export function PlayerOverlay({
    * Basalt being slow. Not on every episode after; by then it has been said.
    */
   const [lighterShown, setLighterShown] = useState<[string, string] | null>(null)
+  // A menu opened is somebody doing something: the note steps aside for it,
+  // rather than sitting over the top of it.
+  useEffect(() => {
+    if (menu || qualityMenu) setLighterShown(null)
+  }, [menu, qualityMenu])
   useEffect(() => {
     if (!help || pictureSaid.has(help.mode)) return undefined
     // The lighter mode is only said once it is actually on.
     if (help.mode === 'lighter' && !mpv.lighter) return undefined
     pictureSaid.add(help.mode)
-    setLighterShown(pictureNote(help, isAndroid() ? 'phone' : 'computer'))
+    setLighterShown(pictureNote(help, TOUCH ? 'phone' : 'computer'))
     const timer = setTimeout(() => setLighterShown(null), 8000)
     return () => clearTimeout(timer)
   }, [help, mpv.lighter])
@@ -1007,8 +1097,10 @@ export function PlayerOverlay({
       case 'Escape':
         // The menu first, if it is open: Escape putting away the thing in
         // front of you is universal, and ending the film instead is not.
-        if (menu) setMenu(false)
-        else void escape()
+        if (menu || qualityMenu) {
+          setMenu(false)
+          setQualityMenu(false)
+        } else void escape()
         break
       case ' ':
       case 'k':
@@ -1070,7 +1162,15 @@ export function PlayerOverlay({
   }, [open])
 
   const percent = mpv.duration > 0 ? (mpv.position / mpv.duration) * 100 : 0
-  const problem = failed ?? mpv.problem ?? mpv.loadFailed
+  // A conversion that did not open is handled, by trying again or by the
+  // file itself, lighter; only the file itself failing is a problem to show.
+  const problem = failed ?? mpv.problem ?? (mpv.converted ? null : mpv.loadFailed)
+  /**
+   * Between noticing this device cannot keep up and the conversion playing:
+   * said as what it is, the host optimizing the film, rather than a player
+   * that is slow to start.
+   */
+  const optimizing = !problem && (preparing || (mpv.converted && !mpv.started))
 
   return (
     <AnimatePresence>
@@ -1136,8 +1236,27 @@ export function PlayerOverlay({
               </div>
             )}
 
+            {/* The host converting the film for this device: what the wait is. */}
+            {optimizing && (
+              <div className="pointer-events-none absolute inset-0 z-[1] flex flex-col items-center justify-center bg-black text-center">
+                <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.24em] text-textFaint">
+                  <Loader2 size={12} className="animate-spin" />
+                  optimizing
+                </div>
+                <div className="mt-3 px-8 text-2xl font-semibold tracking-tight text-text">
+                  {item.title}
+                </div>
+                <div className="mt-1 text-sm text-textDim">{item.subtitle}</div>
+                <div className="mt-6 max-w-[440px] px-8 text-[12.5px] leading-relaxed text-textDim">
+                  Basalt Host is converting this to 1080p so it plays smoothly on this{' '}
+                  {TOUCH ? 'phone' : 'computer'}
+                  {mpv.position > 5 ? `, from ${formatDuration(mpv.position)}` : ''}.
+                </div>
+              </div>
+            )}
+
             {/* Until the film is playing, so it is never over a picture. */}
-            {!problem && !mpv.started && (
+            {!problem && !optimizing && !mpv.started && (
               <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center bg-black text-center">
                 <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.24em] text-textFaint">
                   <Loader2 size={12} className="animate-spin" />
@@ -1217,7 +1336,11 @@ export function PlayerOverlay({
                   transition={{ duration: 0.2 }}
                   className="absolute left-1/2 top-12 z-20 flex w-[min(92%,26rem)] items-start gap-3 rounded-2xl bg-black/80 px-4 py-3 text-left backdrop-blur"
                 >
-                  <Gauge size={17} className="mt-0.5 shrink-0 text-textDim" />
+                  {mpv.converted ? (
+                    <Sparkles size={17} className="mt-0.5 shrink-0 text-textDim" />
+                  ) : (
+                    <Gauge size={17} className="mt-0.5 shrink-0 text-textDim" />
+                  )}
                   <span className="min-w-0">
                     <span className="block text-[13px] font-medium text-text">{lighterShown[0]}</span>
                     <span className="mt-0.5 block text-[12px] leading-snug text-textDim">{lighterShown[1]}</span>
@@ -1464,11 +1587,27 @@ export function PlayerOverlay({
                     mpv={mpv}
                     fromDrive={drive}
                     more={moreOnDrive}
-                    picture={help ? { help, converted: mpv.converted, onChoose: (m) => void choosePicture(m) } : null}
                     onChoose={chooseTrack}
                     onAddFromDrive={(file, byHand) => void addFromDrive(file, byHand)}
                     onAddFromDisk={() => void addFromDisk()}
                     onClose={() => setMenu(false)}
+                  />
+                </>
+              )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+              {qualityMenu && help && (
+                <>
+                  <div className="absolute inset-0 z-[5]" onClick={() => setQualityMenu(false)} />
+                  <QualityMenu
+                    help={help}
+                    converted={mpv.converted}
+                    onChoose={(mode) => {
+                      setQualityMenu(false)
+                      void choosePicture(mode)
+                    }}
+                    onClose={() => setQualityMenu(false)}
                   />
                 </>
               )}
@@ -1525,8 +1664,29 @@ export function PlayerOverlay({
 
               <div className="flex-1" />
 
+              {help && (
+                <button
+                  onClick={() => {
+                    setMenu(false)
+                    setQualityMenu((open) => !open)
+                  }}
+                  aria-label="Quality"
+                  title="Quality"
+                  className={cn(
+                    'flex h-8 items-center gap-1.5 rounded-md px-2 font-mono text-[10.5px] transition-colors',
+                    qualityMenu ? 'bg-white/[0.08] text-text' : 'text-textDim hover:bg-white/[0.06] hover:text-text',
+                  )}
+                >
+                  {mpv.converted ? <Sparkles size={14} /> : <Gauge size={14} />}
+                  {mpv.converted ? '1080p' : sizeName(help.size)}
+                </button>
+              )}
+
               <button
-                onClick={() => setMenu((open) => !open)}
+                onClick={() => {
+                  setQualityMenu(false)
+                  setMenu((open) => !open)
+                }}
                 aria-label="Subtitles"
                 title="Subtitles"
                 className={cn(
@@ -1585,6 +1745,105 @@ export function PlayerOverlay({
   )
 }
 
+/** The tallest a menu over the controls may be: the screen less the bar. */
+const MENU_HEIGHT = 'min(560px, calc(100dvh - var(--inset-top, 0px) - 132px))'
+
+/**
+ * Which picture to play: the host's conversion, made for this device, or the
+ * file as it is.
+ *
+ * Its own button beside the subtitles, showing what is playing. As a section
+ * at the bottom of the subtitle menu it was where nobody would look for it.
+ */
+function QualityMenu({
+  help,
+  converted,
+  onChoose,
+  onClose,
+}: {
+  help: PictureHelp
+  converted: boolean
+  onChoose: (mode: 'converted' | 'original') => void
+  onClose: () => void
+}): React.JSX.Element {
+  const unavailable = help.mode === 'lighter' ? whyNotOptimized(help.why) : null
+  const by = help.mode === 'converted' && help.by ? `, on its ${help.by}` : ''
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8, scale: 0.98 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 6, scale: 0.98 }}
+      transition={{ duration: 0.15, ease: [0.22, 1, 0.36, 1] }}
+      style={{ transformOrigin: 'bottom right', maxHeight: MENU_HEIGHT }}
+      className="absolute bottom-full right-4 z-10 mb-3 flex w-[340px] flex-col overflow-hidden rounded-xl border border-white/[0.12] bg-[#141416] shadow-lift"
+    >
+      <div className="flex h-10 shrink-0 items-center justify-between border-b border-white/[0.07] pl-4 pr-2">
+        <span className="text-[12.5px] font-semibold text-text">Quality</span>
+        <button
+          onClick={onClose}
+          aria-label="Close quality menu"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-textFaint transition-colors duration-150 hover:bg-white/[0.07] hover:text-text"
+        >
+          <X size={14} />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto py-1.5">
+        <QualityChoice
+          icon={Sparkles}
+          label="Optimized for this device"
+          detail={unavailable ?? `1080p, converted by Basalt Host${by}. Smooth.`}
+          active={converted}
+          disabled={unavailable !== null}
+          onClick={() => onChoose('converted')}
+        />
+        <QualityChoice
+          icon={Gauge}
+          label="Original"
+          detail={`${sizeName(help.size)}, as the file is. ${
+            TOUCH ? 'This phone may stutter, and plays it lighter.' : 'May stutter on this computer.'
+          }`}
+          active={!converted}
+          onClick={() => onChoose('original')}
+        />
+      </div>
+    </motion.div>
+  )
+}
+
+function QualityChoice({
+  icon: Icon,
+  label,
+  detail,
+  active,
+  disabled,
+  onClick,
+}: {
+  icon: typeof Sparkles
+  label: string
+  detail: string
+  active: boolean
+  disabled?: boolean
+  onClick: () => void
+}): React.JSX.Element {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        'flex w-full items-start gap-3 px-4 py-2.5 text-left transition-colors duration-150',
+        disabled ? 'opacity-45' : 'hover:bg-white/[0.05]',
+      )}
+    >
+      <Icon size={15} className={cn('mt-0.5 shrink-0', active ? 'text-text' : 'text-textFaint')} />
+      <span className="min-w-0 flex-1">
+        <span className={cn('block text-[13px]', active ? 'text-text' : 'text-textDim')}>{label}</span>
+        <span className="mt-0.5 block text-[11.5px] leading-snug text-textFaint">{detail}</span>
+      </span>
+      {active && <Check size={14} className="mt-0.5 shrink-0 text-text" />}
+    </button>
+  )
+}
+
 /**
  * Subtitles, audio, and whether the subtitles are in time with the sound.
  *
@@ -1601,7 +1860,6 @@ function SubtitleMenu({
   mpv,
   fromDrive,
   more,
-  picture,
   onChoose,
   onAddFromDrive,
   onAddFromDisk,
@@ -1611,15 +1869,6 @@ function SubtitleMenu({
   fromDrive: SubtitleTrack[]
   /** Others on the drive that might be meant for this video, by file name. */
   more: SubtitleTrack[]
-  /**
-   * When this device needs help with the file: the host's conversion, or the
-   * file as it is. Null for a file it plays itself.
-   */
-  picture: {
-    help: PictureHelp
-    converted: boolean
-    onChoose: (mode: 'converted' | 'original') => void
-  } | null
   /** A subtitle track chosen, or null for off. */
   onChoose: (id: number | null) => void
   onAddFromDrive: (track: SubtitleTrack, byHand: boolean) => void
@@ -1649,13 +1898,15 @@ function SubtitleMenu({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 6, scale: 0.98 }}
       transition={{ duration: 0.15, ease: [0.22, 1, 0.36, 1] }}
-      style={{ transformOrigin: 'bottom right' }}
       // Opaque, not translucent. Over a bright frame a translucent menu washed
       // out to the point where the labels could not be read — and this is a
       // menu used *while* watching, so it is always over a picture.
-      className="absolute bottom-full right-4 z-10 mb-3 w-[320px] overflow-hidden rounded-xl border border-white/[0.12] bg-[#141416] shadow-lift"
+      // As tall as the screen allows and no taller: on a phone turned on its
+      // side a long list ran off the top, title and all. The list scrolls.
+      style={{ transformOrigin: 'bottom right', maxHeight: MENU_HEIGHT }}
+      className="absolute bottom-full right-4 z-10 mb-3 flex w-[320px] flex-col overflow-hidden rounded-xl border border-white/[0.12] bg-[#141416] shadow-lift"
     >
-      <div className="flex h-10 items-center justify-between border-b border-white/[0.07] pl-4 pr-2">
+      <div className="flex h-10 shrink-0 items-center justify-between border-b border-white/[0.07] pl-4 pr-2">
         <span className="text-[12.5px] font-semibold text-text">Subtitles</span>
         <button
           onClick={onClose}
@@ -1666,7 +1917,7 @@ function SubtitleMenu({
         </button>
       </div>
 
-      <div className="max-h-[280px] overflow-y-auto py-1.5">
+      <div className="min-h-0 flex-1 overflow-y-auto py-1.5">
         <Choice label="Off" active={mpv.subtitleId === null} onClick={() => onChoose(null)} />
         {inFile.map((track) => {
           const label = labelOf(describeSub(track))
@@ -1724,24 +1975,6 @@ function SubtitleMenu({
                 {others.length - shownOthers.length} more
               </button>
             )}
-          </>
-        )}
-
-        {picture && (
-          <>
-            <SectionTitle>Picture</SectionTitle>
-            <Choice
-              label="Converted"
-              detail="1080p from Basalt Host"
-              active={picture.converted}
-              onClick={() => picture.onChoose('converted')}
-            />
-            <Choice
-              label="Original"
-              detail={`${sizeName(picture.help.size)}, as the file is`}
-              active={!picture.converted}
-              onClick={() => picture.onChoose('original')}
-            />
           </>
         )}
 

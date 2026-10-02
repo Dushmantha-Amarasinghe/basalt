@@ -183,6 +183,7 @@ export function Poster({
   year,
   id,
   hasArt = false,
+  plain = false,
 }: {
   title: string
   year?: number
@@ -190,6 +191,8 @@ export function Poster({
   id?: string
   /** Whether the host has a poster for it. */
   hasArt?: boolean
+  /** Shown too small to write in, beside its title: the colours only. */
+  plain?: boolean
 }): React.JSX.Element {
   const [artwork, watch] = useArtwork(id, hasArt)
   const hash = hashOf(title.toLowerCase())
@@ -233,24 +236,34 @@ export function Poster({
     >
       {/* The initials, large and very dim: texture rather than information.
           The title is written underneath the card in full. */}
-      <span
-        className="pointer-events-none absolute -right-2 -top-6 select-none font-display font-bold leading-none text-white/[0.055]"
-        style={{ fontSize: '104px' }}
-      >
-        {initialsOf(title)}
-      </span>
+      {plain ? (
+        // Too small for texture: the initials stand for the title instead,
+        // small and centred, as an app's icon does.
+        <span className="pointer-events-none absolute inset-0 flex select-none items-center justify-center font-display text-[15px] font-bold text-white/40">
+          {initialsOf(title)}
+        </span>
+      ) : (
+        <span
+          className="pointer-events-none absolute -right-2 -top-6 select-none font-display font-bold leading-none text-white/[0.055]"
+          style={{ fontSize: '104px' }}
+        >
+          {initialsOf(title)}
+        </span>
+      )}
 
       {/* A hairline top edge, matching every other surface in the app. */}
       <span className="pointer-events-none absolute inset-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]" />
 
-      <div className="relative w-full bg-gradient-to-t from-black/70 to-transparent px-3 pb-3 pt-8">
-        <div className="line-clamp-3 text-[12.5px] font-semibold leading-snug tracking-tight text-text/90">
-          {title}
+      {!plain && (
+        <div className="relative w-full bg-gradient-to-t from-black/70 to-transparent px-3 pb-3 pt-8">
+          <div className="line-clamp-3 text-[12.5px] font-semibold leading-snug tracking-tight text-text/90">
+            {title}
+          </div>
+          {year !== undefined && (
+            <div className="tnum mt-0.5 font-mono text-[10px] text-textFaint">{year}</div>
+          )}
         </div>
-        {year !== undefined && (
-          <div className="tnum mt-0.5 font-mono text-[10px] text-textFaint">{year}</div>
-        )}
-      </div>
+      )}
     </div>
   )
 }

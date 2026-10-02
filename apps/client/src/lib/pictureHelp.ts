@@ -33,6 +33,65 @@ export function cannotConvert(host: string): NotConverted | null {
   return cannot.get(host) ?? null
 }
 
+const STRAIN_KEY = 'basalt:strain-from-width'
+
+/**
+ * How large a picture is, by its long side: 3840 for any 4K film.
+ *
+ * Not its area: a widescreen 4K film is fewer pixels than a 16:9 one, and no
+ * easier for a phone to decode, so by area one that strained let the other
+ * through to strain again.
+ */
+function longSide(size: Size): number {
+  return Math.max(size.width, size.height)
+}
+
+/**
+ * Remembers that this device could not keep up with a picture this size.
+ *
+ * Kept as the smallest such picture, so a film at least as large starts as
+ * a conversion straight away: trying the file itself first cost a phone the
+ * seconds it takes to open 4K before it found it could not.
+ */
+export function rememberStrain(size: Size): void {
+  const side = longSide(size)
+  if (side <= 0) return
+  try {
+    const was = Number(window.localStorage.getItem(STRAIN_KEY)) || 0
+    if (was === 0 || side < was) window.localStorage.setItem(STRAIN_KEY, String(side))
+  } catch {
+    // Not remembered; found again next time.
+  }
+}
+
+/** Whether this device has struggled with pictures this large before. */
+export function strainsAt(size: Size | null | undefined): boolean {
+  if (!size) return false
+  try {
+    const from = Number(window.localStorage.getItem(STRAIN_KEY)) || 0
+    return from > 0 && longSide(size) >= from
+  } catch {
+    return false
+  }
+}
+
+/**
+ * A film's size as its file name gives it: `Film.2024.2160p.WEB-DL.mkv`.
+ *
+ * For a file the library has not measured, played from Files: release names
+ * almost always say, and saying is enough to start it as a conversion on a
+ * device that has struggled with that size before.
+ */
+export function sizeFromName(path: string): Size | null {
+  const name = (path.split('/').pop() ?? path).toLowerCase()
+  const tag = (pattern: RegExp): boolean => new RegExp(`(^|[^a-z0-9])(${pattern.source})([^a-z0-9]|$)`).test(name)
+  if (tag(/4320p|8k/)) return { width: 7680, height: 4320 }
+  if (tag(/2160p|4k|uhd/)) return { width: 3840, height: 2160 }
+  if (tag(/1440p/)) return { width: 2560, height: 1440 }
+  if (tag(/1080p|1080i/)) return { width: 1920, height: 1080 }
+  return null
+}
+
 /** Why the host did not convert, when it did not. */
 export type NotConverted = 'unable' | 'off' | 'slow' | 'busy' | 'outdated' | 'failed'
 
@@ -57,6 +116,22 @@ export type PictureHelp =
 export interface Size {
   width: number
   height: number
+}
+
+/** Why the optimized picture cannot be had, briefly, for the quality menu. */
+export function whyNotOptimized(why: NotConverted | null): string | null {
+  switch (why) {
+    case 'unable':
+      return 'Basalt Host can’t convert on its computer'
+    case 'off':
+      return 'Switched off in Basalt Host'
+    case 'slow':
+      return 'Basalt Host’s computer is too slow for it'
+    case 'outdated':
+      return 'Basalt Host needs updating'
+    default:
+      return null
+  }
 }
 
 /** A picture size in the words people use for it. */

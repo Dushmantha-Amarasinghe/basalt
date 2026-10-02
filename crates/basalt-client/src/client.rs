@@ -762,11 +762,11 @@ impl Basalt {
     /// Whether the host could convert a video now, and what would: asked
     /// before switching to a conversion, so a host that cannot costs only
     /// the question.
-    pub async fn convert_check(&self, path: &str) -> Result<String> {
+    pub async fn convert_check(&self, path: &str) -> Result<basalt_proto::msg::ConvertStarted> {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
         let result = lease.convert_check(path).await;
-        Ok(lease.check(result)?.by)
+        lease.check(result)
     }
 
     /// The subtitles for one video, and others that might be meant for it.

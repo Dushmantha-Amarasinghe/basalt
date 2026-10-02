@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Mpv, MpvState, MpvTrack } from './useMpv'
+import type { ConvertedSource, Mpv, MpvState, MpvTrack } from './useMpv'
 import * as showcase from './showcase'
 
 /**
@@ -64,8 +64,8 @@ export function usePreviewMpv(): Mpv {
     return () => clearInterval(timer)
   }, [state.started, state.paused, state.ended])
 
-  const load = useCallback(async (url: string, startAt: number) => {
-    const path = url.replace(/^showcase:/, '')
+  const load = useCallback(async (url: string, startAt: number, source?: ConvertedSource) => {
+    const path = url.replace(/^showcase:/, '').split('?')[0] ?? ''
     const sound = /\.(mp3|flac|wav|m4a|aac|ogg|opus|wma)$/i.test(path)
     if (opening.current) clearTimeout(opening.current)
     setState((s) => ({
@@ -73,8 +73,10 @@ export function usePreviewMpv(): Mpv {
       volume: s.volume,
       muted: s.muted,
       position: startAt,
-      duration: showcase.durationOf(path),
+      duration: source?.duration ?? showcase.durationOf(path),
+      converted: source !== undefined,
     }))
+    const flags = new URLSearchParams(window.location.search)
     opening.current = setTimeout(() => {
       setState((s) => ({
         ...s,
@@ -83,12 +85,13 @@ export function usePreviewMpv(): Mpv {
         tracks: sound ? [] : FILM_TRACKS,
         audioId: sound ? null : 1,
         // `?lighter` shows the lighter mode, as a phone gives it a 4K film.
-        lighter:
-          !sound && new URLSearchParams(window.location.search).has('lighter')
-            ? { width: 3840, height: 1920 }
-            : null,
+        lighter: !sound && flags.has('lighter') ? { width: 3840, height: 1920 } : null,
+        // `?strain` plays the file as a phone that cannot keep up with it,
+        // which then asks for the host's conversion (`?convert` gives one).
+        strain: !sound && !source && flags.has('strain') ? { width: 3840, height: 1920 } : null,
       }))
-    }, OPENING_MS)
+      // A conversion takes the host a moment to start: long enough to see.
+    }, source ? OPENING_MS * 4 : OPENING_MS)
   }, [])
 
   const stop = useCallback(async () => {

@@ -1,5 +1,16 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { cannotConvert, pictureNote, rememberCannotConvert, sizeName, whyNotConverted } from './pictureHelp'
+import {
+  cannotConvert,
+  pictureNote,
+  rememberCannotConvert,
+  rememberStrain,
+  sizeName,
+  sizeFromName,
+  strainsAt,
+  whyNotConverted,
+  whyNotOptimized,
+} from './pictureHelp'
 import { convertedUrl, seekWithinConversion } from './useMpv'
 
 const fourK = { width: 3840, height: 1920 }
@@ -84,5 +95,51 @@ describe('seeking in a conversion', () => {
       'http://127.0.0.1:5/t/Films/a.mkv?convert=2490.500',
     )
     expect(convertedUrl('x', -3)).toBe('x?convert=0.000')
+  })
+})
+
+describe('a device that struggled with a picture size', () => {
+  it('starts films at least that large as a conversion, and smaller ones as they are', () => {
+    window.localStorage.clear()
+    expect(strainsAt(fourK)).toBe(false)
+    rememberStrain(fourK)
+    expect(strainsAt(fourK)).toBe(true)
+    expect(strainsAt({ width: 3840, height: 2160 })).toBe(true)
+    expect(strainsAt({ width: 1920, height: 1080 })).toBe(false)
+    // A smaller struggle lowers the line; a larger one does not raise it.
+    rememberStrain({ width: 2560, height: 1440 })
+    expect(strainsAt({ width: 2560, height: 1440 })).toBe(true)
+    rememberStrain({ width: 7680, height: 4320 })
+    expect(strainsAt({ width: 2560, height: 1440 })).toBe(true)
+    expect(strainsAt(null)).toBe(false)
+  })
+
+  it('counts a widescreen film as the same size as a 16:9 one', () => {
+    window.localStorage.clear()
+    rememberStrain({ width: 3840, height: 2160 })
+    expect(strainsAt({ width: 3840, height: 1600 })).toBe(true)
+    expect(strainsAt({ width: 2560, height: 1440 })).toBe(false)
+  })
+
+  it('reads the size a release name gives', () => {
+    expect(sizeFromName('Films/Night.Harbour.2024.2160p.10bit.HEVC.mkv')).toEqual({ width: 3840, height: 2160 })
+    expect(sizeFromName('TV/Northwind S01E02 [4K HDR].mkv')).toEqual({ width: 3840, height: 2160 })
+    expect(sizeFromName('Northwind.S01E03.UHD.BluRay.mkv')).toEqual({ width: 3840, height: 2160 })
+    expect(sizeFromName('Copperline.2021.1440p.WEB.mkv')).toEqual({ width: 2560, height: 1440 })
+    expect(sizeFromName('Greenwood.Hall.8K.mkv')).toEqual({ width: 7680, height: 4320 })
+    expect(sizeFromName('Signal.House.S01E01.1080p.WEB.H264.mkv')).toEqual({ width: 1920, height: 1080 })
+    // Not a size: part of a word, or a number that only looks like one.
+    expect(sizeFromName('Uhdrian.Tales.mkv')).toBeNull()
+    expect(sizeFromName('Tax.4K9.Report.mp4')).toBeNull()
+    expect(sizeFromName('holiday video.mp4')).toBeNull()
+  })
+})
+
+describe('the quality menu', () => {
+  it('says briefly why the optimized picture cannot be had', () => {
+    expect(whyNotOptimized('off')).toContain('Switched off')
+    expect(whyNotOptimized('slow')).toContain('too slow')
+    expect(whyNotOptimized('busy')).toBeNull()
+    expect(whyNotOptimized(null)).toBeNull()
   })
 })

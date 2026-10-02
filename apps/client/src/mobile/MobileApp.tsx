@@ -1578,6 +1578,7 @@ function MobilePlayer({ model }: { model: AppModel }): React.JSX.Element {
     previousByPath,
     playPath,
     subtitlesFor,
+    resolutionFor,
   } = model
   const close = useCallback(() => {
     setPlaying(null)
@@ -1615,6 +1616,7 @@ function MobilePlayer({ model }: { model: AppModel }): React.JSX.Element {
       previous={previous}
       onPlayNext={(path) => void playPath(path)}
       subtitles={playing ? subtitlesFor(playing.id) : []}
+      resolution={playing ? resolutionFor(playing.id) : null}
     />
   )
 }

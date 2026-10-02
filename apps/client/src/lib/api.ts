@@ -405,7 +405,8 @@ export const api = {
    */
   subtitlesFor: (path: string) => call<SubtitlesFor>('subtitles_for', { path }),
   /** Whether the host could convert a video now: what would, or an error. */
-  conversionCheck: (path: string) => call<string>('conversion_check', { path }),
+  conversionCheck: (path: string) =>
+    call<{ by: string; duration?: number }>('conversion_check', { path }),
   /** How the latest conversion of a video went, or null if none was asked for. */
   conversionStatus: (path: string) =>
     call<ConversionStatus | null>('conversion_status', { path }),
@@ -923,8 +924,12 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     case 'subtitles_for':
       return { tracks: [], others: [] } as T
     case 'conversion_status':
-      return null as T
+      return (
+        previewFlag('convert') ? { by: 'Intel graphics', error: null, kind: null, at: Date.now() } : null
+      ) as T
     case 'conversion_check':
+      // `?convert`: a host that converts, as Basalt Host on Intel graphics.
+      if (previewFlag('convert')) return { by: 'Intel graphics', duration: 51 * 60 + 29 } as T
       throw new ApiError('unsupported', 'not in the browser preview')
     case 'profile_stars': {
       const set = args?.set as Star[] | null | undefined

@@ -281,6 +281,30 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
   )
 
   /**
+   * The picture size of each film and episode the host has measured, so the
+   * player can start a conversion straight away on a device that needs one.
+   */
+  const resolutionByPath = useMemo(() => {
+    const map = new Map<string, { width: number; height: number }>()
+    for (const film of media.films) {
+      if (film.path && film.resolution) map.set(film.path, film.resolution)
+    }
+    for (const series of media.series) {
+      for (const season of series.seasons) {
+        for (const episode of season.episodes) {
+          if (episode.resolution) map.set(episode.path, episode.resolution)
+        }
+      }
+    }
+    return map
+  }, [media.films, media.series])
+
+  const resolutionFor = useCallback(
+    (path: string) => resolutionByPath.get(path) ?? null,
+    [resolutionByPath],
+  )
+
+  /**
    * Where to start a file, which is not simply where it was left.
    *
    * Something already watched starts again. Dropping straight into the last
@@ -1276,6 +1300,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     subtitlesByPath,
     namesByPath,
     subtitlesFor,
+    resolutionFor,
     resumeFor,
     nextTrack,
     nextAfter,
@@ -1375,6 +1400,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
     watched,
     watchedByPath,
     subtitlesFor,
+    resolutionFor,
     resumeFor,
     nextAfter,
     previousByPath,
@@ -1813,6 +1839,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
         previous={playing ? (previousByPath.get(playing.id) ?? null) : null}
         onPlayNext={(path) => void playPath(path)}
         subtitles={playing ? subtitlesFor(playing.id) : []}
+        resolution={playing ? resolutionFor(playing.id) : null}
       />
 
       <ImageViewer

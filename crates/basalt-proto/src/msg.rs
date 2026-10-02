@@ -751,6 +751,11 @@ pub struct ConvertRequest {
 pub struct ConvertStarted {
     /// What is doing the converting, as people say it: "NVIDIA graphics".
     pub by: String,
+    /// How long the film is, in seconds, when the host could tell. A stream
+    /// made as it is sent cannot say, and a player starting on one needs to
+    /// know to draw its timeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
 }
 
 /// The subtitles for one video, asked for when it is played.

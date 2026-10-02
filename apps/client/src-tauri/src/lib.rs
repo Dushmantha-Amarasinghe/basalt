@@ -456,7 +456,10 @@ async fn media_url(state: State<'_, AppState>, path: String) -> Answer<String> {
 /// Whether the host could convert a video now: what would, or an error
 /// saying why not.
 #[tauri::command]
-async fn conversion_check(state: State<'_, AppState>, path: String) -> Answer<String> {
+async fn conversion_check(
+    state: State<'_, AppState>,
+    path: String,
+) -> Answer<basalt_proto::msg::ConvertStarted> {
     Ok(state.client.convert_check(&path).await?)
 }
 

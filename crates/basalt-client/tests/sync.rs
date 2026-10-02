@@ -1310,7 +1310,12 @@ async fn a_video_is_converted_as_it_is_watched() {
 
     // Asked first, it says what would convert, without converting anything.
     let would = match client.convert_check("Films/Big.Picture.2024.mkv").await {
-        Ok(would) => would,
+        Ok(would) => {
+            // With the film's length, which the stream itself cannot say.
+            let length = would.duration.expect("the length is known");
+            assert!((length - 6.0).abs() < 0.5, "{length}");
+            would.by
+        }
         Err(e) if e.kind() == "unavailable" => {
             eprintln!("this machine cannot convert: {e}");
             return;

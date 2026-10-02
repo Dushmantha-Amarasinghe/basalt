@@ -1,4 +1,6 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { episodeName } from '@/lib/episodeName'
+import { isMobileShell } from '@/lib/platform'
 import { itemQuality, qualityOf } from '@/lib/quality'
 import { QualityTag } from './QualityTag'
 import { AnimatePresence, motion } from 'framer-motion'
@@ -294,6 +296,9 @@ function Card({
 }
 
 /** A series opened up: its seasons and episodes. */
+/** On a phone, where the sheet is a page of its own rather than over a window. */
+const TOUCH = isMobileShell()
+
 function SeriesSheet({
   item,
   watched,
@@ -306,6 +311,9 @@ function SeriesSheet({
   onPlay: (path: string) => void
 }): React.JSX.Element {
   const [season, setSeason] = useState<LibrarySeason | undefined>(item.seasons[0])
+  const sideways = useSideways()
+  /** Scrolled into the episodes: the heading steps aside for them. */
+  const [compact, setCompact] = useState(false)
 
   // On a phone, back closes the series and shows the posters again, as the
   // Back button does, rather than leaving the library for Files.
@@ -314,93 +322,168 @@ function SeriesSheet({
     return true
   })
 
+  const back = (
+    <button
+      onClick={onClose}
+      className="flex w-fit items-center gap-1.5 rounded-sm px-2 py-1 text-[11.5px] text-textFaint transition-colors hover:text-text"
+    >
+      <ChevronLeft size={13} />
+      Back
+    </button>
+  )
+
+  const meta = [item.year, `${item.seasons.length} ${item.seasons.length === 1 ? 'season' : 'seasons'}`, formatBytes(item.size)]
+    .filter(Boolean)
+    .join(' · ')
+
+  const seasons =
+    item.seasons.length > 1 ? (
+      <div className="flex flex-wrap gap-1.5">
+        {item.seasons.map((s) => (
+          <button
+            key={s.number}
+            onClick={() => setSeason(s)}
+            className={cn(
+              'rounded-sm px-2.5 py-1 font-mono text-[11px] transition-colors',
+              s.number === season?.number
+                ? 'basalt-edge text-text'
+                : 'text-textFaint hover:bg-panel2 hover:text-textDim',
+            )}
+          >
+            {s.number === 0 ? 'Specials' : `S${String(s.number).padStart(2, '0')}`}
+          </button>
+        ))}
+      </div>
+    ) : null
+
+  const episodes = (
+    <div className="flex flex-col gap-1 pb-6">
+      {season?.episodes.map((episode) => (
+        <EpisodeRow
+          key={episode.path}
+          episode={episode}
+          watched={watched.get(episode.path)}
+          onPlay={() => onPlay(episode.path)}
+        />
+      ))}
+    </div>
+  )
+
+  const poster = (small: boolean): React.JSX.Element => (
+    <Poster title={item.title} year={item.year ?? undefined} id={item.id} hasArt={item.hasArt} plain={small} />
+  )
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.16 }}
-      // Solid on a phone: at that size the library showing through behind
-      // the list reads as clutter, not depth.
-      className="fixed inset-0 z-50 bg-ink sm:bg-ink/95"
+      // Solid on a phone, whichever way it is held: the library showing
+      // through behind the list read as clutter, and a phone on its side is
+      // as wide as a small window, which is how it slipped through before.
+      className={cn('fixed inset-0 z-50 bg-ink', !TOUCH && 'sm:bg-ink/95')}
       onMouseDown={onClose}
     >
       <motion.div
         initial={{ y: 14 }}
         animate={{ y: 0 }}
         transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-        className="mx-auto flex h-full max-w-[760px] flex-col px-8"
-        // Clear of the phone's status bar and gesture bar; both are zero on
-        // the desktop.
+        className={cn(
+          'mx-auto flex h-full flex-col',
+          sideways ? 'max-w-none px-6' : 'max-w-[760px] px-8',
+        )}
+        // Clear of the phone's status bar and gesture bar, and of the notch
+        // on whichever side it is; all zero on the desktop.
         style={{
-          paddingTop: 'calc(var(--inset-top, 0px) + 28px)',
-          paddingBottom: 'calc(var(--inset-bottom, 0px) + 28px)',
+          paddingTop: `calc(var(--inset-top, 0px) + ${sideways ? 14 : 28}px)`,
+          paddingBottom: `calc(var(--inset-bottom, 0px) + ${sideways ? 10 : 28}px)`,
+          paddingLeft: sideways ? 'calc(var(--inset-left, 0px) + 24px)' : undefined,
+          paddingRight: sideways ? 'calc(var(--inset-right, 0px) + 24px)' : undefined,
         }}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <button
-          onClick={onClose}
-          className="mb-5 flex w-fit items-center gap-1.5 rounded-sm px-2 py-1 text-[11.5px] text-textFaint transition-colors hover:text-text"
-        >
-          <ChevronLeft size={13} />
-          Back
-        </button>
-
-        <div className="flex gap-5">
-          <div className="w-[128px] shrink-0 overflow-hidden rounded-md">
-            <Poster
-              title={item.title}
-              year={item.year ?? undefined}
-              id={item.id}
-              hasArt={item.hasArt}
-            />
+        {sideways ? (
+          // On its side, a phone is short and wide. The heading above the
+          // list left room for one episode at a time, so it stands beside
+          // the list instead, and the list has the whole height.
+          <div className="flex min-h-0 flex-1 gap-6">
+            <div className="flex w-[200px] shrink-0 flex-col overflow-y-auto">
+              {back}
+              <div className="mt-3 w-[104px] overflow-hidden rounded-md">{poster(false)}</div>
+              <h2 className="mt-3 text-[19px] font-semibold leading-tight tracking-tighter text-text">
+                {item.title}
+              </h2>
+              <div className="tnum mt-1 font-mono text-[10.5px] text-textFaint">{meta}</div>
+              {seasons && <div className="mt-3">{seasons}</div>}
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto fade-bottom">{episodes}</div>
           </div>
-          <div className="min-w-0 flex-1">
-            <h2 className="text-[22px] font-semibold tracking-tighter text-text">
-              {item.title}
-            </h2>
-            <div className="tnum mt-1 font-mono text-[11px] text-textFaint">
-              {[item.year, `${item.seasons.length} ${item.seasons.length === 1 ? 'season' : 'seasons'}`, formatBytes(item.size)]
-                .filter(Boolean)
-                .join(' · ')}
+        ) : (
+          <>
+            <div className="mb-5">{back}</div>
+            {/* Scrolled into the episodes, the poster shrinks to a corner
+                and the heading to a line, and the list has the room. */}
+            <div className="flex items-start gap-5">
+              <motion.div
+                animate={{ width: compact ? 44 : 128 }}
+                transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                className="shrink-0 overflow-hidden rounded-md"
+              >
+                {poster(compact)}
+              </motion.div>
+              <div className="min-w-0 flex-1">
+                <motion.h2
+                  animate={{ fontSize: compact ? '17px' : '22px' }}
+                  transition={{ duration: 0.22 }}
+                  className="truncate font-semibold tracking-tighter text-text"
+                >
+                  {item.title}
+                </motion.h2>
+                <div className="tnum mt-1 font-mono text-[11px] text-textFaint">{meta}</div>
+                {seasons && <div className={cn(compact ? 'mt-2' : 'mt-4')}>{seasons}</div>}
+              </div>
             </div>
 
-            {item.seasons.length > 1 && (
-              <div className="mt-4 flex flex-wrap gap-1.5">
-                {item.seasons.map((s) => (
-                  <button
-                    key={s.number}
-                    onClick={() => setSeason(s)}
-                    className={cn(
-                      'rounded-sm px-2.5 py-1 font-mono text-[11px] transition-colors',
-                      s.number === season?.number
-                        ? 'basalt-edge text-text'
-                        : 'text-textFaint hover:bg-panel2 hover:text-textDim',
-                    )}
-                  >
-                    {s.number === 0 ? 'Specials' : `S${String(s.number).padStart(2, '0')}`}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="mt-6 min-h-0 flex-1 overflow-y-auto fade-bottom">
-          <div className="flex flex-col gap-1 pb-6">
-            {season?.episodes.map((episode) => (
-              <EpisodeRow
-                key={episode.path}
-                episode={episode}
-                watched={watched.get(episode.path)}
-                onPlay={() => onPlay(episode.path)}
-              />
-            ))}
-          </div>
-        </div>
+            <div
+              className="mt-6 min-h-0 flex-1 overflow-y-auto fade-bottom"
+              onScroll={(e) => {
+                const list = e.currentTarget
+                // Only a list long enough to stay scrolled once the heading
+                // gives it room: a shorter one would be clamped back to the
+                // top by the room it gained, and flick between the two.
+                const room = list.scrollHeight - list.clientHeight
+                if (!compact && list.scrollTop > 24 && room > 180) setCompact(true)
+                else if (compact && list.scrollTop < 4) setCompact(false)
+              }}
+            >
+              {episodes}
+            </div>
+          </>
+        )}
       </motion.div>
     </motion.div>
   )
+}
+
+/**
+ * Whether the screen is short and wide: a phone held on its side.
+ *
+ * By shape rather than by width, because a phone on its side is as wide as a
+ * small window, and what it lacks is height.
+ */
+function useSideways(): boolean {
+  const query = '(orientation: landscape) and (max-height: 560px)'
+  const [sideways, setSideways] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia(query).matches,
+  )
+  useEffect(() => {
+    const list = window.matchMedia(query)
+    const changed = (): void => setSideways(list.matches)
+    list.addEventListener('change', changed)
+    return () => list.removeEventListener('change', changed)
+  }, [])
+  return sideways
 }
 
 function EpisodeRow({
@@ -431,7 +514,7 @@ function EpisodeRow({
           done ? 'text-textFaint' : 'text-text',
         )}
       >
-        {episode.title ?? nameOf(episode.path)}
+        {episode.title ?? episodeName(episode.path, episode.number)}
       </span>
 
       <QualityTag quality={qualityOf(episode.resolution)} size="sm" />
@@ -469,8 +552,3 @@ function EpisodeRow({
   )
 }
 
-function nameOf(path: string): string {
-  const file = path.split('/').pop() ?? path
-  const dot = file.lastIndexOf('.')
-  return dot > 0 ? file.slice(0, dot) : file
-}

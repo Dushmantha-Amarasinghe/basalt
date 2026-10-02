@@ -2706,6 +2706,7 @@ where
                     stream,
                     &ConvertStarted {
                         by: route.describe().to_string(),
+                        duration: host.converter.duration_of(&file).await,
                     },
                 )
                 .await?;
@@ -2730,6 +2731,7 @@ where
                 stream,
                 &ConvertStarted {
                     by: conversion.route.describe().to_string(),
+                    duration: None,
                 },
             )
             .await?;

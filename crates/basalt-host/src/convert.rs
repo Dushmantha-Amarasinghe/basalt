@@ -598,6 +598,24 @@ impl Converter {
         Ok(preferred.unwrap_or(first))
     }
 
+    /// How long a film is, in seconds, read from its header by ffmpeg.
+    pub async fn duration_of(&self, input: &Path) -> Option<f64> {
+        let ffmpeg = self.capability().await.ffmpeg.clone()?;
+        let run = quiet(&ffmpeg)
+            .args(["-hide_banner", "-nostdin", "-i"])
+            .arg(input)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .output();
+        let output = tokio::time::timeout(std::time::Duration::from_secs(10), run)
+            .await
+            .ok()?
+            .ok()?;
+        parse_duration(&String::from_utf8_lossy(&output.stderr))
+    }
+
     /// Stops a conversion this device already has of this film, and waits a
     /// moment for its place to come free.
     ///
@@ -775,6 +793,18 @@ impl Converter {
     }
 }
 
+/// The `Duration: 00:51:29.12` ffmpeg writes about its input, in seconds.
+pub fn parse_duration(said: &str) -> Option<f64> {
+    let at = said.find("Duration: ")? + "Duration: ".len();
+    let clock = said[at..].split(',').next()?.trim();
+    let mut parts = clock.split(':');
+    let hours: f64 = parts.next()?.parse().ok()?;
+    let minutes: f64 = parts.next()?.parse().ok()?;
+    let seconds: f64 = parts.next()?.parse().ok()?;
+    let total = hours * 3600.0 + minutes * 60.0 + seconds;
+    (total > 0.0).then_some(total)
+}
+
 /// Seconds of the measuring sample, and how many times it is played through.
 const SAMPLE_SECONDS: f64 = 3.0;
 const SAMPLE_LOOPS: u32 = 4;
@@ -947,6 +977,14 @@ async fn try_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_films_length_is_read_from_what_ffmpeg_says() {
+        let said = "Input #0, matroska,webm, from 'a.mkv':\n  Duration: 00:51:29.12, start: 0.000000, bitrate: 9040 kb/s";
+        assert_eq!(parse_duration(said), Some(51.0 * 60.0 + 29.12));
+        assert_eq!(parse_duration("Duration: N/A, start: 0"), None);
+        assert_eq!(parse_duration("nothing here"), None);
+    }
 
     #[test]
     fn the_fastest_routes_come_first() {
