@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as mpv from './mpvBackend'
 import { inTauri } from './api'
+import { isAndroid } from './platform'
 import { usePreviewMpv } from './previewMpv'
 
 /**
@@ -149,6 +150,72 @@ export interface MpvState {
   audioId: number | null
   /** Seconds the subtitles are shifted by. Positive shows them later. */
   subtitleDelay: number
+  /**
+   * The picture size, when the file is playing in the lighter mode: too big
+   * for this phone to decode in hardware. See [`needsLighterPlayback`].
+   */
+  lighter: { width: number; height: number } | null
+}
+
+/**
+ * Larger than this, a video decoded in software on a phone needs the lighter
+ * mode: about 1920x1200. A phone decodes 1080p in software comfortably; 4K it
+ * cannot, and played as it was the picture fell seconds behind the sound.
+ */
+export const LIGHTER_ABOVE_PIXELS = 1920 * 1200
+
+/**
+ * Whether a video needs the lighter mode: on a phone, decoded in software
+ * because the phone's hardware decoder refused it, and larger than 1080p.
+ *
+ * Judged from what mpv actually did rather than from what the phone claims
+ * it can do, so a decoder that turns a file down for any reason (its size,
+ * its 10-bit colour, its codec) is covered, and one that copes is left alone.
+ */
+export function needsLighterPlayback(
+  android: boolean,
+  hwdec: unknown,
+  width: number,
+  height: number,
+): boolean {
+  const software = hwdec === 'no' || hwdec === ''
+  return android && software && width * height > LIGHTER_ABOVE_PIXELS
+}
+
+/**
+ * The lighter mode, measured on a phone whose decoder stops at 1440p playing
+ * a 4K 10-bit HEVC episode: 8 frames a second, 3.7 seconds behind the sound,
+ * became 21 a second and in step. Every setting here earned its place in that
+ * measurement; the one that did not, mpv's simplest renderer, made it worse.
+ *
+ * - The decoder skips its deblocking filter and takes its fast path. At phone
+ *   size the difference does not show; it was checked on the screen.
+ * - Late frames are dropped before they are decoded, not after, so the
+ *   picture keeps up with the sound instead of falling behind it.
+ * - The picture is scaled the cheapest way. A 4K frame shrunk to a phone's
+ *   1080 lines loses nothing anybody can see to bilinear scaling.
+ */
+export const LIGHTER_OPTIONS: Record<string, string> = {
+  'vd-lavc-skiploopfilter': 'all',
+  'vd-lavc-fast': 'yes',
+  framedrop: 'decoder+vo',
+  scale: 'bilinear',
+  dscale: 'bilinear',
+  cscale: 'bilinear',
+  'correct-downscaling': 'no',
+  'linear-downscaling': 'no',
+  'sigmoid-upscaling': 'no',
+  'dither-depth': 'no',
+  deband: 'no',
+}
+
+/**
+ * What the player says about the lighter mode: the size in the words people
+ * use for it, and what it means for the picture.
+ */
+export function lighterNote(size: { width: number; height: number }): string {
+  const named = size.width >= 3200 ? '4K' : `${size.height}p`
+  return `This phone can’t decode ${named} video in hardware, so Basalt plays it lighter to keep the picture in step with the sound.`
 }
 
 export interface MpvTrack {
@@ -307,6 +374,7 @@ const EMPTY: MpvState = {
   subtitleId: null,
   audioId: null,
   subtitleDelay: 0,
+  lighter: null,
 }
 
 export interface Mpv extends MpvState {
@@ -509,6 +577,66 @@ function useAppMpv(): Mpv {
    */
   const generation = useRef(0)
 
+  /**
+   * What the lighter mode replaced, to put back for the next file. Null while
+   * the settings are mpv's own.
+   */
+  const beforeLighter = useRef<Record<string, string> | null>(null)
+
+  /** Puts back whatever the lighter mode changed. */
+  const undoLighter = useCallback(async () => {
+    const saved = beforeLighter.current
+    if (!saved) return
+    beforeLighter.current = null
+    for (const [name, value] of Object.entries(saved)) {
+      try {
+        await mpv.command('set', [name, value])
+      } catch {
+        // An option this mpv does not know was never changed either.
+      }
+    }
+  }, [])
+
+  /**
+   * Switches to the lighter mode when this file needs it. See
+   * [`needsLighterPlayback`] for when, and [`LIGHTER_OPTIONS`] for what.
+   *
+   * The decoder settings only apply to a decoder as it starts, so the video
+   * track is restarted once, straight after opening. That is a moment's pause
+   * at the start rather than a whole film out of step.
+   */
+  const lightenIfNeeded = useCallback(async (mine: number) => {
+    if (!isAndroid() || beforeLighter.current) return
+    const [hwdec, width, height] = await Promise.all([
+      readProperty('hwdec-current', 'string'),
+      readProperty('width', 'int64'),
+      readProperty('height', 'int64'),
+    ])
+    const w = Number(width) || 0
+    const h = Number(height) || 0
+    if (generation.current !== mine || !needsLighterPlayback(true, hwdec, w, h)) return
+
+    const saved: Record<string, string> = {}
+    for (const name of Object.keys(LIGHTER_OPTIONS)) {
+      const value = await readProperty(name, 'string')
+      if (typeof value === 'string') saved[name] = value
+    }
+    beforeLighter.current = saved
+    for (const [name, value] of Object.entries(LIGHTER_OPTIONS)) {
+      try {
+        await mpv.command('set', [name, value])
+      } catch {
+        // Older mpv without one of these: the rest still help.
+      }
+    }
+    const vid = await readProperty('vid', 'string')
+    if (typeof vid === 'string' && vid !== 'no') {
+      await mpv.command('set', ['vid', 'no'])
+      await mpv.command('set', ['vid', vid])
+    }
+    if (generation.current === mine) setState((s) => ({ ...s, lighter: { width: w, height: h } }))
+  }, [])
+
   /** Looks at mpv until the file is on screen, has failed, or is replaced. */
   const watchOpening = useCallback(async (url: string, mine: number) => {
     let watch = OPENING
@@ -542,10 +670,11 @@ function useAppMpv(): Mpv {
         // Read here as well as on a change of count: the next episode usually
         // has the same number of tracks as the last, and then no change comes.
         void readTracks()
+        if (next.verdict === 'video') void lightenIfNeeded(mine)
       }
       return
     }
-  }, [readTracks])
+  }, [readTracks, lightenIfNeeded])
 
   const load = useCallback(
     async (url: string, startAt: number) => {
@@ -561,8 +690,12 @@ function useAppMpv(): Mpv {
         tracks: [],
         position: startAt,
         duration: 0,
+        lighter: null,
       }))
       try {
+        // Each file is judged afresh: the next episode may be one the phone
+        // decodes itself, and deserves mpv's full quality.
+        await undoLighter()
         // A file that is chosen is a file somebody wants to watch. Pause
         // survives `loadfile`, so without this the next episode after a
         // paused one opened paused, looking like it had not loaded.
@@ -583,12 +716,13 @@ function useAppMpv(): Mpv {
       }
       void watchOpening(url, mine)
     },
-    [set, watchOpening],
+    [set, watchOpening, undoLighter],
   )
 
   const stop = useCallback(async () => {
     generation.current++
     eof.current = false
+    void undoLighter()
     setState((s) => ({
       ...s,
       position: 0,
@@ -598,6 +732,7 @@ function useAppMpv(): Mpv {
       picture: false,
       loadFailed: null,
       tracks: [],
+      lighter: null,
     }))
     if (!inTauri() || !loaded.current) return
     loaded.current = false
@@ -606,7 +741,7 @@ function useAppMpv(): Mpv {
     } catch {
       // Closing a player that already stopped is not a failure.
     }
-  }, [])
+  }, [undoLighter])
 
   const setPaused = useCallback(
     async (paused: boolean) => {

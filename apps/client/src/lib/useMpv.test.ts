@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { hasEnded, judgeOpening, OPENING, type OpeningProbe, type OpeningWatch } from './useMpv'
+import {
+  hasEnded,
+  judgeOpening,
+  lighterNote,
+  needsLighterPlayback,
+  OPENING,
+  type OpeningProbe,
+  type OpeningWatch,
+} from './useMpv'
 
 describe('judgeOpening', () => {
   const url = 'http://127.0.0.1:5000/media/Night.Harbour.mkv'
@@ -118,5 +126,32 @@ describe('hasEnded', () => {
     expect(hasEnded(null, 3600, 3600)).toBe(false)
     expect(hasEnded(undefined, 3600, 3600)).toBe(false)
     expect(hasEnded('yes', 3600, 3600)).toBe(false)
+  })
+})
+
+describe('the lighter mode on a phone', () => {
+  it('is for a large video the phone decodes in software', () => {
+    expect(needsLighterPlayback(true, 'no', 3840, 1920)).toBe(true)
+    expect(needsLighterPlayback(true, '', 3840, 2160)).toBe(true)
+    expect(needsLighterPlayback(true, 'no', 2560, 1440)).toBe(true)
+  })
+
+  it('is not for a video the phone decodes itself, however large', () => {
+    expect(needsLighterPlayback(true, 'mediacodec', 3840, 1920)).toBe(false)
+    expect(needsLighterPlayback(true, 'mediacodec-copy', 3840, 2160)).toBe(false)
+  })
+
+  it('is not for 1080p, which a phone decodes in software comfortably', () => {
+    expect(needsLighterPlayback(true, 'no', 1920, 1080)).toBe(false)
+    expect(needsLighterPlayback(true, 'no', 1920, 1200)).toBe(false)
+  })
+
+  it('is never for a computer', () => {
+    expect(needsLighterPlayback(false, 'no', 3840, 2160)).toBe(false)
+  })
+
+  it('names the size as people do', () => {
+    expect(lighterNote({ width: 3840, height: 1920 })).toContain('decode 4K video')
+    expect(lighterNote({ width: 2560, height: 1440 })).toContain('decode 1440p video')
   })
 })

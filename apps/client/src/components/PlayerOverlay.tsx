@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
+  Gauge,
   AlertCircle,
   Check,
   ExternalLink,
@@ -29,7 +30,7 @@ import { api, inTauri, type SubtitleTrack } from '@/lib/api'
 import { onExternalFileDrop, pickSubtitleFile } from '@/lib/dialogs'
 import { useAsyncSubscription, useLatest } from '@/lib/useAsyncSubscription'
 import { PreviewPicture } from './PreviewPicture'
-import { useMpv, type Mpv, type MpvTrack } from '@/lib/useMpv'
+import { lighterNote, useMpv, type Mpv, type MpvTrack } from '@/lib/useMpv'
 import {
   chooseDriveFile,
   chooseSubtitle,
@@ -55,6 +56,9 @@ const TOUCH = isMobileShell()
 
 /** Motionless for this long and the controls step aside. */
 const CONTROLS_IDLE = 2600
+
+/** Whether the lighter mode has been explained in this run. */
+const lighterSaid = { current: false }
 
 /** Where mpv draws subtitles with the controls up, and without. */
 const SUBTITLES_ABOVE_CONTROLS = 96
@@ -696,6 +700,20 @@ export function PlayerOverlay({
    */
   const [dropping, setDropping] = useState(false)
   const [dropNote, setDropNote] = useState<string | null>(null)
+
+  /**
+   * Said once a run, the first time a video plays in the lighter mode: why
+   * the picture is a little softer, so it does not read as Basalt being slow.
+   * Not on every episode after it; by then it has been said.
+   */
+  const [lighterShown, setLighterShown] = useState<string | null>(null)
+  useEffect(() => {
+    if (!mpv.lighter || lighterSaid.current) return undefined
+    lighterSaid.current = true
+    setLighterShown(lighterNote(mpv.lighter))
+    const timer = setTimeout(() => setLighterShown(null), 8000)
+    return () => clearTimeout(timer)
+  }, [mpv.lighter])
   const dropTarget = useLatest({ mpv })
   const subscribeToDrops = useCallback(
     () =>
@@ -985,13 +1003,35 @@ export function PlayerOverlay({
             </AnimatePresence>
 
             <AnimatePresence>
+              {lighterShown && (
+                <motion.button
+                  type="button"
+                  onClick={() => setLighterShown(null)}
+                  // Centred by motion rather than a class: motion owns the
+                  // transform, and a class translating it was overwritten.
+                  initial={{ opacity: 0, x: '-50%', y: -6 }}
+                  animate={{ opacity: 1, x: '-50%', y: 0 }}
+                  exit={{ opacity: 0, x: '-50%' }}
+                  transition={{ duration: 0.2 }}
+                  className="absolute left-1/2 top-12 z-20 flex w-[min(92%,26rem)] items-start gap-3 rounded-2xl bg-black/80 px-4 py-3 text-left backdrop-blur"
+                >
+                  <Gauge size={17} className="mt-0.5 shrink-0 text-textDim" />
+                  <span className="min-w-0">
+                    <span className="block text-[13px] font-medium text-text">Playing in a lighter mode</span>
+                    <span className="mt-0.5 block text-[12px] leading-snug text-textDim">{lighterShown}</span>
+                  </span>
+                </motion.button>
+              )}
+            </AnimatePresence>
+
+            <AnimatePresence>
               {dropNote && (
                 <motion.div
-                  initial={{ opacity: 0, y: -6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0 }}
+                  initial={{ opacity: 0, x: '-50%', y: -6 }}
+                  animate={{ opacity: 1, x: '-50%', y: 0 }}
+                  exit={{ opacity: 0, x: '-50%' }}
                   transition={{ duration: 0.15 }}
-                  className="pointer-events-none absolute left-1/2 top-12 z-20 -translate-x-1/2 rounded-full bg-black/75 px-4 py-2 text-[12px] text-text backdrop-blur"
+                  className="pointer-events-none absolute left-1/2 top-12 z-20 rounded-full bg-black/75 px-4 py-2 text-[12px] text-text backdrop-blur"
                 >
                   {dropNote}
                 </motion.div>
@@ -1002,11 +1042,11 @@ export function PlayerOverlay({
             <AnimatePresence>
               {volumeOsd && (
                 <motion.div
-                  initial={{ opacity: 0, scale: 0.94 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0 }}
+                  initial={{ opacity: 0, x: '-50%', scale: 0.94 }}
+                  animate={{ opacity: 1, x: '-50%', scale: 1 }}
+                  exit={{ opacity: 0, x: '-50%' }}
                   transition={{ duration: 0.12 }}
-                  className="pointer-events-none absolute left-1/2 top-12 flex -translate-x-1/2 items-center gap-2.5 rounded-full bg-black/70 px-4 py-2.5 backdrop-blur"
+                  className="pointer-events-none absolute left-1/2 top-12 flex items-center gap-2.5 rounded-full bg-black/70 px-4 py-2.5 backdrop-blur"
                 >
                   {mpv.muted || mpv.volume === 0 ? (
                     <VolumeX size={15} className="text-textDim" />

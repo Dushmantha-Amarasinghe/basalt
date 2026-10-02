@@ -40,6 +40,7 @@ const IDLE: MpvState = {
   subtitleId: null,
   audioId: null,
   subtitleDelay: 0,
+  lighter: null,
 }
 
 /** How long opening takes, so the opening card is seen as it is in the app. */
@@ -79,6 +80,11 @@ export function usePreviewMpv(): Mpv {
         picture: !sound && showcase.footageFor(path) !== null,
         tracks: sound ? [] : FILM_TRACKS,
         audioId: sound ? null : 1,
+        // `?lighter` shows the lighter mode, as a phone gives it a 4K film.
+        lighter:
+          !sound && new URLSearchParams(window.location.search).has('lighter')
+            ? { width: 3840, height: 1920 }
+            : null,
       }))
     }, OPENING_MS)
   }, [])
