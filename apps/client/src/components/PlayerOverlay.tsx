@@ -26,12 +26,23 @@ import {
 } from 'lucide-react'
 import type { MediaItem } from '@/lib/mockMedia'
 import { formatDuration } from '@/lib/mockMedia'
-import { api, inTauri, type SubtitleTrack } from '@/lib/api'
+import { ApiError, api, inTauri, type SubtitleTrack } from '@/lib/api'
 import { chosenFor, mergeDriveSubtitles, otherSubtitles, rememberChosen } from '@/lib/driveSubtitles'
 import { onExternalFileDrop, pickSubtitleFile } from '@/lib/dialogs'
 import { useAsyncSubscription, useLatest } from '@/lib/useAsyncSubscription'
 import { PreviewPicture } from './PreviewPicture'
-import { lighterNote, useMpv, type Mpv, type MpvTrack } from '@/lib/useMpv'
+import { useMpv, type Mpv, type MpvTrack } from '@/lib/useMpv'
+import {
+  cannotConvert,
+  pictureNote,
+  rememberCannotConvert,
+  sizeName,
+  whyNotConverted,
+  type ConversionStatus,
+  type NotConverted,
+  type PictureHelp,
+} from '@/lib/pictureHelp'
+import { isAndroid } from '@/lib/platform'
 import {
   chooseDriveFile,
   chooseSubtitle,
@@ -58,8 +69,8 @@ const TOUCH = isMobileShell()
 /** Motionless for this long and the controls step aside. */
 const CONTROLS_IDLE = 2600
 
-/** Whether the lighter mode has been explained in this run. */
-const lighterSaid = { current: false }
+/** Which ways of helping the picture have been explained in this run. */
+const pictureSaid = new Set<PictureHelp['mode']>()
 
 /** Where mpv draws subtitles with the controls up, and without. */
 const SUBTITLES_ABOVE_CONTROLS = 96
@@ -742,18 +753,163 @@ export function PlayerOverlay({
   const [dropNote, setDropNote] = useState<string | null>(null)
 
   /**
-   * Said once a run, the first time a video plays in the lighter mode: why
-   * the picture is a little softer, so it does not read as Basalt being slow.
-   * Not on every episode after it; by then it has been said.
+   * A file this device cannot play as it is: Basalt Host converts it as it is
+   * watched, or, when it cannot, the device plays it lighter.
+   *
+   * The player starts the file itself, as always. When it reports `strain`
+   * (decoding in software, and too large for that) the host is asked for a
+   * conversion from the same moment. If that does not start, the file is
+   * opened again where it was and played lighter, and the note says why.
    */
-  const [lighterShown, setLighterShown] = useState<string | null>(null)
+  const [help, setHelp] = useState<PictureHelp | null>(null)
+  /** The file a conversion has been tried for, so it is tried once. */
+  const triedConverting = useRef<string | null>(null)
+  /** A conversion asked for and not yet seen to start or fail. */
+  const converting = useRef<{ path: string; base: string; at: number; size: PictureHelp['size'] } | null>(null)
+  /** The original reopened after a failed conversion, to lighten once it plays. */
+  const lightenWhenBack = useRef<{ path: string; why: NotConverted | null } | null>(null)
+
   useEffect(() => {
-    if (!mpv.lighter || lighterSaid.current) return undefined
-    lighterSaid.current = true
-    setLighterShown(lighterNote(mpv.lighter))
+    setHelp(null)
+    triedConverting.current = null
+    converting.current = null
+    lightenWhenBack.current = null
+  }, [item?.id])
+
+  const pictureLoad = mpv.load
+  const pictureLighten = mpv.lighten
+
+  /** Which host this is, to remember one that cannot convert. */
+  const hostOf = useCallback(async () => (await api.status().catch(() => null))?.hostId ?? '', [])
+
+  /** Back to the original where the conversion was asked for, lighter. */
+  const fallBack = useCallback(
+    async (asked: NonNullable<typeof converting.current>, status: ConversionStatus | null) => {
+      if (converting.current !== asked) return
+      converting.current = null
+      const why = whyNotConverted(status)
+      rememberCannotConvert(await hostOf(), why)
+      lightenWhenBack.current = { path: asked.path, why }
+      setHelp({ mode: 'lighter', size: asked.size, why })
+      await pictureLoad(asked.base, asked.at)
+    },
+    [hostOf, pictureLoad],
+  )
+
+  useEffect(() => {
+    if (!item || !mpv.strain || mpv.converted || triedConverting.current === item.id) return
+    triedConverting.current = item.id
+    const size = mpv.strain
+    const at = mpv.position
+    const duration = mpv.duration
+    const path = item.id
+    void (async () => {
+      // A host already known not to convert is not asked again this run: the
+      // file is playing, and only needs lightening.
+      const host = await hostOf()
+      const known = cannotConvert(host)
+      if (known) {
+        setHelp({ mode: 'lighter', size, why: known })
+        await pictureLighten()
+        return
+      }
+      // Asked first, while the file plays on: a host that cannot convert,
+      // or has no room, is then lightened in place rather than switched away
+      // from and back, which cost a phone the time to open a 4K film twice.
+      try {
+        await api.conversionCheck(path)
+      } catch (e) {
+        const status = {
+          by: null,
+          error: e instanceof Error ? e.message : String(e),
+          kind: e instanceof ApiError ? e.kind : null,
+          at: Date.now(),
+        }
+        const why = whyNotConverted(status)
+        rememberCannotConvert(host, why)
+        setHelp({ mode: 'lighter', size, why })
+        await pictureLighten()
+        return
+      }
+      const base = await api.mediaUrl(path)
+      if (!base) return
+      const asked = { path, base, at, size }
+      converting.current = asked
+      const since = Date.now() - 1000
+      await pictureLoad(base, at, { base, duration })
+      // A refusal is known the moment the host gives it; waiting for the
+      // player to give up on the stream cost several seconds more.
+      for (let tries = 0; tries < 20 && converting.current === asked; tries++) {
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        const status = await api.conversionStatus(path).catch(() => null)
+        if (!status || status.at < since) continue
+        if (status.error) await fallBack(asked, status)
+        break
+      }
+    })()
+  }, [item, mpv.strain, mpv.converted, mpv.position, mpv.duration, pictureLoad, pictureLighten, hostOf, fallBack])
+
+  // The conversion started, or did not.
+  useEffect(() => {
+    const asked = converting.current
+    if (!asked || !item || asked.path !== item.id || !mpv.converted) return
+    if (mpv.started) {
+      converting.current = null
+      void api
+        .conversionStatus(asked.path)
+        .catch(() => null)
+        .then((status) => setHelp({ mode: 'converted', size: asked.size, by: status?.by ?? null }))
+    } else if (mpv.loadFailed) {
+      void api
+        .conversionStatus(asked.path)
+        .catch(() => null)
+        .then((status) => fallBack(asked, status))
+    }
+  }, [item, mpv.converted, mpv.started, mpv.loadFailed, fallBack])
+
+  // Back on the original after a conversion did not start: lighter, now.
+  useEffect(() => {
+    const back = lightenWhenBack.current
+    if (!back || !item || back.path !== item.id || mpv.converted || !mpv.started) return
+    lightenWhenBack.current = null
+    void pictureLighten()
+  }, [item, mpv.converted, mpv.started, pictureLighten])
+
+  /** Chosen in the menu: the conversion, or the file as it is. */
+  const choosePicture = useCallback(
+    async (mode: 'converted' | 'original') => {
+      if (!item || !help) return
+      const base = await api.mediaUrl(item.id)
+      if (!base) return
+      const at = mpv.position
+      if (mode === 'converted') {
+        converting.current = { path: item.id, base, at, size: help.size }
+        await mpv.load(base, at, { base, duration: mpv.duration })
+      } else {
+        // On a phone the original only plays at all in the lighter mode.
+        lightenWhenBack.current = isAndroid() ? { path: item.id, why: null } : null
+        setHelp({ mode: 'lighter', size: help.size, why: null })
+        await mpv.load(base, at)
+      }
+    },
+    [item, help, mpv],
+  )
+
+  /**
+   * Said once a run for each way of helping, the first time it is used: so a
+   * softer picture, or a moment's pause as a film starts, does not read as
+   * Basalt being slow. Not on every episode after; by then it has been said.
+   */
+  const [lighterShown, setLighterShown] = useState<[string, string] | null>(null)
+  useEffect(() => {
+    if (!help || pictureSaid.has(help.mode)) return undefined
+    // The lighter mode is only said once it is actually on.
+    if (help.mode === 'lighter' && !mpv.lighter) return undefined
+    pictureSaid.add(help.mode)
+    setLighterShown(pictureNote(help, isAndroid() ? 'phone' : 'computer'))
     const timer = setTimeout(() => setLighterShown(null), 8000)
     return () => clearTimeout(timer)
-  }, [mpv.lighter])
+  }, [help, mpv.lighter])
   const dropTarget = useLatest({ mpv })
   const subscribeToDrops = useCallback(
     () =>
@@ -1057,8 +1213,8 @@ export function PlayerOverlay({
                 >
                   <Gauge size={17} className="mt-0.5 shrink-0 text-textDim" />
                   <span className="min-w-0">
-                    <span className="block text-[13px] font-medium text-text">Playing in a lighter mode</span>
-                    <span className="mt-0.5 block text-[12px] leading-snug text-textDim">{lighterShown}</span>
+                    <span className="block text-[13px] font-medium text-text">{lighterShown[0]}</span>
+                    <span className="mt-0.5 block text-[12px] leading-snug text-textDim">{lighterShown[1]}</span>
                   </span>
                 </motion.button>
               )}
@@ -1302,6 +1458,7 @@ export function PlayerOverlay({
                     mpv={mpv}
                     fromDrive={drive}
                     more={moreOnDrive}
+                    picture={help ? { help, converted: mpv.converted, onChoose: (m) => void choosePicture(m) } : null}
                     onChoose={chooseTrack}
                     onAddFromDrive={(file, byHand) => void addFromDrive(file, byHand)}
                     onAddFromDisk={() => void addFromDisk()}
@@ -1438,6 +1595,7 @@ function SubtitleMenu({
   mpv,
   fromDrive,
   more,
+  picture,
   onChoose,
   onAddFromDrive,
   onAddFromDisk,
@@ -1447,6 +1605,15 @@ function SubtitleMenu({
   fromDrive: SubtitleTrack[]
   /** Others on the drive that might be meant for this video, by file name. */
   more: SubtitleTrack[]
+  /**
+   * When this device needs help with the file: the host's conversion, or the
+   * file as it is. Null for a file it plays itself.
+   */
+  picture: {
+    help: PictureHelp
+    converted: boolean
+    onChoose: (mode: 'converted' | 'original') => void
+  } | null
   /** A subtitle track chosen, or null for off. */
   onChoose: (id: number | null) => void
   onAddFromDrive: (track: SubtitleTrack, byHand: boolean) => void
@@ -1551,6 +1718,24 @@ function SubtitleMenu({
                 {others.length - shownOthers.length} more
               </button>
             )}
+          </>
+        )}
+
+        {picture && (
+          <>
+            <SectionTitle>Picture</SectionTitle>
+            <Choice
+              label="Converted"
+              detail="1080p from Basalt Host"
+              active={picture.converted}
+              onClick={() => picture.onChoose('converted')}
+            />
+            <Choice
+              label="Original"
+              detail={`${sizeName(picture.help.size)}, as the file is`}
+              active={!picture.converted}
+              onClick={() => picture.onChoose('original')}
+            />
           </>
         )}
 

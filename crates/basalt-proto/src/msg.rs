@@ -738,6 +738,11 @@ pub struct ConvertRequest {
     /// Seconds into it to start from.
     #[serde(default)]
     pub start: f64,
+    /// Only whether it could be converted now, answered without starting:
+    /// asked while the file still plays, so a host that cannot convert costs
+    /// nothing but the question.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub check: bool,
 }
 
 /// The first answer to a conversion, before the film itself.

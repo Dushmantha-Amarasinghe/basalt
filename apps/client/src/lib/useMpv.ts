@@ -172,6 +172,43 @@ export interface MpvState {
    * for this phone to decode in hardware. See [`needsLighterPlayback`].
    */
   lighter: { width: number; height: number } | null
+  /**
+   * The picture size, when this device is struggling to play the file:
+   * decoding it in software, and too large for that. The player then asks
+   * the host to convert it, or plays it lighter. See [`needsLighterPlayback`].
+   */
+  strain: { width: number; height: number } | null
+  /** Whether what is playing is the host's conversion of the file. */
+  converted: boolean
+}
+
+/**
+ * A conversion on the host, as the player opens it: the file's own URL, which
+ * `?convert=<seconds>` turns into a conversion from that point, and the
+ * film's length, which a stream being made as it is sent cannot report.
+ */
+export interface ConvertedSource {
+  base: string
+  duration: number
+}
+
+/** The URL of a conversion from a point in the film. */
+export function convertedUrl(base: string, seconds: number): string {
+  return `${base}?convert=${Math.max(0, seconds).toFixed(3)}`
+}
+
+/**
+ * Whether a seek in a conversion can be done in what has already arrived:
+ * forwards up to where it has got, or back a little. Anything else is a new
+ * conversion from there, which costs a second or two.
+ */
+export function seekWithinConversion(
+  target: number,
+  from: number,
+  position: number,
+  cachedTo: number,
+): boolean {
+  return target >= from && target <= cachedTo && target >= position - 20
 }
 
 /**
@@ -180,6 +217,13 @@ export interface MpvState {
  * cannot, and played as it was the picture fell seconds behind the sound.
  */
 export const LIGHTER_ABOVE_PIXELS = 1920 * 1200
+
+/** How long a computer decoding a large film in software is watched first. */
+const STRAIN_WATCH_MS = 5000
+/** Frames dropped in that time that say it is not keeping up: one in ten. */
+const STRAIN_DROPPED = 12
+/** Seconds the picture may trail the sound before that says so too. */
+const STRAIN_BEHIND = 0.3
 
 /**
  * Whether a video needs the lighter mode: on a phone, decoded in software
@@ -224,15 +268,6 @@ export const LIGHTER_OPTIONS: Record<string, string> = {
   'sigmoid-upscaling': 'no',
   'dither-depth': 'no',
   deband: 'no',
-}
-
-/**
- * What the player says about the lighter mode: the size in the words people
- * use for it, and what it means for the picture.
- */
-export function lighterNote(size: { width: number; height: number }): string {
-  const named = size.width >= 3200 ? '4K' : `${size.height}p`
-  return `This phone can’t decode ${named} video in hardware, so Basalt plays it lighter to keep the picture in step with the sound.`
 }
 
 export interface MpvTrack {
@@ -392,11 +427,18 @@ const EMPTY: MpvState = {
   audioId: null,
   subtitleDelay: 0,
   lighter: null,
+  strain: null,
+  converted: false,
 }
 
 export interface Mpv extends MpvState {
-  /** Opens a file or URL. */
-  load: (url: string, startAt: number) => Promise<void>
+  /**
+   * Opens a file or URL. With `converted`, opens the host's conversion of it
+   * from `startAt`, and seeking past what has arrived starts a new one.
+   */
+  load: (url: string, startAt: number, converted?: ConvertedSource) => Promise<void>
+  /** Plays what is open in the lighter mode: see [`LIGHTER_OPTIONS`]. */
+  lighten: () => Promise<void>
   /** Stops playback and lets the window go opaque again. */
   stop: () => Promise<void>
   togglePause: () => Promise<void>
@@ -550,7 +592,7 @@ function useAppMpv(): Mpv {
                 }
               }
               case 'duration': {
-                const duration = Number(data) || 0
+                const duration = converted.current?.duration || Number(data) || 0
                 return {
                   ...s,
                   duration,
@@ -599,6 +641,8 @@ function useAppMpv(): Mpv {
    * the settings are mpv's own.
    */
   const beforeLighter = useRef<Record<string, string> | null>(null)
+  /** The conversion playing, and where it started from. Null otherwise. */
+  const converted = useRef<(ConvertedSource & { from: number }) | null>(null)
 
   /** Puts back whatever the lighter mode changed. */
   const undoLighter = useCallback(async () => {
@@ -615,23 +659,59 @@ function useAppMpv(): Mpv {
   }, [])
 
   /**
-   * Switches to the lighter mode when this file needs it. See
-   * [`needsLighterPlayback`] for when, and [`LIGHTER_OPTIONS`] for what.
-   *
-   * The decoder settings only apply to a decoder as it starts, so the video
-   * track is restarted once, straight after opening. That is a moment's pause
-   * at the start rather than a whole film out of step.
+   * Notices a file this device is struggling with, and says so in `strain`.
+   * See [`needsLighterPlayback`] for when. The player decides what to do:
+   * have the host convert it, or play it lighter.
    */
-  const lightenIfNeeded = useCallback(async (mine: number) => {
-    if (!isAndroid() || beforeLighter.current) return
+  const checkStrain = useCallback(async (mine: number) => {
+    if (converted.current || beforeLighter.current) return
+    // The size the file says its picture is, which is known as soon as it is
+    // open; the decoded size only once a first frame has come out, which in
+    // software takes a phone seconds.
     const [hwdec, width, height] = await Promise.all([
       readProperty('hwdec-current', 'string'),
-      readProperty('width', 'int64'),
-      readProperty('height', 'int64'),
+      readProperty('current-tracks/video/demux-w', 'int64'),
+      readProperty('current-tracks/video/demux-h', 'int64'),
     ])
     const w = Number(width) || 0
     const h = Number(height) || 0
     if (generation.current !== mine || !needsLighterPlayback(true, hwdec, w, h)) return
+
+    // A phone decoding a film this size in software cannot keep up: measured,
+    // it managed eight frames a second. A computer may well, so on one it is
+    // watched for a few seconds first and only counts if it is falling behind.
+    if (!isAndroid()) {
+      const before = Number(await readProperty('frame-drop-count', 'int64')) || 0
+      await new Promise((resolve) => setTimeout(resolve, STRAIN_WATCH_MS))
+      if (generation.current !== mine) return
+      const [after, sync] = await Promise.all([
+        readProperty('frame-drop-count', 'int64'),
+        readProperty('avsync', 'double'),
+      ])
+      const dropped = (Number(after) || 0) - before
+      const behind = Math.abs(Number(sync) || 0)
+      if (dropped < STRAIN_DROPPED && behind < STRAIN_BEHIND) return
+    }
+    if (generation.current === mine) setState((s) => ({ ...s, strain: { width: w, height: h } }))
+  }, [])
+
+  /**
+   * Plays what is open in the lighter mode: [`LIGHTER_OPTIONS`].
+   *
+   * The decoder settings only apply to a decoder as it starts, so the video
+   * track is restarted once. That is a moment's pause rather than a whole
+   * film out of step.
+   */
+  const lighten = useCallback(async () => {
+    if (!inTauri() || beforeLighter.current) return
+    const mine = generation.current
+    // The file's own size: this may come before any frame has.
+    const [width, height] = await Promise.all([
+      readProperty('current-tracks/video/demux-w', 'int64'),
+      readProperty('current-tracks/video/demux-h', 'int64'),
+    ])
+    const w = Number(width) || 0
+    const h = Number(height) || 0
 
     const saved: Record<string, string> = {}
     for (const name of Object.keys(LIGHTER_OPTIONS)) {
@@ -658,6 +738,7 @@ function useAppMpv(): Mpv {
   const watchOpening = useCallback(async (url: string, mine: number) => {
     let watch = OPENING
     let rescued = false
+    let strainChecked = false
     while (generation.current === mine) {
       await new Promise((resolve) => setTimeout(resolve, PROBE_MS))
       if (generation.current !== mine) return
@@ -675,6 +756,14 @@ function useAppMpv(): Mpv {
         width: Number(width) || 0,
         paused: paused === true,
         idle: idle === true,
+      }
+      // Whether this device can keep up is known as soon as its decoder is
+      // chosen: what it is, and how big the picture. Asked then, not once the
+      // film is seen to play, which a phone drowning in 4K takes seconds to
+      // manage.
+      if (!strainChecked && (await readProperty('hwdec-current', 'string')) !== null) {
+        strainChecked = true
+        void checkStrain(mine)
       }
       const next = judgeOpening(watch, probe, performance.now(), url)
       watch = next.watch
@@ -700,17 +789,18 @@ function useAppMpv(): Mpv {
         // Read here as well as on a change of count: the next episode usually
         // has the same number of tracks as the last, and then no change comes.
         void readTracks()
-        if (next.verdict === 'video') void lightenIfNeeded(mine)
+        if (next.verdict === 'video' && !strainChecked) void checkStrain(mine)
       }
       return
     }
-  }, [readTracks, lightenIfNeeded])
+  }, [readTracks, checkStrain])
 
   const load = useCallback(
-    async (url: string, startAt: number) => {
+    async (url: string, startAt: number, source?: ConvertedSource) => {
       if (!inTauri()) return
       const mine = ++generation.current
       eof.current = false
+      converted.current = source ? { ...source, from: startAt } : null
       setState((s) => ({
         ...s,
         ended: false,
@@ -719,8 +809,10 @@ function useAppMpv(): Mpv {
         loadFailed: null,
         tracks: [],
         position: startAt,
-        duration: 0,
+        duration: source?.duration ?? 0,
         lighter: null,
+        strain: null,
+        converted: source !== undefined,
       }))
       try {
         // Each file is judged afresh: the next episode may be one the phone
@@ -735,16 +827,23 @@ function useAppMpv(): Mpv {
         // that end-of-file pause for as long as it is — so an unpause sent
         // first was undone before the next file started, and the next track
         // or episode arrived paused.
-        const options = ['pause=no', startAt > 1 ? `start=${startAt.toFixed(3)}` : '']
+        // A conversion starts where it was asked to and keeps the film's own
+        // times, which mpv would otherwise count from zero.
+        const options = (
+          source
+            ? ['pause=no', 'rebase-start-time=no']
+            : ['pause=no', startAt > 1 ? `start=${startAt.toFixed(3)}` : '']
+        )
           .filter(Boolean)
           .join(',')
-        await mpv.command('loadfile', [url, 'replace', '0', options])
+        const target = source ? convertedUrl(source.base, startAt) : url
+        await mpv.command('loadfile', [target, 'replace', '0', options])
         loaded.current = true
       } catch (e) {
         if (generation.current === mine) setState((s) => ({ ...s, loadFailed: String(e) }))
         return
       }
-      void watchOpening(url, mine)
+      void watchOpening(source ? convertedUrl(source.base, startAt) : url, mine)
     },
     [set, watchOpening, undoLighter],
   )
@@ -752,6 +851,7 @@ function useAppMpv(): Mpv {
   const stop = useCallback(async () => {
     generation.current++
     eof.current = false
+    converted.current = null
     void undoLighter()
     setState((s) => ({
       ...s,
@@ -763,6 +863,8 @@ function useAppMpv(): Mpv {
       loadFailed: null,
       tracks: [],
       lighter: null,
+      strain: null,
+      converted: false,
     }))
     if (!inTauri() || !loaded.current) return
     loaded.current = false
@@ -784,17 +886,44 @@ function useAppMpv(): Mpv {
     if (inTauri()) await mpv.command('cycle', ['pause'])
   }, [])
 
-  const seekTo = useCallback(async (seconds: number) => {
-    if (!inTauri()) return
-    // `absolute` and `exact`: a keyframe seek would land somewhere near the
-    // scrubber rather than under it, and near is what makes resuming feel
-    // approximate.
-    await mpv.command('seek', [seconds.toFixed(3), 'absolute+exact'])
-  }, [])
+  const seekTo = useCallback(
+    async (seconds: number) => {
+      if (!inTauri()) return
+      // A conversion holds only what has arrived. Further is a new one from
+      // there, at the film's own time.
+      const source = converted.current
+      if (source) {
+        const [position, cachedTo] = await Promise.all([
+          readProperty('time-pos', 'double'),
+          readProperty('demuxer-cache-time', 'double'),
+        ])
+        const at = Number(position) || source.from
+        const end = Number(cachedTo) || at
+        if (!seekWithinConversion(seconds, source.from, at, end)) {
+          await load(source.base, seconds, { base: source.base, duration: source.duration })
+          return
+        }
+      }
+      // `absolute` and `exact`: a keyframe seek would land somewhere near the
+      // scrubber rather than under it, and near is what makes resuming feel
+      // approximate.
+      await mpv.command('seek', [seconds.toFixed(3), 'absolute+exact'])
+    },
+    [load],
+  )
 
-  const seekBy = useCallback(async (seconds: number) => {
-    if (inTauri()) await mpv.command('seek', [String(seconds), 'relative'])
-  }, [])
+  const seekBy = useCallback(
+    async (seconds: number) => {
+      if (!inTauri()) return
+      if (converted.current) {
+        const position = Number(await readProperty('time-pos', 'double')) || 0
+        await seekTo(Math.max(0, position + seconds))
+        return
+      }
+      await mpv.command('seek', [String(seconds), 'relative'])
+    },
+    [seekTo],
+  )
 
   const stepFrame = useCallback(async (direction: 1 | -1) => {
     if (!inTauri()) return
@@ -867,6 +996,7 @@ function useAppMpv(): Mpv {
   return {
     ...state,
     load,
+    lighten,
     stop,
     togglePause,
     setPaused,

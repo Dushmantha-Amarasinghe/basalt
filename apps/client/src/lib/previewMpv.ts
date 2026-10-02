@@ -41,6 +41,8 @@ const IDLE: MpvState = {
   audioId: null,
   subtitleDelay: 0,
   lighter: null,
+  strain: null,
+  converted: false,
 }
 
 /** How long opening takes, so the opening card is seen as it is in the app. */
@@ -101,6 +103,9 @@ export function usePreviewMpv(): Mpv {
   return {
     ...state,
     load,
+    lighten: useCallback(async () => {
+      setState((s) => ({ ...s, lighter: { width: 3840, height: 1920 } }))
+    }, []),
     stop,
     togglePause: useCallback(async () => setState((s) => ({ ...s, paused: !s.paused })), []),
     setPaused: useCallback(async (paused: boolean) => setState((s) => ({ ...s, paused })), []),

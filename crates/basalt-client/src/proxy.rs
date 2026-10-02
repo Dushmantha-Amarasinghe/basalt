@@ -68,6 +68,16 @@ pub struct Conversion {
     /// The kind of that failure, for the app to branch on: `unavailable` is
     /// a host that cannot convert, or is converting all it can already.
     pub kind: Option<String>,
+    /// When this was so, in milliseconds since 1970: newer than the moment a
+    /// conversion was asked for means it is about that one.
+    pub at: u64,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// The furthest a player has read into one file, and how big the file is.
@@ -361,6 +371,7 @@ async fn serve_conversion(
                     by: None,
                     error: Some(e.to_string()),
                     kind: Some(e.kind().to_string()),
+                    at: now_ms(),
                 },
             );
             return respond_status(stream, 503, "Service Unavailable").await;
@@ -372,6 +383,7 @@ async fn serve_conversion(
             by: Some(converting.by.clone()),
             error: None,
             kind: None,
+            at: now_ms(),
         },
     );
     let head = "HTTP/1.1 200 OK\r\n\

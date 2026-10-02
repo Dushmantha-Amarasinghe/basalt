@@ -92,6 +92,9 @@ export type Change =
   | { kind: 'library_changed' }
 
 /** A subtitle file the host found beside a film or an episode. */
+export type { ConversionStatus } from './pictureHelp'
+import type { ConversionStatus } from './pictureHelp'
+
 export interface SubtitlesFor {
   tracks: SubtitleTrack[]
   /** Labelled with their file names, for choosing by hand. */
@@ -401,6 +404,11 @@ export const api = {
    * error, which the player takes as none.
    */
   subtitlesFor: (path: string) => call<SubtitlesFor>('subtitles_for', { path }),
+  /** Whether the host could convert a video now: what would, or an error. */
+  conversionCheck: (path: string) => call<string>('conversion_check', { path }),
+  /** How the latest conversion of a video went, or null if none was asked for. */
+  conversionStatus: (path: string) =>
+    call<ConversionStatus | null>('conversion_status', { path }),
   /** The signed-in profile's stars, replaced first when `set` is given. */
   profileStars: (set?: Star[]) => call<Star[]>('profile_stars', { set: set ?? null }),
   /** Every video, song and photo on the drive, sorted by the host. */
@@ -914,6 +922,10 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return undefined as T
     case 'subtitles_for':
       return { tracks: [], others: [] } as T
+    case 'conversion_status':
+      return null as T
+    case 'conversion_check':
+      throw new ApiError('unsupported', 'not in the browser preview')
     case 'profile_stars': {
       const set = args?.set as Star[] | null | undefined
       if (set) mockProfileStars = set

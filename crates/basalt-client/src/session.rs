@@ -436,6 +436,22 @@ impl Session {
             &basalt_proto::msg::ConvertRequest {
                 path: path.to_string(),
                 start,
+                check: false,
+            },
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Whether the host could convert a file now, and on what.
+    pub async fn convert_check(&mut self, path: &str) -> Result<basalt_proto::msg::ConvertStarted> {
+        call_json(
+            &mut self.stream,
+            Op::Convert,
+            &basalt_proto::msg::ConvertRequest {
+                path: path.to_string(),
+                start: 0.0,
+                check: true,
             },
         )
         .await

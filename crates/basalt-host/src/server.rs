@@ -2628,14 +2628,26 @@ where
                 .ok_or_else(|| HostError::Unavailable("no drive is being served".into()))?;
             // Through the vault, so a path from the wire cannot reach outside.
             let file = vault.resolve(&req.path)?;
+            let refused = |e: crate::convert::ConvertError| match e {
+                crate::convert::ConvertError::Failed(_) => HostError::BadRequest(e.to_string()),
+                _ => HostError::Unavailable(e.to_string()),
+            };
+            if req.check {
+                let route = host.converter.check().await.map_err(refused)?;
+                reply(
+                    stream,
+                    &ConvertStarted {
+                        by: route.describe().to_string(),
+                    },
+                )
+                .await?;
+                return Ok(());
+            }
             let mut conversion = host
                 .converter
                 .start(&file, req.start.max(0.0))
                 .await
-                .map_err(|e| match e {
-                    crate::convert::ConvertError::Failed(_) => HostError::BadRequest(e.to_string()),
-                    _ => HostError::Unavailable(e.to_string()),
-                })?;
+                .map_err(refused)?;
             reply(
                 stream,
                 &ConvertStarted {

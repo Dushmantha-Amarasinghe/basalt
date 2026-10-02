@@ -453,6 +453,23 @@ async fn media_url(state: State<'_, AppState>, path: String) -> Answer<String> {
     Ok(state.proxy().await?.url_for(&path))
 }
 
+/// Whether the host could convert a video now: what would, or an error
+/// saying why not.
+#[tauri::command]
+async fn conversion_check(state: State<'_, AppState>, path: String) -> Answer<String> {
+    Ok(state.client.convert_check(&path).await?)
+}
+
+/// How the latest conversion of a video went: what is converting it, or why
+/// it could not be. None when it has not been asked for.
+#[tauri::command]
+async fn conversion_status(
+    state: State<'_, AppState>,
+    path: String,
+) -> Answer<Option<basalt_client::proxy::Conversion>> {
+    Ok(state.proxy().await?.conversion(&path))
+}
+
 // ---------------------------------------------------------------------------
 // Transfers
 // ---------------------------------------------------------------------------
@@ -1212,6 +1229,8 @@ pub fn run() {
             continue_as_device,
             profile_stars,
             subtitles_for,
+            conversion_status,
+            conversion_check,
             download,
             upload,
             open_externally,

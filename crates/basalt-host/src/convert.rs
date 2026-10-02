@@ -404,6 +404,23 @@ impl Converter {
             .await
     }
 
+    /// What would convert a file now, without converting it: the fastest
+    /// route there is, or why there is none or no room for another.
+    pub async fn check(&self) -> Result<Route, ConvertError> {
+        let capability = self.capability().await;
+        let first = capability
+            .routes
+            .first()
+            .copied()
+            .filter(|_| capability.ffmpeg.is_some())
+            .ok_or(ConvertError::Unable)?;
+        if self.running.load(Ordering::SeqCst) >= MAX_AT_ONCE {
+            return Err(ConvertError::Busy);
+        }
+        let preferred = *self.preferred.lock().expect("route lock");
+        Ok(preferred.unwrap_or(first))
+    }
+
     /// Starts converting `input` from `start` seconds in.
     pub async fn start(&self, input: &Path, start: f64) -> Result<Conversion, ConvertError> {
         let capability = self.capability().await;

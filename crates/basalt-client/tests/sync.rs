@@ -1317,6 +1317,12 @@ async fn a_video_is_converted_as_it_is_watched() {
         Err(e) => panic!("the conversion did not start: {e}"),
     };
     assert!(!converting.by.is_empty(), "it says what is converting");
+    // Asked first, it says the same without converting anything.
+    let would = client
+        .convert_check("Films/Big.Picture.2024.mkv")
+        .await
+        .unwrap();
+    assert_eq!(would, converting.by);
     let mut film = Vec::new();
     while let Some(piece) = converting.next().await.unwrap() {
         film.extend(piece);

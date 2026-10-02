@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   hasEnded,
   judgeOpening,
-  lighterNote,
   needsLighterPlayback,
   OPENING,
   type OpeningProbe,
@@ -150,8 +149,4 @@ describe('the lighter mode on a phone', () => {
     expect(needsLighterPlayback(false, 'no', 3840, 2160)).toBe(false)
   })
 
-  it('names the size as people do', () => {
-    expect(lighterNote({ width: 3840, height: 1920 })).toContain('decode 4K video')
-    expect(lighterNote({ width: 2560, height: 1440 })).toContain('decode 1440p video')
-  })
 })
