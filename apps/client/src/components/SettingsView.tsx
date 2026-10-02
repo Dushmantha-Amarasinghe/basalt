@@ -110,6 +110,8 @@ export function SettingsView({
             description="Items Windows keeps out of sight, such as desktop.ini and the Recycle Bin. Off, as in Explorer."
             checked={showHidden}
             onChange={setShowHidden}
+            // The same inset as every other row in Settings.
+            className="rounded-none px-4 py-2.5"
           />
         </Section>
 
