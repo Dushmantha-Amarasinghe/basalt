@@ -17,20 +17,31 @@ export interface ConversionStatus {
 }
 
 /**
- * Hosts that cannot convert, by id, for the rest of this run: asking again
- * for every episode cost each one several seconds before it played. A host
- * that was only busy is asked again next time.
+ * Hosts that cannot convert, by id, for a few minutes: asking again for every
+ * episode cost each one several seconds before it played. A few minutes and
+ * not the whole run, so a host updated, or given its converting back, is
+ * noticed without the app being restarted. A host that was only busy is
+ * asked again next time.
  */
-const cannot = new Map<string, NotConverted>()
+const cannot = new Map<string, { why: NotConverted; at: number }>()
 
-export function rememberCannotConvert(host: string, why: NotConverted): void {
+/** How long a host that cannot convert is taken at its word. */
+const CANNOT_FOR_MS = 5 * 60 * 1000
+
+export function rememberCannotConvert(host: string, why: NotConverted, now = Date.now()): void {
   // Switched off is not remembered: it can be switched back on at any time,
   // and asking costs a moment.
-  if (why === 'unable' || why === 'outdated' || why === 'slow') cannot.set(host, why)
+  if (why === 'unable' || why === 'outdated' || why === 'slow') cannot.set(host, { why, at: now })
 }
 
-export function cannotConvert(host: string): NotConverted | null {
-  return cannot.get(host) ?? null
+export function cannotConvert(host: string, now = Date.now()): NotConverted | null {
+  const known = cannot.get(host)
+  if (!known) return null
+  if (now - known.at > CANNOT_FOR_MS) {
+    cannot.delete(host)
+    return null
+  }
+  return known.why
 }
 
 const STRAIN_KEY = 'basalt:strain-from-width'

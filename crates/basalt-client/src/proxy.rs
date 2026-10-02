@@ -395,7 +395,17 @@ async fn serve_conversion(
         return Ok(());
     }
     loop {
-        match converting.next().await {
+        // Nothing at all for a minute is a host that has frozen, not a slow
+        // one: a slow one still sends something. Paused, the wait is on the
+        // player, which stops reading, and not here.
+        let piece = match tokio::time::timeout(SILENT_HOST, converting.next()).await {
+            Ok(piece) => piece,
+            Err(_) => Err(crate::ClientError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the host sent nothing for a minute",
+            ))),
+        };
+        match piece {
             // A player that stops reading, or moves on, closes the
             // connection; the conversion is dropped with it, and the host
             // stops converting.
@@ -405,8 +415,21 @@ async fn serve_conversion(
                 }
             }
             Ok(None) => break,
+            // Stopped part-way: ffmpeg gave up, or the host went away. The
+            // player sees the stream end either way, and is told which this
+            // was, so it picks up where it was rather than taking it for the
+            // end of the film.
             Err(e) => {
                 tracing::debug!("a conversion of {path} ended early: {e}");
+                conversions.lock().expect("conversions lock").insert(
+                    path.to_string(),
+                    Conversion {
+                        by: Some(converting.by.clone()),
+                        error: Some(e.to_string()),
+                        kind: Some(INTERRUPTED.to_string()),
+                        at: now_ms(),
+                    },
+                );
                 break;
             }
         }
@@ -414,6 +437,12 @@ async fn serve_conversion(
     stream.flush().await.ok();
     Ok(())
 }
+
+/// How long a conversion may send nothing before it counts as stopped.
+const SILENT_HOST: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The kind a conversion that stopped part-way is reported with.
+pub const INTERRUPTED: &str = "interrupted";
 
 /// The seconds in `?convert=N`, when the request is for a conversion.
 fn convert_start(target: &str) -> Option<f64> {

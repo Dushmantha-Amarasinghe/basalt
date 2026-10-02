@@ -32,6 +32,7 @@ const IDLE: MpvState = {
   volume: 100,
   muted: false,
   ended: false,
+  atEof: false,
   buffering: false,
   started: false,
   picture: false,

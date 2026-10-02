@@ -20,6 +20,11 @@ use tokio_rustls::client::TlsStream;
 
 use crate::{ClientError, Result};
 
+/// How long a host has to complete the handshake and sign-in once its
+/// computer has accepted the connection. A host on the same network does it in
+/// a fraction of a second.
+pub const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// What the host said about itself when this session opened.
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
@@ -121,6 +126,24 @@ async fn open(
 impl Session {
     /// Reconnects to a host already paired with.
     pub async fn connect(addr: SocketAddr, host_id: &str, token: &str, me: &Me) -> Result<Self> {
+        // The connection itself gives up after a few seconds, but a host that
+        // has frozen, asleep or stuck, still has the computer accept it, and
+        // then never answers: the handshake and the sign-in waited forever,
+        // and a film being picked up again sat on "picking up" for good.
+        tokio::time::timeout(
+            HANDSHAKE_TIMEOUT,
+            Self::connect_now(addr, host_id, token, me),
+        )
+        .await
+        .map_err(|_| {
+            ClientError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("{addr} accepted the connection and then did not answer"),
+            ))
+        })?
+    }
+
+    async fn connect_now(addr: SocketAddr, host_id: &str, token: &str, me: &Me) -> Result<Self> {
         let (mut stream, hello, presented) =
             open(addr, Trust::Pinned(host_id.to_string()), me).await?;
 

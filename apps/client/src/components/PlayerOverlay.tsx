@@ -332,12 +332,12 @@ export function PlayerOverlay({
   /** The file this player has already moved on from. */
   const advanced = useRef<string | null>(null)
 
-  useEffect(() => {
-    if (!mpv.ended || !item) return
-    // `ended` is a state, not an event, and `item` is in these dependencies —
-    // so without a latch one true value re-fires for the next episode, and
-    // the one after that, walking the whole series in a second. Each file may
-    // hand over exactly once.
+  const finish = useCallback(() => {
+    if (!item) return
+    // `ended` is a state, not an event, and `item` is in the effect's
+    // dependencies — so without a latch one true value re-fires for the next
+    // episode, and the one after that, walking the whole series in a second.
+    // Each file may hand over exactly once.
     if (advanced.current === item.id || playingNow.current !== item.id) return
     advanced.current = item.id
 
@@ -345,7 +345,12 @@ export function PlayerOverlay({
     if (duration > 0) report.current?.(item.id, duration, duration)
     const { nextUp: next, onPlayNext: play } = advance.current
     if (next && play) play(next.path)
-  }, [mpv.ended, item])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item])
+
+  useEffect(() => {
+    if (mpv.ended) finish()
+  }, [mpv.ended, finish])
 
   /**
    * Click pauses, double click goes fullscreen — without doing both.
@@ -808,9 +813,14 @@ export function PlayerOverlay({
   useEffect(() => {
     setHelp(null)
     setPreparing(false)
+    setReconnecting(null)
+    setLost(null)
     triedConverting.current = null
     converting.current = null
     lightenWhenBack.current = null
+    attempts.current = 0
+    lastCut.current = null
+    resumedAt.current = null
   }, [item?.id])
 
   const pictureLoad = mpv.load
@@ -921,42 +931,112 @@ export function PlayerOverlay({
   }, [item, mpv.converted, mpv.started, mpv.loadFailed, fallBack])
 
   /**
-   * A conversion that did not open part-way through a film: a seek past what
-   * had arrived, refused or failed. Once more, unless the host said it never
-   * will, and otherwise the file itself from the same point, lighter, as when
-   * a conversion does not start. Never "this file could not be opened".
+   * A conversion that stopped short: one that did not open after a seek, one
+   * whose stream ended mid-film (the host went away, or ffmpeg gave up), and
+   * one that has sat waiting for more with nothing arriving.
+   *
+   * Picked up where it was, again and again with longer waits, for as long
+   * as the host may only be away for a moment; the file itself, lighter, only
+   * when the host says it will not convert. Never "this file could not be
+   * opened" for something that only needed a moment, and never the end of
+   * the film, which is what a stream that stops looked like before.
    */
-  const retriedAt = useRef<number | null>(null)
-  /** The failure being dealt with, so it is dealt with once. */
-  const recovering = useRef<string | null>(null)
+  const [reconnecting, setReconnecting] = useState<number | null>(null)
+  /** Where it was when the host could not be reached, to try again from. */
+  const [lost, setLost] = useState<number | null>(null)
+  /** Tries since the conversion last played properly. */
+  const attempts = useRef(0)
+  /** Dealing with it now, so it is dealt with once. */
+  const recovering = useRef(false)
+  /** Where it last stopped by itself, to know a film that ends a little short. */
+  const lastCut = useRef<number | null>(null)
+  /** Where it was last picked up, to know it is playing properly again. */
+  const resumedAt = useRef<number | null>(null)
+
+  const recover = useCallback(
+    async (cause: 'cut' | 'stalled' | 'failed', at: number, duration: number) => {
+      if (!item || recovering.current) return
+      const path = item.id
+      // Stopped by itself at the same point twice: that is where the film
+      // ends, whatever its header said about its length.
+      if (cause === 'cut') {
+        if (lastCut.current !== null && Math.abs(lastCut.current - at) < 2) {
+          finish()
+          return
+        }
+        lastCut.current = at
+      }
+      recovering.current = true
+      setReconnecting(at)
+      try {
+        const status = await api.conversionStatus(path).catch(() => null)
+        // A refusal counts only when it is what stopped it: the status of a
+        // conversion that started fine says nothing about this one.
+        const why = cause === 'failed' ? whyNotConverted(status) : 'failed'
+        const base = await api.mediaUrl(path)
+        if (!base) return
+        const refused = why === 'unable' || why === 'off' || why === 'slow' || why === 'outdated'
+        attempts.current += 1
+        if (refused || attempts.current > RECOVER_WAITS.length) {
+          if (!refused && status?.kind === 'offline') {
+            setReconnecting(null)
+            setLost(at)
+            setFailed('Lost the connection to Basalt Host. Check that it is running, then try again.')
+            return
+          }
+          // The host will not, or keeps failing: the file itself, from here.
+          lightenWhenBack.current = { path, why }
+          setHelp((was) => ({ mode: 'lighter', size: was?.size ?? resolution ?? { width: 0, height: 0 }, why }))
+          setReconnecting(null)
+          // Free before loading, so a load that fails at once is dealt with.
+          recovering.current = false
+          await pictureLoad(base, at)
+          return
+        }
+        await new Promise((resolve) => setTimeout(resolve, RECOVER_WAITS[attempts.current - 1]))
+        if (playingNow.current !== path) return
+        resumedAt.current = at
+        recovering.current = false
+        await pictureLoad(base, at, { base, duration })
+      } finally {
+        recovering.current = false
+      }
+    },
+    [item, finish, pictureLoad, resolution],
+  )
+
+  // Did not open: after a seek, or when picked up again.
   useEffect(() => {
     if (!item || !mpv.converted || !mpv.loadFailed || converting.current) return
-    if (recovering.current === mpv.loadFailed) return
-    recovering.current = mpv.loadFailed
+    void recover('failed', mpv.position, mpv.duration)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item, mpv.converted, mpv.loadFailed])
+
+  // Stopped mid-film, or waiting with nothing arriving. A moment's grace for
+  // the first, since mpv passes through the end of what it has around a
+  // seek; long enough for the second that a slow host still catching up is
+  // left to, as the position moving starts the wait again.
+  useEffect(() => {
+    if (!item || !mpv.converted || !mpv.started || mpv.ended || reconnecting !== null) return undefined
+    const cut = mpv.atEof
+    if (!cut && !mpv.buffering) return undefined
     const at = mpv.position
     const duration = mpv.duration
-    const path = item.id
-    void (async () => {
-      const status = await api.conversionStatus(path).catch(() => null)
-      const why = whyNotConverted(status)
-      const base = await api.mediaUrl(path)
-      if (!base) return
-      // Busy is the old place not yet given up, and a failure with no reason
-      // a moment's trouble; either is worth a second try where it was.
-      const passing = why === 'busy' || why === 'failed'
-      if (passing && retriedAt.current !== Math.round(at)) {
-        retriedAt.current = Math.round(at)
-        await new Promise((resolve) => setTimeout(resolve, 1500))
-        recovering.current = null
-        await pictureLoad(base, at, { base, duration })
-        return
-      }
-      recovering.current = null
-      lightenWhenBack.current = { path, why }
-      setHelp((was) => ({ mode: 'lighter', size: was?.size ?? resolution ?? { width: 0, height: 0 }, why }))
-      await pictureLoad(base, at)
-    })()
-  }, [item, mpv.converted, mpv.loadFailed, mpv.position, mpv.duration, pictureLoad, resolution])
+    const timer = setTimeout(() => void recover(cut ? 'cut' : 'stalled', at, duration), cut ? 1500 : 15000)
+    return () => clearTimeout(timer)
+  }, [item, mpv.converted, mpv.started, mpv.ended, mpv.atEof, mpv.buffering, mpv.position, mpv.duration, reconnecting, recover])
+
+  // Playing again: said no more, and once it has played on a while, the
+  // waits start from the shortest again.
+  useEffect(() => {
+    if (!mpv.started || !mpv.converted) return
+    if (reconnecting !== null && !recovering.current) setReconnecting(null)
+    const from = resumedAt.current
+    if (from === null || mpv.position > from + 20) {
+      attempts.current = 0
+      resumedAt.current = null
+    }
+  }, [mpv.started, mpv.converted, mpv.position, reconnecting])
 
   // Back on the original after a conversion did not start: lighter, now.
   useEffect(() => {
@@ -1170,7 +1250,7 @@ export function PlayerOverlay({
    * said as what it is, the host optimizing the film, rather than a player
    * that is slow to start.
    */
-  const optimizing = !problem && (preparing || (mpv.converted && !mpv.started))
+  const optimizing = !problem && reconnecting === null && (preparing || (mpv.converted && !mpv.started))
 
   return (
     <AnimatePresence>
@@ -1233,6 +1313,21 @@ export function PlayerOverlay({
                 <div className="mt-4 max-w-[420px] px-6 text-[13px] leading-relaxed text-text">
                   {problem}
                 </div>
+                {lost !== null && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      const at = lost
+                      setLost(null)
+                      setFailed(null)
+                      attempts.current = 0
+                      void recover('stalled', at, mpv.duration)
+                    }}
+                    className="pointer-events-auto mt-5 rounded-full bg-white px-5 py-2 text-[13px] font-medium text-black transition-opacity hover:opacity-90"
+                  >
+                    Try again
+                  </button>
+                )}
               </div>
             )}
 
@@ -1255,8 +1350,26 @@ export function PlayerOverlay({
               </div>
             )}
 
+            {/* The conversion stopped short, and is being picked up again. */}
+            {!problem && reconnecting !== null && (
+              <div className="pointer-events-none absolute inset-0 z-[1] flex flex-col items-center justify-center bg-black text-center">
+                <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.24em] text-textFaint">
+                  <Loader2 size={12} className="animate-spin" />
+                  picking up
+                </div>
+                <div className="mt-3 px-8 text-2xl font-semibold tracking-tight text-text">
+                  {item.title}
+                </div>
+                <div className="mt-1 text-sm text-textDim">{item.subtitle}</div>
+                <div className="mt-6 max-w-[440px] px-8 text-[12.5px] leading-relaxed text-textDim">
+                  Basalt Host stopped sending the film for a moment. Picking it up again at{' '}
+                  {formatDuration(reconnecting)}.
+                </div>
+              </div>
+            )}
+
             {/* Until the film is playing, so it is never over a picture. */}
-            {!problem && !optimizing && !mpv.started && (
+            {!problem && !optimizing && reconnecting === null && !mpv.started && (
               <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center bg-black text-center">
                 <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.24em] text-textFaint">
                   <Loader2 size={12} className="animate-spin" />
@@ -1415,7 +1528,8 @@ export function PlayerOverlay({
               )}
             </AnimatePresence>
 
-            {onOpenExternally && problem && (
+            {/* Not when the host is out of reach: another player could not reach it either. */}
+            {onOpenExternally && problem && lost === null && (
               <button
                 onClick={(e) => {
                   e.stopPropagation()
@@ -1744,6 +1858,13 @@ export function PlayerOverlay({
     </AnimatePresence>
   )
 }
+
+/**
+ * How long to wait before each try at picking a conversion up again: about a
+ * minute in all with the tries themselves, long enough for a host computer to
+ * restart its app or find the Wi-Fi again.
+ */
+const RECOVER_WAITS = [1000, 2000, 3000, 5000, 8000, 10000, 12000]
 
 /** The tallest a menu over the controls may be: the screen less the bar. */
 const MENU_HEIGHT = 'min(560px, calc(100dvh - var(--inset-top, 0px) - 132px))'

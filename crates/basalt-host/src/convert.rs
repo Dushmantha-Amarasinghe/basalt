@@ -36,7 +36,7 @@ use std::process::Stdio;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tokio::process::{Child, ChildStdout, Command};
 
 /// The picture's width after conversion. 1080p: sharp on any phone, and
@@ -113,7 +113,11 @@ pub fn arguments(route: Route, input: &Path, start: f64, subtitles: bool) -> Vec
         // to whichever adapter decoded, which on a laptop is the Intel one.
         Route::Hybrid(Encoder::Nvidia) => push(&["-hwaccel", "cuda"]),
         Route::Hybrid(_) => push(&["-hwaccel", "d3d11va"]),
-        Route::Software => {}
+        // The deblocking filter is the dearest part of decoding 4K HEVC, and
+        // what it smooths is too fine to survive the picture being shrunk to
+        // a quarter of its pixels: skipped, a weak machine keeps up with
+        // about a quarter more, and the picture measures the same.
+        Route::Software => push(&["-skip_loop_filter", "all"]),
     }
     // Before the input: a jump straight to that point, not decoding up to it.
     if start > 0.0 {
@@ -169,8 +173,11 @@ pub fn arguments(route: Route, input: &Path, start: f64, subtitles: bool) -> Vec
             &format!("scale={scale},format=yuv420p"),
             "-c:v",
             "libx264",
+            // The fastest x264 has. At this bitrate it measured as sharp as
+            // `superfast`, and a processor doing everything else as well
+            // needs every bit of the difference.
             "-preset",
-            "superfast",
+            "ultrafast",
         ]),
     }
     push(&[
@@ -351,6 +358,23 @@ pub struct Measured {
     pub speed: f64,
     /// When, in Unix seconds.
     pub at: i64,
+    /// Which conversion settings it was measured with: see [`MEASURED_WITH`].
+    #[serde(default)]
+    pub settings: u32,
+}
+
+/// The conversion settings measurements are taken with, counted up whenever
+/// they change how fast a machine converts. A host measured with older ones
+/// is measured again, once: its number would be too low, or too high.
+///
+/// 2: the software route skips deblocking and uses x264's fastest preset.
+pub const MEASURED_WITH: u32 = 2;
+
+impl Measured {
+    /// Whether this was measured with the settings conversions use now.
+    pub fn current(&self) -> bool {
+        self.settings >= MEASURED_WITH
+    }
 }
 
 /// A conversion under way, as the host's window lists it.
@@ -417,6 +441,8 @@ pub struct Conversion {
     first: Vec<u8>,
     /// Told when another conversion takes this one's place.
     stop: std::sync::Arc<tokio::sync::Notify>,
+    /// The last thing ffmpeg said, for when it stops part-way.
+    said: std::sync::Arc<Mutex<String>>,
     _slot: Slot,
 }
 
@@ -455,8 +481,19 @@ impl Conversion {
             }
         };
         if read == 0 {
-            let _ = self.child.wait().await;
-            return Ok(None);
+            // The end of the film, or ffmpeg giving up part-way through it.
+            // Said apart: a device told the film had ended mid-way stopped
+            // there, on its last frame, with nothing to say why.
+            let status = self.child.wait().await?;
+            if status.success() {
+                return Ok(None);
+            }
+            let said = self.said.lock().expect("said lock").clone();
+            return Err(std::io::Error::other(if said.is_empty() {
+                format!("ffmpeg stopped ({status})")
+            } else {
+                said
+            }));
         }
         buffer.truncate(read);
         Ok(Some(buffer))
@@ -566,8 +603,9 @@ impl Converter {
             .await
     }
 
-    /// Whether a conversion could start now, by the settings and the room.
-    fn admit(&self) -> Result<(), ConvertError> {
+    /// Whether a conversion could start now, by the settings and the room,
+    /// leaving out `own` already running that it would replace.
+    fn admit(&self, own: usize) -> Result<(), ConvertError> {
         if !self.enabled() {
             return Err(ConvertError::Off);
         }
@@ -577,15 +615,30 @@ impl Converter {
         }
         // Not refused while measuring: somebody watching comes first, and a
         // measurement a little low is better than a film that will not play.
-        if self.running.load(Ordering::SeqCst) >= limit {
+        if self.running.load(Ordering::SeqCst).saturating_sub(own) >= limit {
             return Err(ConvertError::Busy);
         }
         Ok(())
     }
 
-    /// What would convert a file now, without converting it: the fastest
-    /// route there is, or why there is none or no room for another.
-    pub async fn check(&self) -> Result<Route, ConvertError> {
+    /// How many conversions running are for this device.
+    fn owned_by(&self, owner: &str) -> usize {
+        if owner.is_empty() {
+            return 0;
+        }
+        self.active
+            .lock()
+            .expect("active lock")
+            .iter()
+            .filter(|(_, a)| a.owner == owner)
+            .count()
+    }
+
+    /// What would convert a file now for `owner`, without converting it: the
+    /// fastest route there is, or why there is none or no room for another.
+    /// The device's own conversion is not counted against it, since starting
+    /// another replaces it.
+    pub async fn check(&self, owner: &str) -> Result<Route, ConvertError> {
         let capability = self.capability().await;
         let first = capability
             .routes
@@ -593,7 +646,7 @@ impl Converter {
             .copied()
             .filter(|_| capability.ffmpeg.is_some())
             .ok_or(ConvertError::Unable)?;
-        self.admit()?;
+        self.admit(self.owned_by(owner))?;
         let preferred = *self.preferred.lock().expect("route lock");
         Ok(preferred.unwrap_or(first))
     }
@@ -616,21 +669,22 @@ impl Converter {
         parse_duration(&String::from_utf8_lossy(&output.stderr))
     }
 
-    /// Stops a conversion this device already has of this film, and waits a
-    /// moment for its place to come free.
+    /// Stops any conversion this device already has, and waits a moment for
+    /// its place to come free. A device plays one film at a time.
     ///
     /// A seek past what has arrived is a new conversion from there, and the
-    /// old one ran on until the host next tried to send to a device that had
+    /// next episode is a new conversion of another file; either way the old
+    /// one ran on until the host next tried to send to a device that had
     /// stopped listening. On a machine measured at one at a time, the new one
     /// was then refused as if the machine were busy, and the film would not
     /// open at the point it was moved to.
-    async fn replace(&self, owner: &str, file: &str) {
+    async fn replace(&self, owner: &str) {
         let stops: Vec<_> = self
             .active
             .lock()
             .expect("active lock")
             .iter()
-            .filter(|(_, a)| !owner.is_empty() && a.owner == owner && a.file == file)
+            .filter(|(_, a)| !owner.is_empty() && a.owner == owner)
             .map(|(id, a)| (*id, std::sync::Arc::clone(&a.stop)))
             .collect();
         if stops.is_empty() {
@@ -671,8 +725,8 @@ impl Converter {
         if capability.routes.is_empty() {
             return Err(ConvertError::Unable);
         }
-        self.replace(owner, file).await;
-        self.admit()?;
+        self.replace(owner).await;
+        self.admit(0)?;
         // A place first, given back however this ends. Taken, then checked,
         // so two asking at once cannot both take the last one.
         if self.running.fetch_add(1, Ordering::SeqCst) >= self.limit() as usize {
@@ -711,7 +765,7 @@ impl Converter {
             // With subtitles first, and without if they were what failed.
             for subtitles in [true, false] {
                 match try_route(&ffmpeg, route, input, start, subtitles).await {
-                    Ok((child, stdout, first)) => {
+                    Ok((child, stdout, first, said)) => {
                         *self.preferred.lock().expect("route lock") = Some(route);
                         tracing::info!("converting {} on {}", input.display(), route.describe());
                         return Ok(Conversion {
@@ -720,6 +774,7 @@ impl Converter {
                             stdout,
                             first,
                             stop: std::sync::Arc::clone(&stop),
+                            said,
                             _slot: slot.take().expect("one slot"),
                         });
                     }
@@ -780,6 +835,7 @@ impl Converter {
             at_once,
             speed: (speed * 10.0).round() / 10.0,
             at: unix_now(),
+            settings: MEASURED_WITH,
         };
         *self.preferred.lock().expect("route lock") = Some(route);
         *self.measured.lock().expect("measured lock") = Some(measured.clone());
@@ -936,7 +992,7 @@ async fn try_route(
     input: &Path,
     start: f64,
     subtitles: bool,
-) -> Result<(Child, ChildStdout, Vec<u8>), String> {
+) -> Result<(Child, ChildStdout, Vec<u8>, std::sync::Arc<Mutex<String>>), String> {
     let mut child = quiet(ffmpeg)
         .args(arguments(route, input, start, subtitles))
         .stdin(Stdio::null())
@@ -953,13 +1009,20 @@ async fn try_route(
     match read {
         Ok(Ok(n)) if n > 0 => {
             first.truncate(n);
-            // What it says from here on is not read; drained so a full pipe
-            // never stalls it.
+            // Drained, so a full pipe never stalls it, keeping only its last
+            // line: why it stopped, if it stops before the end.
+            let said = std::sync::Arc::new(Mutex::new(String::new()));
+            let last = std::sync::Arc::clone(&said);
             tokio::spawn(async move {
-                let mut sink = Vec::new();
-                let _ = stderr.read_to_end(&mut sink).await;
+                let mut lines = tokio::io::BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let line = line.trim();
+                    if !line.is_empty() {
+                        *last.lock().expect("said lock") = line.to_string();
+                    }
+                }
             });
-            Ok((child, stdout, first))
+            Ok((child, stdout, first, said))
         }
         Ok(_) => {
             let mut said = String::new();
@@ -1052,8 +1115,25 @@ mod tests {
         let nvidia = line(Route::Hybrid(Encoder::Nvidia));
         assert!(nvidia.contains("-hwaccel cuda -i"));
         assert!(!nvidia.contains("d3d11va"));
-        assert!(line(Route::Software).contains("-c:v libx264 -preset superfast"));
+        assert!(line(Route::Software).contains("-c:v libx264 -preset ultrafast"));
+        assert!(line(Route::Software).contains("-skip_loop_filter all -i"));
+        assert!(!line(Route::Nvidia).contains("skip_loop_filter"));
         assert!(!line(Route::Software).contains("-hwaccel"));
+    }
+
+    #[test]
+    fn a_host_measured_with_older_settings_is_measured_again() {
+        // As a host before the settings were counted kept it.
+        let old: Measured = serde_json::from_str(
+            r#"{"by":"the processor","atOnce":1,"speed":1.4,"at":1759400000}"#,
+        )
+        .expect("an older measurement still reads");
+        assert!(!old.current());
+        let new = Measured {
+            settings: MEASURED_WITH,
+            ..old
+        };
+        assert!(new.current());
     }
 
     #[tokio::test]
@@ -1061,10 +1141,10 @@ mod tests {
         let converter = Converter::new(std::env::temp_dir());
         // One at once until measured.
         assert_eq!(converter.limit(), 1);
-        assert!(converter.admit().is_ok());
+        assert!(converter.admit(0).is_ok());
 
         converter.set_enabled(false);
-        assert!(matches!(converter.admit(), Err(ConvertError::Off)));
+        assert!(matches!(converter.admit(0), Err(ConvertError::Off)));
         converter.set_enabled(true);
 
         let slow = Measured {
@@ -1072,15 +1152,18 @@ mod tests {
             at_once: 0,
             speed: 0.6,
             at: 0,
+            settings: MEASURED_WITH,
         };
         converter.restore(true, None, Some(slow));
-        assert!(matches!(converter.admit(), Err(ConvertError::TooSlow)));
+        assert!(matches!(converter.admit(0), Err(ConvertError::TooSlow)));
 
         // Chosen by hand, over what was measured.
         converter.set_by_hand(Some(2));
         assert_eq!(converter.limit(), 2);
         converter.running.store(2, Ordering::SeqCst);
-        assert!(matches!(converter.admit(), Err(ConvertError::Busy)));
+        assert!(matches!(converter.admit(0), Err(ConvertError::Busy)));
+        // One of the two is the asking device's own, which it would replace.
+        assert!(converter.admit(1).is_ok());
         converter.running.store(0, Ordering::SeqCst);
         converter.set_by_hand(None);
         assert_eq!(converter.limit(), 0);

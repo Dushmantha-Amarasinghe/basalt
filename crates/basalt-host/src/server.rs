@@ -2151,12 +2151,16 @@ pub async fn serve(server: BoundServer) -> Result<()> {
                 None => tracing::info!("ffmpeg is here but nothing can convert with it"),
             }
             // Measured once, the first time there is something to measure,
-            // so the window can say how many devices it serves at once.
-            // Only an installed host: a test or a development copy using the
+            // so the window can say how many devices it serves at once, and
+            // once more when conversions have changed since. Only an
+            // installed host: a test or a development copy using the
             // computer's own ffmpeg would spend minutes of every run on it.
             if capability.can_convert()
                 && host.converter.installed()
-                && host.converter.measured().is_none()
+                && !host
+                    .converter
+                    .measured()
+                    .is_some_and(|measured| measured.current())
             {
                 host.measure_conversion();
             }
@@ -2701,7 +2705,11 @@ where
                 _ => HostError::Unavailable(e.to_string()),
             };
             if req.check {
-                let route = host.converter.check().await.map_err(refused)?;
+                let route = host
+                    .converter
+                    .check(&session.device_key().unwrap_or_default())
+                    .await
+                    .map_err(refused)?;
                 reply(
                     stream,
                     &ConvertStarted {
@@ -2750,9 +2758,17 @@ where
                             write_ok(stream, &[]).await?;
                             break;
                         }
+                        // Said as a failure, not as the end of the film: the
+                        // device then picks up where it was, rather than
+                        // stopping there as if the film were over.
                         Err(e) => {
-                            tracing::warn!("a conversion stopped: {e}");
-                            write_ok(stream, &[]).await?;
+                            tracing::warn!("a conversion stopped part-way: {e}");
+                            write_err(
+                                stream,
+                                basalt_proto::ErrorCode::Io,
+                                &format!("the conversion stopped part-way: {e}"),
+                            )
+                            .await?;
                             break;
                         }
                     },

@@ -1422,10 +1422,13 @@ async fn the_hosts_settings_decide_whether_it_converts() {
     let slow = client.convert_check(path).await.unwrap_err();
     assert!(slow.to_string().contains("too slow"), "{slow}");
 
-    // One at once: a second, while the first runs, is turned away.
+    // One at once: a second device, while the first one's runs, is turned
+    // away. (The first device asking again is not: its new conversion would
+    // take the place of its last.)
     fixture.host.set_conversion_at_once(Some(1)).unwrap();
     let mut first = client.convert(path, 0.0).await.expect("the first converts");
-    let busy = client.convert_check(path).await.unwrap_err();
+    let other = fixture.paired_client().await;
+    let busy = other.convert_check(path).await.unwrap_err();
     assert!(busy.to_string().contains("already converting"), "{busy}");
     assert_eq!(fixture.host.conversion_status().active.len(), 1);
     while first.next().await.unwrap().is_some() {}
@@ -1497,7 +1500,33 @@ async fn a_seek_replaces_the_devices_own_conversion() {
     assert!(moved.next().await.unwrap().is_some());
     assert_eq!(fixture.host.conversion_status().active.len(), 1);
 
+    // On to the next episode: another film, the same device. Not refused
+    // either, asked first or straight away; it takes the place.
+    let next = "Films/Next.Film.2024.mkv";
+    std::fs::copy(&film, fixture.vault_path(next)).unwrap();
+    client
+        .convert_check(next)
+        .await
+        .expect("the device's own conversion does not count against it");
+    let mut onwards = client
+        .convert(next, 0.0)
+        .await
+        .expect("the next film takes the place of the last");
+    assert!(onwards.next().await.unwrap().is_some());
+    let active = fixture.host.conversion_status().active;
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].file, next);
+
+    // Another device is still refused while the place is taken.
+    let other = fixture.paired_client().await;
+    let refused = other.convert_check(path).await.expect_err("no room");
+    assert!(
+        refused.to_string().contains("already converting"),
+        "{refused}"
+    );
+
     // Hanging up frees the place at once, without waiting for a write.
+    drop(onwards);
     drop(moved);
     drop(watching);
     let started = std::time::Instant::now();

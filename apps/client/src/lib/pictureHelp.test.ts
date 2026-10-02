@@ -54,6 +54,13 @@ describe('a host that cannot convert', () => {
     rememberCannotConvert('host-f', 'slow')
     expect(cannotConvert('host-f')).toBe('slow')
   })
+
+  it('is asked again after a few minutes, in case it was updated or switched back on', () => {
+    rememberCannotConvert('host-g', 'outdated', 1_000_000)
+    expect(cannotConvert('host-g', 1_000_000 + 60_000)).toBe('outdated')
+    expect(cannotConvert('host-g', 1_000_000 + 6 * 60_000)).toBeNull()
+    expect(cannotConvert('host-g', 1_000_000 + 60_000)).toBeNull()
+  })
 })
 
 describe('the note', () => {

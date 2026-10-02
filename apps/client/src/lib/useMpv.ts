@@ -134,6 +134,12 @@ export interface MpvState {
   /** True once the file has played to the end. */
   ended: boolean
   /**
+   * Whether mpv has run out of the file, which is the end only where the
+   * position agrees ([`hasEnded`]). A conversion that stops part-way leaves
+   * mpv here mid-film, holding its last frame.
+   */
+  atEof: boolean
+  /**
    * True while playback is stalled waiting for data.
    *
    * Worth its own state: a film that has run out of buffer looks identical
@@ -418,6 +424,7 @@ const EMPTY: MpvState = {
   volume: 100,
   muted: false,
   ended: false,
+  atEof: false,
   buffering: false,
   started: false,
   picture: false,
@@ -584,6 +591,12 @@ function useAppMpv(): Mpv {
                 // clock catches up, so judged then it was never the end, and
                 // the flag does not change again — the episode sat finished
                 // at 3:00 of 3:00 and the next one never started.
+                //
+                // No clock at all is no file open, not the start of one: the
+                // last position stands. Taken as zero, a stream that could not
+                // be reopened was tried again from the beginning of the film,
+                // and loading and stopping set the position themselves.
+                if (data === null || data === undefined) return s
                 const position = Number(data) || 0
                 return {
                   ...s,
@@ -605,7 +618,7 @@ function useAppMpv(): Mpv {
                 return { ...s, muted: Boolean(data) }
               case 'eof-reached':
                 eof.current = data
-                return { ...s, ended: hasEnded(data, s.position, s.duration, s.paused) }
+                return { ...s, atEof: data === true, ended: hasEnded(data, s.position, s.duration, s.paused) }
               case 'paused-for-cache':
                 return { ...s, buffering: data === true }
               case 'sid':
@@ -804,6 +817,7 @@ function useAppMpv(): Mpv {
       setState((s) => ({
         ...s,
         ended: false,
+        atEof: false,
         started: false,
         picture: false,
         loadFailed: null,
@@ -858,6 +872,7 @@ function useAppMpv(): Mpv {
       position: 0,
       duration: 0,
       ended: false,
+      atEof: false,
       started: false,
       picture: false,
       loadFailed: null,
