@@ -90,6 +90,18 @@ pub struct HostConfig {
     #[serde(default)]
     pub sections: basalt_proto::msg::Sections,
 
+    /// Whether this host converts video for a device that cannot play it.
+    /// On by default: a device that needs it gets a smooth picture, and one
+    /// that does not never asks.
+    #[serde(default = "default_true")]
+    pub convert_enabled: bool,
+    /// Conversions at once, chosen by hand. None: as measured.
+    #[serde(default)]
+    pub convert_at_once: Option<u32>,
+    /// What this machine was measured to manage, so it is measured once.
+    #[serde(default)]
+    pub convert_measured: Option<crate::convert::Measured>,
+
     #[serde(default)]
     pub devices: Vec<Device>,
 }
@@ -115,6 +127,9 @@ impl HostConfig {
             profiles: Vec::new(),
             profile_tokens: Vec::new(),
             sections: basalt_proto::msg::Sections::default(),
+            convert_enabled: true,
+            convert_at_once: None,
+            convert_measured: None,
             devices: Vec::new(),
         })
     }

@@ -817,7 +817,13 @@ export function PlayerOverlay({
       // or has no room, is then lightened in place rather than switched away
       // from and back, which cost a phone the time to open a 4K film twice.
       try {
-        await api.conversionCheck(path)
+        await api.conversionCheck(path).catch(async (e: unknown) => {
+          // Busy may only be the last film letting go of its place, a moment
+          // after it was closed: asked once more before giving up.
+          if (!(e instanceof Error) || !/already converting/i.test(e.message)) throw e
+          await new Promise((resolve) => setTimeout(resolve, 1500))
+          return api.conversionCheck(path)
+        })
       } catch (e) {
         const status = {
           by: null,

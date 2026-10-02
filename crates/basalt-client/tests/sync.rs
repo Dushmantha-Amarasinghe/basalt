@@ -1308,6 +1308,15 @@ async fn a_video_is_converted_as_it_is_watched() {
     }
     let client = fixture.paired_client().await;
 
+    // Asked first, it says what would convert, without converting anything.
+    let would = match client.convert_check("Films/Big.Picture.2024.mkv").await {
+        Ok(would) => would,
+        Err(e) if e.kind() == "unavailable" => {
+            eprintln!("this machine cannot convert: {e}");
+            return;
+        }
+        Err(e) => panic!("the check failed: {e}"),
+    };
     let mut converting = match client.convert("Films/Big.Picture.2024.mkv", 2.0).await {
         Ok(converting) => converting,
         Err(e) if e.kind() == "unavailable" => {
@@ -1317,12 +1326,7 @@ async fn a_video_is_converted_as_it_is_watched() {
         Err(e) => panic!("the conversion did not start: {e}"),
     };
     assert!(!converting.by.is_empty(), "it says what is converting");
-    // Asked first, it says the same without converting anything.
-    let would = client
-        .convert_check("Films/Big.Picture.2024.mkv")
-        .await
-        .unwrap();
-    assert_eq!(would, converting.by);
+    assert_eq!(would, converting.by, "asked first, it said the same");
     let mut film = Vec::new();
     while let Some(piece) = converting.next().await.unwrap() {
         film.extend(piece);
@@ -1333,6 +1337,16 @@ async fn a_video_is_converted_as_it_is_watched() {
         film.len()
     );
     assert_eq!(&film[..4], &[0x1a, 0x45, 0xdf, 0xa3], "as Matroska");
+
+    // The host lets go of the first a moment after its last piece is sent;
+    // one at a time is the most an unmeasured host allows.
+    drop(converting);
+    for _ in 0..50 {
+        if fixture.host.conversion_status().active.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     // The same through the proxy, as the player opens it.
     let proxy = basalt_client::proxy::MediaProxy::start(Arc::clone(&client))
@@ -1347,7 +1361,7 @@ async fn a_video_is_converted_as_it_is_watched() {
     );
     assert_eq!(&body[..4], &[0x1a, 0x45, 0xdf, 0xa3]);
     let status = proxy.conversion("Films/Big.Picture.2024.mkv").unwrap();
-    assert_eq!(status.by.as_deref(), Some(converting.by.as_str()));
+    assert_eq!(status.by.as_deref(), Some(would.as_str()));
 
     // Nothing outside the drive.
     assert!(client.convert("../outside.mkv", 0.0).await.is_err());
@@ -1370,4 +1384,52 @@ async fn http_get(url: &str) -> (String, Vec<u8>) {
         String::from_utf8_lossy(&all[..split]).to_string(),
         all[split + 4..].to_vec(),
     )
+}
+
+// The host's own say on converting: switched off, or set to none at once, or
+// full, each is a clear answer a device can explain, given without starting
+// anything.
+#[tokio::test]
+async fn the_hosts_settings_decide_whether_it_converts() {
+    let fixture = start_host().await;
+    if !test_video(
+        &fixture.vault_path("Films/Big.Picture.2024.mkv"),
+        "1280x720",
+    ) {
+        eprintln!("no ffmpeg here; skipped");
+        return;
+    }
+    let client = fixture.paired_client().await;
+    let path = "Films/Big.Picture.2024.mkv";
+    if let Err(e) = client.convert_check(path).await {
+        eprintln!("this machine cannot convert: {e}");
+        return;
+    }
+
+    fixture.host.set_conversion_enabled(false).unwrap();
+    let off = client.convert_check(path).await.unwrap_err();
+    assert_eq!(off.kind(), "unavailable");
+    assert!(off.to_string().contains("switched off"), "{off}");
+    assert!(client.convert(path, 0.0).await.is_err());
+
+    fixture.host.set_conversion_enabled(true).unwrap();
+    fixture.host.set_conversion_at_once(Some(0)).unwrap();
+    let slow = client.convert_check(path).await.unwrap_err();
+    assert!(slow.to_string().contains("too slow"), "{slow}");
+
+    // One at once: a second, while the first runs, is turned away.
+    fixture.host.set_conversion_at_once(Some(1)).unwrap();
+    let mut first = client.convert(path, 0.0).await.expect("the first converts");
+    let busy = client.convert_check(path).await.unwrap_err();
+    assert!(busy.to_string().contains("already converting"), "{busy}");
+    assert_eq!(fixture.host.conversion_status().active.len(), 1);
+    while first.next().await.unwrap().is_some() {}
+    drop(first);
+
+    // And the settings are kept for next time.
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture.dir.join("host.json")).unwrap())
+            .unwrap();
+    assert_eq!(saved["convert_enabled"], true);
+    assert_eq!(saved["convert_at_once"], 1);
 }

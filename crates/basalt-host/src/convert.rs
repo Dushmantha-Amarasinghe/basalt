@@ -39,11 +39,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, ChildStdout, Command};
 
-/// Conversions at once. A consumer NVIDIA card allows a handful of encoders
-/// at a time, and each stream is a full decode of a 4K film: two is what an
-/// ordinary machine can be trusted with while it also does everything else.
-pub const MAX_AT_ONCE: usize = 2;
-
 /// The picture's width after conversion. 1080p: sharp on any phone, and
 /// within what every phone's decoder takes.
 pub const WIDTH: u32 = 1920;
@@ -289,9 +284,14 @@ pub struct Capability {
 impl Capability {
     /// Finds ffmpeg and tries each hardware encoder. A few seconds, once.
     pub async fn detect(config_dir: &Path) -> Self {
-        let Some(ffmpeg) = find_ffmpeg(config_dir) else {
-            return Capability::default();
-        };
+        match find_ffmpeg(config_dir) {
+            Some(ffmpeg) => Self::detect_with(ffmpeg).await,
+            None => Capability::default(),
+        }
+    }
+
+    /// The same, with ffmpeg already found.
+    pub async fn detect_with(ffmpeg: PathBuf) -> Self {
         let mut encoders = Vec::new();
         for encoder in [Encoder::Nvidia, Encoder::Intel, Encoder::Amd] {
             if encoder_works(&ffmpeg, encoder.name()).await {
@@ -329,13 +329,60 @@ pub fn routes_for(encoders: &[Encoder], software: bool) -> Vec<Route> {
     routes
 }
 
-/// The conversions running, and the route that last worked.
+/// How many conversions at once a machine is ever tried with when measuring.
+/// A consumer NVIDIA card allows about this many encoders at a time, and
+/// a household watches a few films at once at most.
+pub const MOST_MEASURED: u32 = 6;
+
+/// How much faster than real time each conversion has to run to count as
+/// keeping up. Not exactly real time: a busy moment in a film, or the machine
+/// doing something else, would then make it stutter.
+const KEEPS_UP: f64 = 1.15;
+
+/// What a machine was measured to manage, kept between runs.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Measured {
+    /// What converted, as people say it: "NVIDIA graphics".
+    pub by: String,
+    /// 4K films it can convert at once and keep up. Zero: not even one.
+    pub at_once: u32,
+    /// How much faster than real time one conversion ran.
+    pub speed: f64,
+    /// When, in Unix seconds.
+    pub at: i64,
+}
+
+/// A conversion under way, as the host's window lists it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Active {
+    /// The device it is for.
+    pub device: String,
+    /// The film, vault-relative.
+    pub file: String,
+    /// When it started, in Unix seconds.
+    pub since: i64,
+}
+
+/// The conversions running, the route that last worked, and the settings.
 pub struct Converter {
     capability: tokio::sync::OnceCell<Capability>,
     config_dir: PathBuf,
+    /// ffmpeg as the installer placed it, when the host app says where.
+    given: Mutex<Option<PathBuf>>,
     running: std::sync::Arc<AtomicUsize>,
     /// Tried first: what worked last time.
     preferred: Mutex<Option<Route>>,
+    /// Switched on in the host's settings. On unless turned off.
+    enabled: std::sync::atomic::AtomicBool,
+    /// Conversions at once, chosen by hand. None: as measured.
+    by_hand: Mutex<Option<u32>>,
+    /// What this machine was measured to manage.
+    measured: Mutex<Option<Measured>>,
+    measuring: std::sync::atomic::AtomicBool,
+    active: std::sync::Arc<Mutex<Vec<(u64, Active)>>>,
+    next_id: std::sync::atomic::AtomicU64,
 }
 
 /// Why a conversion could not start.
@@ -343,6 +390,10 @@ pub struct Converter {
 pub enum ConvertError {
     #[error("this host has no way to convert video")]
     Unable,
+    #[error("video conversion is switched off on this host")]
+    Off,
+    #[error("this host's computer is too slow to convert video as it is watched")]
+    TooSlow,
     #[error("this host is already converting as much as it can")]
     Busy,
     #[error("the video could not be converted: {0}")]
@@ -360,12 +411,21 @@ pub struct Conversion {
     _slot: Slot,
 }
 
-/// A place among the conversions running, given back when dropped.
-struct Slot(std::sync::Arc<AtomicUsize>);
+/// A place among the conversions running, given back when dropped, and its
+/// line in the list the host's window shows.
+struct Slot {
+    running: std::sync::Arc<AtomicUsize>,
+    active: std::sync::Arc<Mutex<Vec<(u64, Active)>>>,
+    id: u64,
+}
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        self.running.fetch_sub(1, Ordering::SeqCst);
+        self.active
+            .lock()
+            .expect("active lock")
+            .retain(|(id, _)| *id != self.id);
     }
 }
 
@@ -387,21 +447,124 @@ impl Conversion {
     }
 }
 
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 impl Converter {
     pub fn new(config_dir: PathBuf) -> Self {
         Self {
             capability: tokio::sync::OnceCell::new(),
             config_dir,
+            given: Mutex::new(None),
             running: std::sync::Arc::new(AtomicUsize::new(0)),
             preferred: Mutex::new(None),
+            enabled: std::sync::atomic::AtomicBool::new(true),
+            by_hand: Mutex::new(None),
+            measured: Mutex::new(None),
+            measuring: std::sync::atomic::AtomicBool::new(false),
+            active: std::sync::Arc::default(),
+            next_id: std::sync::atomic::AtomicU64::new(1),
         }
+    }
+
+    /// Uses the ffmpeg the installer put in place. Before anything converts.
+    pub fn use_ffmpeg(&self, path: PathBuf) {
+        *self.given.lock().expect("ffmpeg lock") = Some(path);
+    }
+
+    /// Whether this is an installed host with its own ffmpeg, rather than a
+    /// copy borrowing whatever the computer has, as tests and development do.
+    pub fn installed(&self) -> bool {
+        self.given.lock().expect("ffmpeg lock").is_some()
+    }
+
+    /// The settings, as saved: on or off, a number chosen by hand, and what
+    /// was measured last time.
+    pub fn restore(&self, enabled: bool, by_hand: Option<u32>, measured: Option<Measured>) {
+        self.enabled.store(enabled, Ordering::SeqCst);
+        *self.by_hand.lock().expect("limit lock") = by_hand;
+        *self.measured.lock().expect("measured lock") = measured;
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::SeqCst);
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::SeqCst)
+    }
+
+    pub fn set_by_hand(&self, at_once: Option<u32>) {
+        *self.by_hand.lock().expect("limit lock") = at_once.map(|n| n.min(MOST_MEASURED * 2));
+    }
+
+    pub fn by_hand(&self) -> Option<u32> {
+        *self.by_hand.lock().expect("limit lock")
+    }
+
+    pub fn measured(&self) -> Option<Measured> {
+        self.measured.lock().expect("measured lock").clone()
+    }
+
+    pub fn is_measuring(&self) -> bool {
+        self.measuring.load(Ordering::SeqCst)
+    }
+
+    /// Conversions allowed at once: as chosen by hand, or as measured, or one
+    /// until it has been.
+    pub fn limit(&self) -> u32 {
+        self.by_hand()
+            .or_else(|| self.measured().map(|m| m.at_once))
+            .unwrap_or(1)
+    }
+
+    /// The conversions running now, oldest first.
+    pub fn active(&self) -> Vec<Active> {
+        self.active
+            .lock()
+            .expect("active lock")
+            .iter()
+            .map(|(_, a)| a.clone())
+            .collect()
+    }
+
+    /// What this machine can do, if it has been looked at yet.
+    pub fn detected(&self) -> Option<Capability> {
+        self.capability.get().cloned()
     }
 
     /// What this machine can do, found the first time anyone asks.
     pub async fn capability(&self) -> &Capability {
         self.capability
-            .get_or_init(|| Capability::detect(&self.config_dir))
+            .get_or_init(|| async {
+                let given = self.given.lock().expect("ffmpeg lock").clone();
+                match given.filter(|p| p.is_file()) {
+                    Some(ffmpeg) => Capability::detect_with(ffmpeg).await,
+                    None => Capability::detect(&self.config_dir).await,
+                }
+            })
             .await
+    }
+
+    /// Whether a conversion could start now, by the settings and the room.
+    fn admit(&self) -> Result<(), ConvertError> {
+        if !self.enabled() {
+            return Err(ConvertError::Off);
+        }
+        let limit = self.limit() as usize;
+        if limit == 0 {
+            return Err(ConvertError::TooSlow);
+        }
+        // Not refused while measuring: somebody watching comes first, and a
+        // measurement a little low is better than a film that will not play.
+        if self.running.load(Ordering::SeqCst) >= limit {
+            return Err(ConvertError::Busy);
+        }
+        Ok(())
     }
 
     /// What would convert a file now, without converting it: the fastest
@@ -414,15 +577,20 @@ impl Converter {
             .copied()
             .filter(|_| capability.ffmpeg.is_some())
             .ok_or(ConvertError::Unable)?;
-        if self.running.load(Ordering::SeqCst) >= MAX_AT_ONCE {
-            return Err(ConvertError::Busy);
-        }
+        self.admit()?;
         let preferred = *self.preferred.lock().expect("route lock");
         Ok(preferred.unwrap_or(first))
     }
 
-    /// Starts converting `input` from `start` seconds in.
-    pub async fn start(&self, input: &Path, start: f64) -> Result<Conversion, ConvertError> {
+    /// Starts converting `input` from `start` seconds in, for `device`;
+    /// `file` is how the host's window names it.
+    pub async fn start(
+        &self,
+        input: &Path,
+        start: f64,
+        device: &str,
+        file: &str,
+    ) -> Result<Conversion, ConvertError> {
         let capability = self.capability().await;
         let Some(ffmpeg) = capability.ffmpeg.clone() else {
             return Err(ConvertError::Unable);
@@ -430,12 +598,27 @@ impl Converter {
         if capability.routes.is_empty() {
             return Err(ConvertError::Unable);
         }
-        // A place first, given back however this ends.
-        if self.running.fetch_add(1, Ordering::SeqCst) >= MAX_AT_ONCE {
+        self.admit()?;
+        // A place first, given back however this ends. Taken, then checked,
+        // so two asking at once cannot both take the last one.
+        if self.running.fetch_add(1, Ordering::SeqCst) >= self.limit() as usize {
             self.running.fetch_sub(1, Ordering::SeqCst);
             return Err(ConvertError::Busy);
         }
-        let slot = Slot(std::sync::Arc::clone(&self.running));
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        self.active.lock().expect("active lock").push((
+            id,
+            Active {
+                device: device.to_string(),
+                file: file.to_string(),
+                since: unix_now(),
+            },
+        ));
+        let slot = Slot {
+            running: std::sync::Arc::clone(&self.running),
+            active: std::sync::Arc::clone(&self.active),
+            id,
+        };
 
         let mut routes = capability.routes.clone();
         if let Some(preferred) = *self.preferred.lock().expect("route lock")
@@ -471,6 +654,189 @@ impl Converter {
         }
         Err(ConvertError::Failed(last_error))
     }
+
+    /// Measures how many 4K films this machine can convert at once and keep
+    /// up: a demanding 4K 10-bit HEVC sample, converted once, then twice at
+    /// the same time, and so on, until it no longer keeps up.
+    ///
+    /// Tens of seconds on a slow machine, once; the result is kept.
+    pub async fn measure(&self) -> Result<Measured, String> {
+        if self.measuring.swap(true, Ordering::SeqCst) {
+            return Err("already measuring".into());
+        }
+        struct Done<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Done<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        let _done = Done(&self.measuring);
+
+        let capability = self.capability().await;
+        let ffmpeg = capability.ffmpeg.clone().ok_or("no ffmpeg here")?;
+        let sample = make_sample(&ffmpeg, &self.config_dir.join("converter")).await?;
+
+        // The first route that converts the sample at all. That first run also
+        // wakes the graphics driver, which takes seconds the first time and
+        // never again, so it is not what is timed: one more run is.
+        let mut found = None;
+        for &route in &capability.routes {
+            if run_at_once(&ffmpeg, route, &sample, 1).await.is_ok() {
+                found = Some(route);
+                break;
+            }
+        }
+        let route = found.ok_or("nothing here could convert the sample")?;
+        let speed = run_at_once(&ffmpeg, route, &sample, 1).await?;
+        let mut at_once = u32::from(speed >= KEEPS_UP);
+        if at_once == 1 {
+            for streams in 2..=MOST_MEASURED {
+                match run_at_once(&ffmpeg, route, &sample, streams).await {
+                    Ok(each) if each >= KEEPS_UP => at_once = streams,
+                    _ => break,
+                }
+            }
+        }
+        let measured = Measured {
+            by: route.describe().to_string(),
+            at_once,
+            speed: (speed * 10.0).round() / 10.0,
+            at: unix_now(),
+        };
+        *self.preferred.lock().expect("route lock") = Some(route);
+        *self.measured.lock().expect("measured lock") = Some(measured.clone());
+        tracing::info!(
+            "measured video conversion: {} at once on {}, {:.1}x real time for one",
+            measured.at_once,
+            measured.by,
+            measured.speed
+        );
+        Ok(measured)
+    }
+}
+
+/// Seconds of the measuring sample, and how many times it is played through.
+const SAMPLE_SECONDS: f64 = 3.0;
+const SAMPLE_LOOPS: u32 = 4;
+
+/// A short, demanding 4K 10-bit HEVC film to measure with, made once with
+/// whatever HEVC encoder this machine has, and kept.
+///
+/// A test picture with grain over it: plain colour bars decode far faster
+/// than any real film, and would have promised more than the machine can do.
+async fn make_sample(ffmpeg: &Path, dir: &Path) -> Result<PathBuf, String> {
+    let sample = dir.join("sample-4k-hevc10.mkv");
+    if std::fs::metadata(&sample).is_ok_and(|m| m.len() > 0) {
+        return Ok(sample);
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("could not make {}: {e}", dir.display()))?;
+    let partial = dir.join("sample-4k-hevc10.part.mkv");
+    let encoders: [&[&str]; 4] = [
+        &[
+            "-c:v",
+            "hevc_nvenc",
+            "-profile:v",
+            "main10",
+            "-pix_fmt",
+            "p010le",
+        ],
+        &[
+            "-c:v",
+            "hevc_qsv",
+            "-profile:v",
+            "main10",
+            "-pix_fmt",
+            "p010le",
+        ],
+        &[
+            "-c:v",
+            "hevc_amf",
+            "-profile:v",
+            "main10",
+            "-pix_fmt",
+            "p010le",
+        ],
+        &[
+            "-c:v",
+            "libx265",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p10le",
+        ],
+    ];
+    for encoder in encoders {
+        let made = quiet(ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+            ])
+            .arg("testsrc2=size=3840x2160:rate=24000/1001,noise=alls=12:allf=t+u")
+            .args(["-t", &SAMPLE_SECONDS.to_string()])
+            .args(encoder)
+            .args(["-b:v", "20M", "-f", "matroska"])
+            .arg(&partial)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .status();
+        let ok = matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(300), made).await,
+            Ok(Ok(status)) if status.success()
+        );
+        if ok && std::fs::rename(&partial, &sample).is_ok() {
+            return Ok(sample);
+        }
+    }
+    let _ = std::fs::remove_file(&partial);
+    Err("no HEVC encoder here could make the sample".into())
+}
+
+/// Converts the sample `streams` times at once, and says how much faster than
+/// real time each one ran, the slowest of them.
+async fn run_at_once(
+    ffmpeg: &Path,
+    route: Route,
+    sample: &Path,
+    streams: u32,
+) -> Result<f64, String> {
+    let mut args = arguments(route, sample, 0.0, false);
+    let input = args.iter().position(|a| a == "-i").ok_or("no input")?;
+    args.splice(
+        input..input,
+        ["-stream_loop".to_string(), (SAMPLE_LOOPS - 1).to_string()],
+    );
+
+    let started = std::time::Instant::now();
+    let mut running = Vec::new();
+    for _ in 0..streams {
+        let child = quiet(ffmpeg)
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| format!("ffmpeg would not start: {e}"))?;
+        running.push(child);
+    }
+    for mut child in running {
+        let status = tokio::time::timeout(std::time::Duration::from_secs(300), child.wait())
+            .await
+            .map_err(|_| "took far too long".to_string())?
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err(format!("{route:?} failed with {streams} at once"));
+        }
+    }
+    let content = SAMPLE_SECONDS * f64::from(SAMPLE_LOOPS);
+    Ok(content / started.elapsed().as_secs_f64())
 }
 
 /// Runs one route until it produces its first bytes, or fails.
@@ -592,6 +958,59 @@ mod tests {
         assert!(!line(Route::Software).contains("-hwaccel"));
     }
 
+    #[tokio::test]
+    async fn the_settings_decide_whether_a_conversion_may_start() {
+        let converter = Converter::new(std::env::temp_dir());
+        // One at once until measured.
+        assert_eq!(converter.limit(), 1);
+        assert!(converter.admit().is_ok());
+
+        converter.set_enabled(false);
+        assert!(matches!(converter.admit(), Err(ConvertError::Off)));
+        converter.set_enabled(true);
+
+        let slow = Measured {
+            by: "the processor".into(),
+            at_once: 0,
+            speed: 0.6,
+            at: 0,
+        };
+        converter.restore(true, None, Some(slow));
+        assert!(matches!(converter.admit(), Err(ConvertError::TooSlow)));
+
+        // Chosen by hand, over what was measured.
+        converter.set_by_hand(Some(2));
+        assert_eq!(converter.limit(), 2);
+        converter.running.store(2, Ordering::SeqCst);
+        assert!(matches!(converter.admit(), Err(ConvertError::Busy)));
+        converter.running.store(0, Ordering::SeqCst);
+        converter.set_by_hand(None);
+        assert_eq!(converter.limit(), 0);
+    }
+
+    /// Measuring, for real: a demanding 4K 10-bit sample made and converted
+    /// one, two, three at a time. Run by hand (`--ignored`): on a machine
+    /// without a graphics encoder it takes minutes.
+    #[tokio::test]
+    #[ignore]
+    async fn this_machine_is_measured() {
+        let dir = std::env::temp_dir().join(format!("basalt-measure-{}", std::process::id()));
+        let converter = Converter::new(dir.clone());
+        if converter.capability().await.ffmpeg.is_none() {
+            eprintln!("no ffmpeg here; skipped");
+            return;
+        }
+        let started = std::time::Instant::now();
+        let measured = converter.measure().await.expect("measures");
+        eprintln!("measured in {:?}: {measured:?}", started.elapsed());
+        assert!(measured.speed > 0.0);
+        assert_eq!(converter.limit(), measured.at_once);
+        assert!(!converter.is_measuring());
+        // Kept, so the next time costs nothing.
+        assert!(dir.join("converter").join("sample-4k-hevc10.mkv").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The real thing, when this machine has ffmpeg: a few seconds of a test
     /// picture converted through whatever route works here, and read back.
     #[tokio::test]
@@ -622,7 +1041,11 @@ mod tests {
             .unwrap();
         assert!(made.success());
 
-        let mut conversion = converter.start(&input, 2.0).await.expect("converts");
+        let mut conversion = converter
+            .start(&input, 2.0, "Laptop", "in.mkv")
+            .await
+            .expect("converts");
+        assert_eq!(converter.active().len(), 1, "listed while it runs");
         let mut bytes = 0usize;
         while let Some(chunk) = conversion.next().await.unwrap() {
             bytes += chunk.len();
@@ -634,6 +1057,7 @@ mod tests {
             0,
             "its place is given back"
         );
+        assert!(converter.active().is_empty(), "and its line in the list");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

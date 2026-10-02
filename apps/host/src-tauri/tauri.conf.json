@@ -40,7 +40,9 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "lib/libmpv-2.dll"
+      "lib/libmpv-2.dll",
+      "lib/ffmpeg.exe",
+      "lib/ffmpeg-LICENSE.txt"
     ],
     "shortDescription": "Share one drive with your own devices.",
     "longDescription": "Basalt Host shares a single drive with your own devices over the local network. Pick a drive, and paired devices find it themselves \u2014 no addresses to type.",

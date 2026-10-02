@@ -187,6 +187,11 @@ impl Host {
         };
 
         let state_root = config.vault_path.clone();
+        let (convert_enabled, convert_at_once, convert_measured) = (
+            config.convert_enabled,
+            config.convert_at_once,
+            config.convert_measured.clone(),
+        );
         let converter_dir = config_path
             .parent()
             .unwrap_or(std::path::Path::new("."))
@@ -214,7 +219,11 @@ impl Host {
             scanning: std::sync::atomic::AtomicBool::new(false),
             rescan_wanted: std::sync::atomic::AtomicBool::new(false),
             subtitles: std::sync::Mutex::new(Arc::default()),
-            converter: crate::convert::Converter::new(converter_dir),
+            converter: {
+                let converter = crate::convert::Converter::new(converter_dir);
+                converter.restore(convert_enabled, convert_at_once, convert_measured);
+                converter
+            },
             arrived_during_scan: std::sync::Mutex::new(Vec::new()),
             last_scan: std::sync::Mutex::new(None),
             progress: std::sync::Mutex::new(progress),
@@ -1679,7 +1688,56 @@ impl Host {
             sections,
             serving,
             problem: None,
+            conversion: self.conversion_status(),
         }
+    }
+
+    /// Video conversion, for the window.
+    pub fn conversion_status(&self) -> crate::ui::ConversionStatus {
+        let converter = &self.converter;
+        let capability = converter.detected();
+        crate::ui::ConversionStatus {
+            enabled: converter.enabled(),
+            available: capability.as_ref().is_some_and(|c| c.can_convert()),
+            detected: capability.is_some(),
+            measured: converter.measured(),
+            measuring: converter.is_measuring(),
+            by_hand: converter.by_hand(),
+            limit: converter.limit(),
+            active: converter.active(),
+        }
+    }
+
+    /// Switches converting video on or off, and keeps the choice.
+    pub fn set_conversion_enabled(&self, enabled: bool) -> Result<()> {
+        self.converter.set_enabled(enabled);
+        self.config.lock().expect("config lock").convert_enabled = enabled;
+        self.persist()
+    }
+
+    /// Conversions at once, chosen by hand, or None to go by what was
+    /// measured. Kept.
+    pub fn set_conversion_at_once(&self, at_once: Option<u32>) -> Result<()> {
+        self.converter.set_by_hand(at_once);
+        self.config.lock().expect("config lock").convert_at_once = self.converter.by_hand();
+        self.persist()
+    }
+
+    /// Measures what this machine can convert, in the background, and keeps
+    /// the answer.
+    pub fn measure_conversion(self: &Arc<Self>) {
+        let host = Arc::clone(self);
+        tokio::spawn(async move {
+            match host.converter.measure().await {
+                Ok(measured) => {
+                    host.config.lock().expect("config lock").convert_measured = Some(measured);
+                    if let Err(e) = host.persist() {
+                        tracing::warn!("could not keep what conversion measured: {e}");
+                    }
+                }
+                Err(e) => tracing::warn!("could not measure video conversion: {e}"),
+            }
+        });
     }
 
     /// What the host's own window shows about the index.
@@ -2091,6 +2149,16 @@ pub async fn serve(server: BoundServer) -> Result<()> {
                     tracing::info!("no ffmpeg here, so video is not converted")
                 }
                 None => tracing::info!("ffmpeg is here but nothing can convert with it"),
+            }
+            // Measured once, the first time there is something to measure,
+            // so the window can say how many devices it serves at once.
+            // Only an installed host: a test or a development copy using the
+            // computer's own ffmpeg would spend minutes of every run on it.
+            if capability.can_convert()
+                && host.converter.installed()
+                && host.converter.measured().is_none()
+            {
+                host.measure_conversion();
             }
         });
     }
@@ -2645,7 +2713,16 @@ where
             }
             let mut conversion = host
                 .converter
-                .start(&file, req.start.max(0.0))
+                .start(
+                    &file,
+                    req.start.max(0.0),
+                    &session
+                        .device
+                        .as_ref()
+                        .map(|d| d.name.clone())
+                        .unwrap_or_default(),
+                    &req.path,
+                )
                 .await
                 .map_err(refused)?;
             reply(

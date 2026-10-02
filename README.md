@@ -253,7 +253,7 @@ Neither happens until you turn it on in Basalt Host.
 ```
 rustup toolchain install stable          # Rust 1.98+ MSVC
 cd apps/client/src-tauri && pwsh -File fetch-libmpv.ps1
-cd apps/host/src-tauri   && pwsh -File fetch-libmpv.ps1
+cd apps/host/src-tauri   && pwsh -File fetch-libmpv.ps1 && pwsh -File fetch-ffmpeg.ps1
 cd apps/client && npm install && npx tauri build
 cd apps/host   && npm install && npx tauri build
 ```
@@ -262,6 +262,10 @@ cd apps/host   && npm install && npx tauri build
 and verifies the wrapper's checksum. They are not in the repository because
 `libmpv-2.dll` is 96 MB. The host uses the same libmpv to make thumbnails of
 videos; its script copies the client's rather than downloading it again.
+
+`fetch-ffmpeg.ps1` puts ffmpeg into the host's `src-tauri/lib/`, checked
+against the checksum its builder publishes. The host uses it to convert video
+for a device that cannot play a file itself.
 
 The host recognises films against a catalogue of every film and series title
 on Wikidata, bundled so that it works offline and sends nothing anywhere. It is

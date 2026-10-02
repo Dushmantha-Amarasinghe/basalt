@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Check, Film, Image as ImageIcon, Music, Pencil, RefreshCw, Tv, Video } from 'lucide-react'
 import type { HostStatus, Sections } from '@/lib/api'
 import { About } from './About'
+import { ConversionPanel, conversionDetail } from './ConversionPanel'
 import { Switch } from './ui/Switch'
 import { cn, formatAgo } from '@/lib/utils'
 
@@ -28,6 +29,9 @@ export function SettingsPanel({
   onTmdbKey,
   onSections,
   onRename,
+  onConversion,
+  onConversionAtOnce,
+  onMeasureConversion,
   build,
   onOpenLog,
 }: {
@@ -40,6 +44,9 @@ export function SettingsPanel({
   onTmdbKey: (key: string) => void
   onSections: (sections: Sections) => void
   onRename: (name: string) => void
+  onConversion: (enabled: boolean) => void
+  onConversionAtOnce: (atOnce: number | null) => void
+  onMeasureConversion: () => void
   /** Which build this is, for telling one install from another. */
   build: string
   onOpenLog: () => void
@@ -103,6 +110,30 @@ export function SettingsPanel({
               <Artwork status={status} onPosters={onPosters} onSave={onTmdbKey} />
             </>
           ) : null
+        }
+      />
+
+      <Row
+        onToggle={
+          status.conversion.available ? () => onConversion(!status.conversion.enabled) : undefined
+        }
+        title="Convert video for devices that can’t play it"
+        detail={conversionDetail(status.conversion)}
+        control={
+          status.conversion.available ? (
+            <Switch
+              checked={status.conversion.enabled}
+              onChange={onConversion}
+              label="Convert video for devices that can’t play it"
+            />
+          ) : undefined
+        }
+        extra={
+          <ConversionPanel
+            conversion={status.conversion}
+            onAtOnce={onConversionAtOnce}
+            onMeasure={onMeasureConversion}
+          />
         }
       />
 

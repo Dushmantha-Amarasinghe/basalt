@@ -93,6 +93,34 @@ export interface HostStatus {
   serving: boolean
   /** Why sharing stopped, when it has. */
   problem: string | null
+  /** Converting video for devices that cannot play it. */
+  conversion: ConversionStatus
+}
+
+/** What a machine was measured to manage. */
+export interface ConversionMeasured {
+  /** What converted: "NVIDIA graphics". */
+  by: string
+  /** 4K films it converts at once and keeps up. */
+  atOnce: number
+  /** How much faster than real time one runs. */
+  speed: number
+  at: number
+}
+
+export interface ConversionStatus {
+  enabled: boolean
+  /** Has something to convert with. */
+  available: boolean
+  /** Has been looked at yet. */
+  detected: boolean
+  measured: ConversionMeasured | null
+  measuring: boolean
+  /** Chosen by hand; null goes by what was measured. */
+  byHand: number | null
+  /** As it stands. */
+  limit: number
+  active: { device: string; file: string; since: number }[]
 }
 
 export interface DriveView {
@@ -219,6 +247,10 @@ export const api = {
   rescanLibrary: (): Promise<HostStatus> => call('rescan_library'),
   setPosters: (enabled: boolean): Promise<HostStatus> =>
     call('set_posters', { enabled }),
+  setConversion: (enabled: boolean): Promise<HostStatus> => call('set_conversion', { enabled }),
+  setConversionAtOnce: (atOnce: number | null): Promise<HostStatus> =>
+    call('set_conversion_at_once', { atOnce }),
+  measureConversion: (): Promise<HostStatus> => call('measure_conversion'),
   setTmdbKey: (key: string): Promise<HostStatus> => call('set_tmdb_key', { key }),
   resetProfilePin: (id: string): Promise<HostStatus> => call('reset_profile_pin', { id }),
   removeProfile: (id: string): Promise<HostStatus> => call('remove_profile', { id }),
@@ -265,6 +297,22 @@ const sample: {
     vault: null,
     addresses: ['192.168.1.20'],
     deviceCount: 3,
+    conversion: {
+      enabled: true,
+      available: true,
+      detected: true,
+      measured: { by: 'Intel graphics', atOnce: 2, speed: 3.4, at: Math.floor(Date.now() / 1000) - 86400 },
+      measuring: false,
+      byHand: null,
+      limit: 2,
+      active: [
+        {
+          device: 'Pixel 8',
+          file: 'Shows/Northwind/Season 01/Northwind S01E03.mkv',
+          since: Math.floor(Date.now() / 1000) - 12 * 60,
+        },
+      ],
+    },
     library: {
       enabled: true,
       scanning: false,
@@ -488,6 +536,29 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
           sample.status.library.scanning = false
           sample.status.library.scannedAt = Math.floor(Date.now() / 1000)
         }, 2500)
+        return sample.status
+      case 'set_conversion':
+        sample.status.conversion.enabled = Boolean(args?.enabled)
+        return sample.status
+      case 'set_conversion_at_once': {
+        const atOnce = (args?.atOnce as number | null) ?? null
+        sample.status.conversion.byHand = atOnce
+        sample.status.conversion.limit = atOnce ?? sample.status.conversion.measured?.atOnce ?? 1
+        return sample.status
+      }
+      case 'measure_conversion':
+        sample.status.conversion.measuring = true
+        // Finishes on its own, as the real one does.
+        setTimeout(() => {
+          sample.status.conversion.measuring = false
+          sample.status.conversion.measured = {
+            by: 'Intel graphics',
+            atOnce: 2,
+            speed: 3.4,
+            at: Math.floor(Date.now() / 1000),
+          }
+          if (sample.status.conversion.byHand === null) sample.status.conversion.limit = 2
+        }, 3000)
         return sample.status
       case 'set_posters':
         sample.status.library.posters = Boolean(args?.enabled)

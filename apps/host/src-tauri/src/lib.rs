@@ -222,6 +222,30 @@ async fn rescan_library(state: State<'_, AppState>) -> Answer<HostStatus> {
     status(state).await
 }
 
+/// Switches converting video for devices that cannot play it on or off.
+#[tauri::command]
+async fn set_conversion(state: State<'_, AppState>, enabled: bool) -> Answer<HostStatus> {
+    state.host.set_conversion_enabled(enabled)?;
+    status(state).await
+}
+
+/// Conversions at once, chosen by hand; none to go by what was measured.
+#[tauri::command]
+async fn set_conversion_at_once(
+    state: State<'_, AppState>,
+    at_once: Option<u32>,
+) -> Answer<HostStatus> {
+    state.host.set_conversion_at_once(at_once)?;
+    status(state).await
+}
+
+/// Measures again what this machine can convert, in the background.
+#[tauri::command]
+async fn measure_conversion(state: State<'_, AppState>) -> Answer<HostStatus> {
+    state.host.measure_conversion();
+    status(state).await
+}
+
 /// Stores the TMDb key and fetches whatever artwork it unlocks.
 ///
 /// The key only ever travels inwards. `status` reports whether one is set, not
@@ -594,6 +618,14 @@ pub fn run() {
                 }
             }
             let host = Host::new(config, config_path)?;
+            // ffmpeg for converting video, which the installer puts beside
+            // libmpv. In development it is wherever the computer has one.
+            if let Ok(dir) = app.path().resource_dir() {
+                let ffmpeg = dir.join("lib").join("ffmpeg.exe");
+                if ffmpeg.exists() {
+                    host.converter.use_ffmpeg(ffmpeg);
+                }
+            }
             tracing::info!("vault open");
 
             let serving = Arc::new(AtomicBool::new(false));
@@ -699,6 +731,9 @@ pub fn run() {
             set_library_enabled,
             rescan_library,
             set_posters,
+            set_conversion,
+            set_conversion_at_once,
+            measure_conversion,
             set_tmdb_key,
             reset_profile_pin,
             remove_profile,

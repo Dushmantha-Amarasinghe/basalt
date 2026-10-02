@@ -67,6 +67,31 @@ pub struct HostStatus {
     /// running, most likely — would otherwise sit there looking healthy while
     /// no client could ever reach it.
     pub problem: Option<String>,
+    /// Converting video for devices that cannot play it.
+    pub conversion: ConversionStatus,
+}
+
+/// Video conversion, as the host's window shows it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversionStatus {
+    /// Switched on in the settings.
+    pub enabled: bool,
+    /// Whether this machine has anything to convert with. False until it
+    /// has been looked at, which takes a few seconds after starting.
+    pub available: bool,
+    /// Whether it has been looked at yet.
+    pub detected: bool,
+    /// What was measured, once it has been.
+    pub measured: Option<crate::convert::Measured>,
+    /// Measuring now.
+    pub measuring: bool,
+    /// At once, chosen by hand; None means as measured.
+    pub by_hand: Option<u32>,
+    /// At once, as it stands: by hand, or as measured.
+    pub limit: u32,
+    /// What is being converted now, and for whom.
+    pub active: Vec<crate::convert::Active>,
 }
 
 /// A profile as the host's window shows it: never its PIN.
@@ -322,11 +347,22 @@ mod tests {
             sections: basalt_proto::msg::Sections::default(),
             serving: true,
             problem: None,
+            conversion: ConversionStatus {
+                enabled: true,
+                available: true,
+                detected: true,
+                measured: None,
+                measuring: false,
+                by_hand: None,
+                limit: 1,
+                active: Vec::new(),
+            },
         };
         assert_eq!(
             keys(&status),
             [
                 "addresses",
+                "conversion",
                 "deviceCount",
                 "hostId",
                 "hostName",
@@ -339,6 +375,27 @@ mod tests {
                 "serving",
                 "startWithWindows",
                 "vault",
+            ]
+        );
+        let conversion = serde_json::to_value(&status.conversion).unwrap();
+        let mut fields: Vec<&str> = conversion
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        fields.sort();
+        assert_eq!(
+            fields,
+            [
+                "active",
+                "available",
+                "byHand",
+                "detected",
+                "enabled",
+                "limit",
+                "measured",
+                "measuring"
             ]
         );
     }

@@ -269,6 +269,15 @@ export function App(): React.JSX.Element {
                     onLibrary={(enabled) => {
                       void api.setLibraryEnabled(enabled).then(apply)
                     }}
+                    onConversion={(enabled) => {
+                      void api.setConversion(enabled).then(apply)
+                    }}
+                    onConversionAtOnce={(atOnce) => {
+                      void api.setConversionAtOnce(atOnce).then(apply)
+                    }}
+                    onMeasureConversion={() => {
+                      void api.measureConversion().then(apply)
+                    }}
                     onRescan={() => {
                       void api.rescanLibrary().then(apply)
                     }}

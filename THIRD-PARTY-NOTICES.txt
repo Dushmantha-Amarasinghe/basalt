@@ -6,8 +6,18 @@ License v3.0. It bundles and links to the components below. Each remains
 under its own licence, and nothing here overrides those terms.
 
 
-BUNDLED BINARIES (shipped inside the client installer and the Android app)
---------------------------------------------------------------------------
+BUNDLED BINARIES (shipped inside the installers and the Android app)
+--------------------------------------------------------------------
+
+FFmpeg  (ffmpeg.exe)                            GPL-3.0-or-later
+  https://ffmpeg.org  ·  https://www.gyan.dev/ffmpeg/builds/
+  Converts video as it is watched, for a device that cannot play a file
+  itself. Shipped inside the host installer as `ffmpeg.exe`, the unmodified
+  "essentials" build of FFmpeg 9.0.2 by gyan.dev, run as a separate program.
+  Its licence text is installed beside it as `ffmpeg-LICENSE.txt`. The
+  complete source of this build is FFmpeg 9.0.2,
+  https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz, with the libraries and
+  versions gyan.dev lists for the build at https://www.gyan.dev/ffmpeg/builds/.
 
 libmpv  (mpv)                                   LGPL-2.1-or-later
   https://mpv.io  ·  https://github.com/mpv-player/mpv

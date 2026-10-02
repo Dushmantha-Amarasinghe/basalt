@@ -24,7 +24,9 @@ export interface ConversionStatus {
 const cannot = new Map<string, NotConverted>()
 
 export function rememberCannotConvert(host: string, why: NotConverted): void {
-  if (why === 'unable' || why === 'outdated') cannot.set(host, why)
+  // Switched off is not remembered: it can be switched back on at any time,
+  // and asking costs a moment.
+  if (why === 'unable' || why === 'outdated' || why === 'slow') cannot.set(host, why)
 }
 
 export function cannotConvert(host: string): NotConverted | null {
@@ -32,13 +34,17 @@ export function cannotConvert(host: string): NotConverted | null {
 }
 
 /** Why the host did not convert, when it did not. */
-export type NotConverted = 'unable' | 'busy' | 'outdated' | 'failed'
+export type NotConverted = 'unable' | 'off' | 'slow' | 'busy' | 'outdated' | 'failed'
 
 export function whyNotConverted(status: ConversionStatus | null): NotConverted {
   if (!status) return 'failed'
   if (status.kind === 'unsupported') return 'outdated'
   if (status.kind === 'unavailable') {
-    return /already converting/i.test(status.error ?? '') ? 'busy' : 'unable'
+    const said = status.error ?? ''
+    if (/already converting/i.test(said)) return 'busy'
+    if (/switched off/i.test(said)) return 'off'
+    if (/too slow/i.test(said)) return 'slow'
+    return 'unable'
   }
   return 'failed'
 }
@@ -70,6 +76,8 @@ export function pictureNote(help: PictureHelp, device: 'phone' | 'computer'): [s
   }
   const because: Record<NotConverted, string> = {
     unable: ', and Basalt Host can’t convert video on its computer',
+    off: ', and video conversion is switched off in Basalt Host',
+    slow: ', and Basalt Host’s computer is too slow to convert it as you watch',
     busy: ', and Basalt Host is already converting for other devices',
     outdated: ', and Basalt Host needs updating to convert video',
     failed: ', and Basalt Host couldn’t convert this file',

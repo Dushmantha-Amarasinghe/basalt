@@ -15,6 +15,17 @@ describe('why the host did not convert', () => {
     expect(whyNotConverted({ by: null, error: 'update Basalt Host', kind: 'unsupported', at: 0 })).toBe('outdated')
     expect(whyNotConverted({ by: null, error: 'the video could not be converted: x', kind: 'error', at: 0 })).toBe('failed')
     expect(whyNotConverted(null)).toBe('failed')
+    expect(
+      whyNotConverted({ by: null, error: 'video conversion is switched off on this host', kind: 'unavailable', at: 0 }),
+    ).toBe('off')
+    expect(
+      whyNotConverted({
+        by: null,
+        error: "this host's computer is too slow to convert video as it is watched",
+        kind: 'unavailable',
+        at: 0,
+      }),
+    ).toBe('slow')
   })
 })
 
@@ -27,6 +38,10 @@ describe('a host that cannot convert', () => {
     expect(cannotConvert('host-b')).toBeNull()
     expect(cannotConvert('host-c')).toBe('outdated')
     expect(cannotConvert('host-d')).toBeNull()
+    rememberCannotConvert('host-e', 'off')
+    expect(cannotConvert('host-e')).toBeNull()
+    rememberCannotConvert('host-f', 'slow')
+    expect(cannotConvert('host-f')).toBe('slow')
   })
 })
 
