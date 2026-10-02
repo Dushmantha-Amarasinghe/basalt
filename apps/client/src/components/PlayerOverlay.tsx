@@ -166,12 +166,13 @@ export function PlayerOverlay({
   }, [])
 
   /**
-   * Puts the subtitle menu away. From the picture, the controls go too:
+   * Puts the subtitle or quality menu away. From the picture, the controls go too:
    * that click means back to the film, and they would otherwise sit there
    * for the idle time on top of it.
    */
   const dismissMenu = useCallback((hideControls: boolean) => {
     setMenu(false)
+    setQualityMenu(false)
     setOverBar(false)
     if (!hideControls) return
     if (idleTimer.current) clearTimeout(idleTimer.current)
@@ -1652,7 +1653,7 @@ export function PlayerOverlay({
             paused it, and the menu stayed, holding the controls up until
             somebody found the bar and clicked there instead.
           */}
-          {menu && (
+          {(menu || qualityMenu) && (
             <div
               className="absolute inset-0"
               onClick={() => {
@@ -1712,18 +1713,15 @@ export function PlayerOverlay({
 
             <AnimatePresence>
               {qualityMenu && help && (
-                <>
-                  <div className="absolute inset-0 z-[5]" onClick={() => setQualityMenu(false)} />
-                  <QualityMenu
-                    help={help}
-                    converted={mpv.converted}
-                    onChoose={(mode) => {
-                      setQualityMenu(false)
-                      void choosePicture(mode)
-                    }}
-                    onClose={() => setQualityMenu(false)}
-                  />
-                </>
+                <QualityMenu
+                  help={help}
+                  converted={mpv.converted}
+                  onChoose={(mode) => {
+                    setQualityMenu(false)
+                    void choosePicture(mode)
+                  }}
+                  onClose={() => setQualityMenu(false)}
+                />
               )}
             </AnimatePresence>
 
