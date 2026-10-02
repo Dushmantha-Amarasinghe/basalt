@@ -13,6 +13,13 @@
 //!    the video's.
 //! 3. **A folder named after the video.** `Subs/Arrival (2016)/3_English.srt`,
 //!    which is how several rippers lay it out.
+//! 4. **The same film or episode, anywhere on the drive.** A subtitle named
+//!    for the same title and year, or the same show, season and episode, is
+//!    matched wherever it is: `Downloads/Arrival.2016.720p.WEB.en.srt` for
+//!    `Films/Arrival (2016)/Arrival.2016.1080p.BluRay.mkv`. Nobody should have
+//!    to move a subtitle next to its film for it to be found. Strict on
+//!    purpose: a film needs its year as well as its title, so `Home` the film
+//!    never takes a subtitle meant for somebody's home video.
 //!
 //! Deliberately *not* matched: any subtitle in the same folder when there is
 //! only one video. That rule reads well and is wrong exactly when it matters —
@@ -89,7 +96,23 @@ fn key(text: &str) -> String {
 /// because `en` on a menu is worse than `English`.
 pub fn label_for(sub_path: &str, video_stem: &str) -> String {
     let name = stem(sub_path);
-    let extra = suffix_after(name, video_stem)
+    let after = suffix_after(name, video_stem);
+
+    // Named for a different release of the same thing, as a subtitle found by
+    // identity is: `Arrival.2016.720p.WEB.en` beside a 1080p film. The whole
+    // name would make a label of the release tags; the language in it is the
+    // part worth showing.
+    if after.is_none() {
+        let known: Vec<&str> = name
+            .split(|c: char| !c.is_alphanumeric())
+            .filter_map(|w| known_word(&w.to_ascii_lowercase()))
+            .collect();
+        if !known.is_empty() {
+            return known.join(" ");
+        }
+    }
+
+    let extra = after
         .map(|rest| rest.trim_matches(|c: char| !c.is_alphanumeric()))
         .filter(|rest| !rest.is_empty())
         .unwrap_or(name);
@@ -148,6 +171,14 @@ fn suffix_after<'a>(name: &'a str, video_stem: &str) -> Option<&'a str> {
 
 /// Turns a language code into a name, and leaves anything else alone.
 fn expand(word: &str) -> String {
+    match known_word(word) {
+        Some(named) => named.to_string(),
+        None => capitalise(word),
+    }
+}
+
+/// A language, or a subtitle kind, that a word in a name stands for.
+fn known_word(word: &str) -> Option<&'static str> {
     let named = match word {
         "en" | "eng" | "english" => "English",
         "es" | "spa" | "spanish" => "Spanish",
@@ -172,9 +203,9 @@ fn expand(word: &str) -> String {
         "tr" | "tur" | "turkish" => "Turkish",
         "sdh" => "SDH",
         "forced" => "forced",
-        other => return capitalise(other),
+        _ => return None,
     };
-    named.to_string()
+    Some(named)
 }
 
 fn capitalise(word: &str) -> String {
@@ -185,24 +216,214 @@ fn capitalise(word: &str) -> String {
     }
 }
 
+/// How many letters of a name the index files it under.
+const PREFIX: usize = 4;
+
+/// Every subtitle file on a drive, filed so that one video's can be found
+/// without looking at all of them.
+///
+/// The matching used to compare every video with every subtitle: a library
+/// of four thousand episodes and as many subtitles was sixteen million
+/// comparisons a scan. Filed by folder, by the start of the name and by what
+/// they are for, each video looks only at the few that could be its own.
+#[derive(Debug, Default, Clone)]
+pub struct SubtitleIndex {
+    paths: Vec<String>,
+    /// By the folder each is in.
+    by_folder: HashMap<String, Vec<usize>>,
+    /// Those inside a `Subs` folder, by every folder above that one, which is
+    /// where a video they belong to would be.
+    by_anchor: HashMap<String, Vec<usize>>,
+    /// By the first letters of the name, for rule 1.
+    by_prefix: HashMap<String, Vec<usize>>,
+    /// By the film or episode the name says it is for, with its year.
+    by_identity: HashMap<String, Vec<(usize, Option<u16>)>>,
+    /// By the title alone, for offering others for the same thing by hand.
+    by_title: HashMap<String, Vec<usize>>,
+}
+
+impl SubtitleIndex {
+    pub fn new(paths: Vec<String>) -> Self {
+        let mut index = SubtitleIndex {
+            paths,
+            ..SubtitleIndex::default()
+        };
+        for (i, path) in index.paths.iter().enumerate() {
+            let dir = folder(path);
+            index.by_folder.entry(dir.to_string()).or_default().push(i);
+
+            // `A/B/Subs/X/3_English.srt` is for a video in `A/B`, or above.
+            let segments: Vec<&str> = dir.split('/').collect();
+            if let Some(at) = segments.iter().position(|s| is_sub_folder(s)) {
+                for depth in 0..=at {
+                    let anchor = segments[..depth].join("/");
+                    index.by_anchor.entry(anchor).or_default().push(i);
+                }
+            }
+
+            let name = key(stem(path));
+            if name.len() >= PREFIX {
+                index
+                    .by_prefix
+                    .entry(name[..PREFIX].to_string())
+                    .or_default()
+                    .push(i);
+            }
+
+            if let Some(parsed) = parsed_subtitle(path) {
+                if let Some(id) = identity(&parsed) {
+                    index
+                        .by_identity
+                        .entry(id)
+                        .or_default()
+                        .push((i, parsed.year));
+                }
+                let title = key(&parsed.title);
+                if !title.is_empty() {
+                    index.by_title.entry(title).or_default().push(i);
+                }
+            }
+        }
+        index
+    }
+
+    pub fn len(&self) -> usize {
+        self.paths.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+
+    pub fn paths(&self) -> &[String] {
+        &self.paths
+    }
+
+    /// The subtitles that could belong to `video`, by any rule.
+    fn candidates_for(&self, video: &str, parsed: Option<&parse::Parsed>) -> Vec<usize> {
+        let video_folder = folder(video);
+        let video_key = key(stem(video));
+        let mut found: Vec<usize> = Vec::new();
+        let mut take = |list: Option<&Vec<usize>>| {
+            if let Some(list) = list {
+                found.extend(list);
+            }
+        };
+        take(self.by_folder.get(video_folder));
+        take(self.by_anchor.get(video_folder));
+        if video_key.len() >= PREFIX {
+            take(self.by_prefix.get(&video_key[..PREFIX]));
+        }
+        if let Some(parsed) = parsed
+            && let Some(id) = identity(parsed)
+            && let Some(list) = self.by_identity.get(&id)
+        {
+            for &(i, year) in list {
+                // Two shows of the same name are told apart by their years,
+                // when both names carry one.
+                let same_year = match (parsed.year, year) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => true,
+                };
+                if same_year {
+                    found.push(i);
+                }
+            }
+        }
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
+    /// Other subtitle files somebody might mean for `video`: beside it, or
+    /// for something of the same title. For choosing one by hand, so loose
+    /// on purpose; the closest first.
+    pub fn others_for(&self, video: &str, exclude: &[String], limit: usize) -> Vec<String> {
+        let mut near = self.candidates_for(video, parse::parse(video).as_ref());
+        if let Some(parsed) = parse::parse(video)
+            && let Some(list) = self.by_title.get(&key(&parsed.title))
+        {
+            near.extend(list);
+        }
+        let mut seen = std::collections::HashSet::new();
+        near.into_iter()
+            .filter(|i| seen.insert(*i))
+            .map(|i| self.paths[i].clone())
+            .filter(|p| !exclude.contains(p))
+            .take(limit)
+            .collect()
+    }
+}
+
+/// What a subtitle's name says it is for, read as a video's name would be.
+///
+/// The parser reads videos, so the subtitle is read as the video it would
+/// sit beside: `Arrival.2016.en.srt` as `Arrival.2016.en.mkv`.
+fn parsed_subtitle(path: &str) -> Option<parse::Parsed> {
+    let (without, _) = path.rsplit_once('.')?;
+    parse::parse(&format!("{without}.mkv"))
+}
+
+/// A film or episode, as a key: the title, and the year for a film or the
+/// season and episode for an episode. None when there is too little to be
+/// sure: a film without a year, or an episode without a number.
+fn identity(parsed: &parse::Parsed) -> Option<String> {
+    let title = key(&parsed.title);
+    if title.is_empty() {
+        return None;
+    }
+    if parsed.is_episode() {
+        let (season, episode) = (parsed.season?, parsed.episode?);
+        if episode == 0 {
+            return None;
+        }
+        Some(format!("e/{title}/{season}/{episode}"))
+    } else {
+        Some(format!("f/{title}/{}", parsed.year?))
+    }
+}
+
 /// Picks the subtitles belonging to one video out of everything found.
 ///
 /// `candidates` is every subtitle file on the drive, vault-relative.
 pub fn for_video(video: &str, candidates: &[String]) -> Vec<Subtitle> {
+    for_video_in(video, &[&SubtitleIndex::new(candidates.to_vec())])
+}
+
+/// The same, from indexes already made: the drive's, and any made for the
+/// moment, such as the files beside a video that has just arrived.
+pub fn for_video_in(video: &str, indexes: &[&SubtitleIndex]) -> Vec<Subtitle> {
     let video_stem = stem(video);
     let video_key = key(video_stem);
     let video_folder = folder(video);
-    let episode = parse::parse(video).filter(|p| p.is_episode());
+    let parsed = parse::parse(video);
+    let episode = parsed.as_ref().filter(|p| p.is_episode());
+    let video_id = parsed.as_ref().and_then(identity);
 
     let mut found: Vec<Subtitle> = Vec::new();
-    for candidate in candidates {
-        if !belongs(candidate, video, &video_key, video_folder, episode.as_ref()) {
-            continue;
+    for index in indexes {
+        for i in index.candidates_for(video, parsed.as_ref()) {
+            let candidate = &index.paths[i];
+            let by_identity = || {
+                video_id.is_some()
+                    && parsed_subtitle(candidate)
+                        .and_then(|p| identity(&p).map(|id| (id, p.year)))
+                        .is_some_and(|(id, year)| {
+                            Some(&id) == video_id.as_ref()
+                                && match (parsed.as_ref().and_then(|p| p.year), year) {
+                                    (Some(a), Some(b)) => a == b,
+                                    _ => true,
+                                }
+                        })
+            };
+            if !belongs(candidate, video, &video_key, video_folder, episode) && !by_identity() {
+                continue;
+            }
+            found.push(Subtitle {
+                label: label_for(candidate, video_stem),
+                path: candidate.clone(),
+            });
         }
-        found.push(Subtitle {
-            label: label_for(candidate, video_stem),
-            path: candidate.clone(),
-        });
     }
 
     // Stable, and by label so a menu reads alphabetically.
@@ -270,9 +491,10 @@ fn belongs(
 /// each, and matching them pairwise would be nine hundred comparisons for
 /// what is really thirty.
 pub fn map_all(videos: &[String], candidates: &[String]) -> HashMap<String, Vec<Subtitle>> {
+    let index = SubtitleIndex::new(candidates.to_vec());
     videos
         .iter()
-        .map(|video| (video.clone(), for_video(video, candidates)))
+        .map(|video| (video.clone(), for_video_in(video, &[&index])))
         .filter(|(_, subs)| !subs.is_empty())
         .collect()
 }
@@ -287,6 +509,63 @@ mod tests {
 
     fn labels(subs: &[Subtitle]) -> Vec<&str> {
         subs.iter().map(|s| s.label.as_str()).collect()
+    }
+
+    #[test]
+    fn the_same_film_is_found_anywhere_on_the_drive() {
+        let subs = for_video(
+            "Films/Arrival (2016)/Arrival.2016.1080p.BluRay.x264-GROUP.mkv",
+            &paths(&[
+                "Downloads/Arrival.2016.720p.WEB-DL.en.srt",
+                "Downloads/Arrival.2016.720p.WEB-DL.es.srt",
+                // Another film of the same name, from another year.
+                "Downloads/Arrival.1996.DVDRip.en.srt",
+                // No year: too little to be sure.
+                "Downloads/Arrival.en.srt",
+            ]),
+        );
+        assert_eq!(labels(&subs), ["English", "Spanish"]);
+        assert!(subs.iter().all(|s| s.path.contains("2016")));
+    }
+
+    #[test]
+    fn the_same_episode_is_found_anywhere_on_the_drive() {
+        let subs = for_video(
+            "TV/Northwind/Season 01/Northwind.S01E02.1080p.WEB.mkv",
+            &paths(&[
+                "Subtitles/northwind s01e02 english.srt",
+                "Subtitles/Northwind.S01E03.en.srt",
+                "Subtitles/Another.Show.S01E02.en.srt",
+            ]),
+        );
+        assert_eq!(labels(&subs), ["English"]);
+        assert_eq!(subs[0].path, "Subtitles/northwind s01e02 english.srt");
+    }
+
+    #[test]
+    fn two_shows_of_one_name_are_told_apart_by_their_years() {
+        let subs = for_video(
+            "TV/Harbour (2011)/Season 01/Harbour.2011.S01E01.mkv",
+            &paths(&[
+                "Subtitles/Harbour.2004.S01E01.en.srt",
+                "Subtitles/Harbour.2011.S01E01.en.srt",
+            ]),
+        );
+        assert_eq!(subs.len(), 1);
+        assert!(subs[0].path.contains("2011"));
+    }
+
+    #[test]
+    fn others_offered_by_hand_are_the_nearest_first() {
+        let index = SubtitleIndex::new(paths(&[
+            "Films/Arrival (2016)/something.srt",
+            "Downloads/Arrival.2016.en.srt",
+            "Elsewhere/Unrelated.Film.2001.srt",
+        ]));
+        let others = index.others_for("Films/Arrival (2016)/Arrival.2016.mkv", &[], 10);
+        assert_eq!(others[0], "Films/Arrival (2016)/something.srt");
+        assert!(others.contains(&"Downloads/Arrival.2016.en.srt".to_string()));
+        assert!(!others.iter().any(|p| p.contains("Unrelated")));
     }
 
     #[test]

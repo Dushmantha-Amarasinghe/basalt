@@ -734,6 +734,14 @@ impl Basalt {
         Ok(lease.check(result)?.stars)
     }
 
+    /// The subtitles for one video, and others that might be meant for it.
+    pub async fn subtitles(&self, path: &str) -> Result<basalt_proto::msg::SubtitlesResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.subtitles(path).await;
+        lease.check(result)
+    }
+
     fn current_host(&self) -> Option<KnownHost> {
         let id = self.status()?.host_id;
         self.store.lock().expect("store lock").find(&id).cloned()

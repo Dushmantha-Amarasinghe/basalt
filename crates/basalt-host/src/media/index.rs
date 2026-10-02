@@ -239,6 +239,9 @@ pub struct Walk {
     pub gathered: crate::media::collect::Gatherer,
     /// Partial uploads left long enough to sweep away, vault-relative.
     pub stale_parts: Vec<String>,
+    /// Every subtitle file found, vault-relative, whether or not films are
+    /// being recognised: videos played from Files need them too.
+    pub subtitles: Vec<String>,
 }
 
 /// The whole walk: films, collections and leftovers, in one pass.
@@ -386,16 +389,18 @@ pub fn walk_within(
                         continue;
                     }
                     walk.gathered.note(&path, entry.size, entry.mtime);
-                    if !films || in_extras {
-                        continue;
-                    }
                     // Before the size floor: a subtitle is a few kilobytes,
                     // and the floor exists to keep home videos out of the
                     // library, not to throw away the subtitles for a film.
+                    // And before films are asked about at all: a video played
+                    // from Files has subtitles as much as one in the library.
                     if subs::is_subtitle(&entry.name) {
                         if subtitles.len() < MAX_SUBTITLES {
                             subtitles.push(path);
                         }
+                        continue;
+                    }
+                    if !films || in_extras {
                         continue;
                     }
                     if entry.size < MIN_FEATURE_BYTES {
@@ -415,6 +420,7 @@ pub fn walk_within(
     }
 
     walk.items = group(found, &subtitles);
+    walk.subtitles = subtitles;
     // Logged because this is the one expensive thing the host does, and when
     // somebody says it has stopped responding this line is what says whether a
     // scan was the reason.
@@ -435,11 +441,15 @@ pub fn walk_within(
 /// full scan stays what it is good at: noticing what went away.
 ///
 /// Returns the new index, or `None` when nothing in it changed.
+///
+/// `drive` is every subtitle the last scan found, so a film that arrives is
+/// matched with a subtitle anywhere on the drive, as a scan would match it.
 pub fn add(
     existing: &[LibraryItem],
     vault: &Vault,
     paths: &[String],
     catalog: Option<&Catalog>,
+    drive: &subs::SubtitleIndex,
 ) -> Option<Vec<LibraryItem>> {
     let mut grouping = Grouping::from_items(existing);
     let mut added = false;
@@ -462,7 +472,10 @@ pub fn add(
         let Some(parsed) = identify(path, catalog) else {
             continue;
         };
-        let tracks = subs::for_video(path, &subtitles_near(vault, path))
+        // Beside it now, which the last scan may not have seen, and anywhere
+        // else on the drive, which it did.
+        let near = subs::SubtitleIndex::new(subtitles_near(vault, path));
+        let tracks = subs::for_video_in(path, &[&near, drive])
             .into_iter()
             .map(track)
             .collect();
@@ -487,7 +500,7 @@ pub fn add(
 
 /// Subtitle files beside a video, and in the subtitle folders next to it —
 /// everywhere [`subs::for_video`] would look.
-fn subtitles_near(vault: &Vault, video: &str) -> Vec<String> {
+pub(crate) fn subtitles_near(vault: &Vault, video: &str) -> Vec<String> {
     use basalt_proto::msg::EntryKind;
 
     let join = |dir: &str, name: &str| {
@@ -1495,6 +1508,7 @@ mod tests {
             &vault_of(&dir),
             &["Shows/Northwind/Season 01/Northwind S01E02.mkv".to_string()],
             Some(&cat),
+            &subs::SubtitleIndex::default(),
         )
         .expect("the index changed");
 
@@ -1528,6 +1542,7 @@ mod tests {
                 "Semester 2025/Lecture 4-20251014 100532-Meeting Recording.mp4".to_string(),
             ],
             Some(&cat),
+            &subs::SubtitleIndex::default(),
         )
         .expect("the index changed");
         assert_eq!(titles(&after), ["Night Harbour"]);
@@ -1553,6 +1568,15 @@ mod tests {
             // Already in the index: filing it again changes nothing.
             "Shows/Northwind/Season 01/Northwind S01E01.mkv".to_string(),
         ];
-        assert!(add(&before, &vault_of(&dir), &paths, Some(&cat)).is_none());
+        assert!(
+            add(
+                &before,
+                &vault_of(&dir),
+                &paths,
+                Some(&cat),
+                &subs::SubtitleIndex::default()
+            )
+            .is_none()
+        );
     }
 }

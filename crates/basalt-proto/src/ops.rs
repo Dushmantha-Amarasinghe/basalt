@@ -120,6 +120,9 @@ pub enum Op {
     ProfileSignOut = 30,
     /// The starred files of the profile this connection acts for.
     Stars = 31,
+    /// The subtitle files for one video, wherever they are on the drive, and
+    /// others somebody might mean for it.
+    Subtitles = 32,
 }
 
 impl Op {
@@ -128,7 +131,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::Stars as u8;
+    pub const LAST: u8 = Op::Subtitles as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -163,6 +166,7 @@ impl Op {
             29 => Op::ProfileUse,
             30 => Op::ProfileSignOut,
             31 => Op::Stars,
+            32 => Op::Subtitles,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -304,6 +308,7 @@ mod tests {
             Op::ProfileUse,
             Op::ProfileSignOut,
             Op::Stars,
+            Op::Subtitles,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

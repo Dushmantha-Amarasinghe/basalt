@@ -413,6 +413,15 @@ async fn continue_as_device(state: State<'_, AppState>, always: bool) -> Answer<
     Ok(state.client.continue_as_device(always).await?)
 }
 
+/// The subtitles for one video, wherever they are on the drive.
+#[tauri::command]
+async fn subtitles_for(
+    state: State<'_, AppState>,
+    path: String,
+) -> Answer<basalt_proto::msg::SubtitlesResponse> {
+    Ok(state.client.subtitles(&path).await?)
+}
+
 /// The signed-in profile's stars, replaced first when `set` is given.
 #[tauri::command]
 async fn profile_stars(
@@ -1202,6 +1211,7 @@ pub fn run() {
             sign_out_profile,
             continue_as_device,
             profile_stars,
+            subtitles_for,
             download,
             upload,
             open_externally,

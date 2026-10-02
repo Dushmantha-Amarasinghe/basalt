@@ -424,6 +424,19 @@ impl Session {
         Ok(())
     }
 
+    /// The subtitles for one video, and others that might be meant for it.
+    pub async fn subtitles(&mut self, path: &str) -> Result<basalt_proto::msg::SubtitlesResponse> {
+        call_json(
+            &mut self.stream,
+            Op::Subtitles,
+            &basalt_proto::msg::SubtitlesRequest {
+                path: path.to_string(),
+            },
+        )
+        .await
+        .map_err(Into::into)
+    }
+
     /// A profile's stars, replaced first when `set` is given.
     pub async fn stars(
         &mut self,

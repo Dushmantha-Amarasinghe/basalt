@@ -1202,3 +1202,68 @@ async fn a_large_library_scans_quickly_and_travels_light() {
         "an unchanged library is not sent twice"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Subtitles for a video played from Files
+// ---------------------------------------------------------------------------
+
+// A video played from Files, with the library switched off, and its subtitle
+// nowhere near it: in Downloads, named for another release of the same film.
+// It used to get no subtitles at all, even one sitting right beside it.
+#[tokio::test]
+async fn a_video_from_files_gets_its_subtitles_wherever_they_are() {
+    let fixture = start_host().await;
+    std::fs::create_dir_all(fixture.vault_path("Downloads")).unwrap();
+    std::fs::create_dir_all(fixture.vault_path("Random/Stuff")).unwrap();
+    std::fs::write(
+        fixture.vault_path("Random/Stuff/Arrival.2016.1080p.BluRay.mkv"),
+        b"not really a film",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.vault_path("Downloads/Arrival.2016.720p.WEB-DL.en.srt"),
+        b"1\n00:00:01,000 --> 00:00:02,000\nHello\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.vault_path("Random/Stuff/Arrival.2016.1080p.BluRay.es.srt"),
+        b"1\n00:00:01,000 --> 00:00:02,000\nHola\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.vault_path("Downloads/Some.Other.Film.2001.en.srt"),
+        b"x",
+    )
+    .unwrap();
+    let client = fixture.paired_client().await;
+
+    // The one beside it is found whether or not a scan has run yet.
+    let early = client
+        .subtitles("Random/Stuff/Arrival.2016.1080p.BluRay.mkv")
+        .await
+        .unwrap();
+    assert!(early.tracks.iter().any(|t| t.label == "Spanish"));
+
+    // After a scan, the one in Downloads too.
+    fixture.host.start_scan();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let found = client
+            .subtitles("Random/Stuff/Arrival.2016.1080p.BluRay.mkv")
+            .await
+            .unwrap();
+        if found.tracks.len() == 2 || std::time::Instant::now() > deadline {
+            let labels: Vec<_> = found.tracks.iter().map(|t| t.label.as_str()).collect();
+            assert_eq!(labels, ["English", "Spanish"]);
+            assert!(
+                !found.others.iter().any(|o| o.path.contains("Other.Film")),
+                "an unrelated film's subtitle is not offered"
+            );
+            break;
+        }
+    }
+
+    // Outside the drive is refused, as everything is.
+    assert!(client.subtitles("../outside.mkv").await.is_err());
+}

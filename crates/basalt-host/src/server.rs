@@ -73,6 +73,9 @@ pub struct Host {
     scanning: std::sync::atomic::AtomicBool,
     /// A scan was asked for while one was already running.
     rescan_wanted: std::sync::atomic::AtomicBool,
+    /// Every subtitle file the last scan found, filed for matching. Shared
+    /// with videos that arrive between scans and those played from Files.
+    subtitles: std::sync::Mutex<Arc<crate::media::subs::SubtitleIndex>>,
     /// Videos that arrived while a scan was walking the drive.
     ///
     /// A scan replaces the whole index when it finishes, and one that had
@@ -204,6 +207,7 @@ impl Host {
             measuring: std::sync::atomic::AtomicBool::new(false),
             scanning: std::sync::atomic::AtomicBool::new(false),
             rescan_wanted: std::sync::atomic::AtomicBool::new(false),
+            subtitles: std::sync::Mutex::new(Arc::default()),
             arrived_during_scan: std::sync::Mutex::new(Vec::new()),
             last_scan: std::sync::Mutex::new(None),
             progress: std::sync::Mutex::new(progress),
@@ -931,12 +935,14 @@ impl Host {
                 (library.revision, library.items.clone())
             };
             let (vault, paths) = (Arc::clone(&vault), paths.clone());
+            let drive = self.drive_subtitles();
             let added = tokio::task::spawn_blocking(move || {
                 crate::media::index::add(
                     &existing,
                     &vault,
                     &paths,
                     basalt_catalog::Catalog::bundled(),
+                    &drive,
                 )
             })
             .await
@@ -1185,6 +1191,7 @@ impl Host {
             mut items,
             gathered,
             stale_parts,
+            subtitles,
         } = tokio::task::spawn_blocking(move || {
             crate::media::index::walk(&walked, films, now, &|| {
                 generation.load(std::sync::atomic::Ordering::SeqCst) == began_on
@@ -1196,6 +1203,7 @@ impl Host {
         if !self.still_serving(&serving) {
             return Ok(false);
         }
+        let drive_subtitles = Arc::new(crate::media::subs::SubtitleIndex::new(subtitles));
         // Unplugged during the walk, before anyone noticed: every folder
         // failed to read, which looks exactly like a drive with nothing on
         // it. Keeping that would empty the library until it was rescanned.
@@ -1257,6 +1265,12 @@ impl Host {
             }
             stored.replace(collections)
         };
+        {
+            let mut slot = self.subtitles.lock().expect("subtitles lock");
+            if self.still_serving(&serving) {
+                *slot = Arc::clone(&drive_subtitles);
+            }
+        }
 
         // Anything that landed while the walk was under way, filed on top.
         let arrived = std::mem::take(&mut *self.arrived_during_scan.lock().expect("arrivals lock"));
@@ -1275,12 +1289,14 @@ impl Host {
 
         if !arrived.is_empty() {
             let base = items.clone();
+            let drive = Arc::clone(&drive_subtitles);
             if let Some(with) = tokio::task::spawn_blocking(move || {
                 crate::media::index::add(
                     &base,
                     &vault,
                     &arrived,
                     basalt_catalog::Catalog::bundled(),
+                    &drive,
                 )
             })
             .await
@@ -1356,6 +1372,63 @@ impl Host {
         })
     }
 
+    /// The subtitles for one video, and others that might be meant for it.
+    ///
+    /// For a video played from Files, which the library may never have
+    /// filed. Matched by the library's own rules, against the files beside it
+    /// now and every subtitle the last scan found on the drive.
+    pub async fn subtitles_for(&self, path: &str) -> Result<SubtitlesResponse> {
+        /// Enough to choose from by hand; a drive can hold thousands.
+        const OTHERS: usize = 100;
+
+        let vault = self
+            .vault()
+            .await
+            .ok_or_else(|| HostError::Unavailable("no drive is being served".into()))?;
+        // Through the vault, so a path from the wire cannot reach outside it.
+        vault.resolve(path)?;
+        let drive = self.drive_subtitles();
+        let path = path.to_string();
+        tokio::task::spawn_blocking(move || {
+            use crate::media::subs::{SubtitleIndex, for_video_in};
+            let near = SubtitleIndex::new(crate::media::index::subtitles_near(&vault, &path));
+            let tracks: Vec<SubtitleTrack> = for_video_in(&path, &[&near, &drive])
+                .into_iter()
+                .map(|s| SubtitleTrack {
+                    path: s.path,
+                    label: s.label,
+                })
+                .collect();
+            let taken: Vec<String> = tracks.iter().map(|t| t.path.clone()).collect();
+            let mut others = near.others_for(&path, &taken, OTHERS);
+            for other in drive.others_for(&path, &taken, OTHERS) {
+                if others.len() >= OTHERS {
+                    break;
+                }
+                if !others.contains(&other) {
+                    others.push(other);
+                }
+            }
+            SubtitlesResponse {
+                tracks,
+                others: others
+                    .into_iter()
+                    .map(|path| SubtitleTrack {
+                        label: path.rsplit('/').next().unwrap_or(&path).to_string(),
+                        path,
+                    })
+                    .collect(),
+            }
+        })
+        .await
+        .map_err(|e| HostError::BadRequest(format!("subtitle matching panicked: {e}")))
+    }
+
+    /// Every subtitle file the last scan of this drive found.
+    fn drive_subtitles(&self) -> Arc<crate::media::subs::SubtitleIndex> {
+        Arc::clone(&self.subtitles.lock().expect("subtitles lock"))
+    }
+
     /// Whether the drive work began on is still the one served. Checked while
     /// holding the lock on whatever is about to be written.
     fn still_serving(&self, serving: &Serving) -> bool {
@@ -1426,6 +1499,8 @@ impl Host {
             &crate::media::quality::Measured::path_for(self.config_dir(), &root),
         );
         *self.stars.lock().expect("stars lock") = load_stars(&stars_path(self.config_dir(), &root));
+        // The last drive's subtitles are not this one's; its scan files them.
+        *self.subtitles.lock().expect("subtitles lock") = Arc::default();
 
         self.start_scan();
         self.announce(basalt_proto::msg::Change::Resynchronise)
@@ -2516,6 +2591,11 @@ where
                 },
             )
             .await?;
+        }
+
+        Op::Subtitles => {
+            let req: SubtitlesRequest = decode(payload)?;
+            reply(stream, &host.subtitles_for(&req.path).await?).await?;
         }
 
         Op::Collections => {

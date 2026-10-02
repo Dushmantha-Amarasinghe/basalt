@@ -92,6 +92,12 @@ export type Change =
   | { kind: 'library_changed' }
 
 /** A subtitle file the host found beside a film or an episode. */
+export interface SubtitlesFor {
+  tracks: SubtitleTrack[]
+  /** Labelled with their file names, for choosing by hand. */
+  others: SubtitleTrack[]
+}
+
 export interface SubtitleTrack {
   /** Vault-relative path. */
   path: string
@@ -389,6 +395,12 @@ export const api = {
     call<ProfileView>('sign_in_profile', { id, pin, remember }),
   signOutProfile: () => call<void>('sign_out_profile'),
   continueAsDevice: (always: boolean) => call<void>('continue_as_device', { always }),
+  /**
+   * The subtitles for one video, wherever they are on the drive, and others
+   * that might be meant for it. A host too old to know answers with an
+   * error, which the player takes as none.
+   */
+  subtitlesFor: (path: string) => call<SubtitlesFor>('subtitles_for', { path }),
   /** The signed-in profile's stars, replaced first when `set` is given. */
   profileStars: (set?: Star[]) => call<Star[]>('profile_stars', { set: set ?? null }),
   /** Every video, song and photo on the drive, sorted by the host. */
@@ -900,6 +912,8 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     case 'continue_as_device':
       mockIdentity = { profile: null, choose: false, ended: false, lastProfile: mockIdentity.lastProfile }
       return undefined as T
+    case 'subtitles_for':
+      return { tracks: [], others: [] } as T
     case 'profile_stars': {
       const set = args?.set as Star[] | null | undefined
       if (set) mockProfileStars = set

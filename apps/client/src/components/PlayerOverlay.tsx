@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   Gauge,
@@ -27,6 +27,7 @@ import {
 import type { MediaItem } from '@/lib/mockMedia'
 import { formatDuration } from '@/lib/mockMedia'
 import { api, inTauri, type SubtitleTrack } from '@/lib/api'
+import { chosenFor, mergeDriveSubtitles, otherSubtitles, rememberChosen } from '@/lib/driveSubtitles'
 import { onExternalFileDrop, pickSubtitleFile } from '@/lib/dialogs'
 import { useAsyncSubscription, useLatest } from '@/lib/useAsyncSubscription'
 import { PreviewPicture } from './PreviewPicture'
@@ -642,14 +643,51 @@ export function PlayerOverlay({
     [mpv],
   )
 
+  /**
+   * What the host says about this video's subtitles: null while it is being
+   * asked. Asked for every video, from Library or from Files; a host too old
+   * to know, or one that does not answer soon, leaves the library's list.
+   */
+  const [fromHost, setFromHost] = useState<{ tracks: SubtitleTrack[]; others: SubtitleTrack[] } | null>(
+    null,
+  )
+  const videoPath = item?.id ?? null
+  useEffect(() => {
+    setFromHost(null)
+    if (!videoPath || !inTauri()) {
+      setFromHost({ tracks: [], others: [] })
+      return undefined
+    }
+    let live = true
+    const none = { tracks: [], others: [] }
+    // Not waited for long: the subtitles chosen as a video opens wait on it.
+    const giveUp = setTimeout(() => live && setFromHost((was) => was ?? none), 2500)
+    api
+      .subtitlesFor(videoPath)
+      .then((found) => live && setFromHost(found))
+      .catch(() => live && setFromHost(none))
+    return () => {
+      live = false
+      clearTimeout(giveUp)
+    }
+  }, [videoPath])
+
+  const drive = useMemo(
+    () => mergeDriveSubtitles(subtitles, fromHost?.tracks ?? [], videoPath ? chosenFor(videoPath) : []),
+    [subtitles, fromHost, videoPath],
+  )
+  const moreOnDrive = useMemo(() => otherSubtitles(fromHost?.others ?? [], drive), [fromHost, drive])
+
   const addFromDrive = useCallback(
-    async (file: SubtitleTrack) => {
+    async (file: SubtitleTrack, byHand = false) => {
       // Through the proxy: mpv reaches the host the same way the video does.
       const url = await api.mediaUrl(file.path)
       if (url) await mpv.addSubtitle(url)
       savePref({ ...loadPref(), on: true })
+      // Picked from the others by hand: offered again next time this plays.
+      if (byHand && videoPath) rememberChosen(videoPath, file.path)
     },
-    [mpv],
+    [mpv, videoPath],
   )
 
   const addFromDisk = useCallback(async () => {
@@ -671,6 +709,8 @@ export function PlayerOverlay({
     if (!item || !mpv.started || settled.current === item.id) return
     // The track list arrives just after the picture does.
     if (mpv.tracks.length === 0) return
+    // And the host's answer about files on the drive, briefly waited for.
+    if (fromHost === null) return
     settled.current = item.id
     const pref = loadPref()
     const subs = mpv.tracks.filter((t) => t.kind === 'sub').map(describeSub)
@@ -680,7 +720,7 @@ export function PlayerOverlay({
       return
     }
     // Nothing in the file: a matching file beside it, if subtitles are on.
-    const beside = subs.length === 0 ? chooseDriveFile(subtitles, pref) : null
+    const beside = subs.length === 0 ? chooseDriveFile(drive, pref) : null
     if (beside) {
       void api.mediaUrl(beside.path).then((url) => {
         if (url) void mpv.addSubtitle(url)
@@ -688,7 +728,7 @@ export function PlayerOverlay({
     } else {
       void mpv.selectSubtitle(null)
     }
-  }, [item, mpv, mpv.started, mpv.tracks, subtitles])
+  }, [item, mpv, mpv.started, mpv.tracks, drive, fromHost])
 
   /**
    * Subtitle files dropped on the video, as any player takes them.
@@ -1260,9 +1300,10 @@ export function PlayerOverlay({
                   />
                   <SubtitleMenu
                     mpv={mpv}
-                    fromDrive={subtitles}
+                    fromDrive={drive}
+                    more={moreOnDrive}
                     onChoose={chooseTrack}
-                    onAddFromDrive={(file) => void addFromDrive(file)}
+                    onAddFromDrive={(file, byHand) => void addFromDrive(file, byHand)}
                     onAddFromDisk={() => void addFromDisk()}
                     onClose={() => setMenu(false)}
                   />
@@ -1396,6 +1437,7 @@ export function PlayerOverlay({
 function SubtitleMenu({
   mpv,
   fromDrive,
+  more,
   onChoose,
   onAddFromDrive,
   onAddFromDisk,
@@ -1403,9 +1445,11 @@ function SubtitleMenu({
 }: {
   mpv: Mpv
   fromDrive: SubtitleTrack[]
+  /** Others on the drive that might be meant for this video, by file name. */
+  more: SubtitleTrack[]
   /** A subtitle track chosen, or null for off. */
   onChoose: (id: number | null) => void
-  onAddFromDrive: (track: SubtitleTrack) => void
+  onAddFromDrive: (track: SubtitleTrack, byHand: boolean) => void
   onAddFromDisk: () => void
   onClose: () => void
 }): React.JSX.Element {
@@ -1417,6 +1461,10 @@ function SubtitleMenu({
   const notLoaded = fromDrive.filter(
     (f) => !loadedNames.has(f.path.split('/').pop() ?? f.path),
   )
+  const others = more.filter((f) => !loadedNames.has(f.path.split('/').pop() ?? f.path))
+  // A few at first: a drive can offer dozens, and the menu is for watching.
+  const [allOthers, setAllOthers] = useState(false)
+  const shownOthers = allOthers ? others : others.slice(0, 6)
 
   const nudge = (by: number): void => {
     void mpv.setSubtitleDelay(Math.round((mpv.subtitleDelay + by) * 100) / 100)
@@ -1449,10 +1497,15 @@ function SubtitleMenu({
         <Choice label="Off" active={mpv.subtitleId === null} onClick={() => onChoose(null)} />
         {inFile.map((track) => {
           const label = labelOf(describeSub(track))
+          // A file loaded from the drive is known to mpv by its file name;
+          // the name the drive gave it, such as English, says more.
+          const named = track.external
+            ? [...fromDrive, ...more].find((f) => (f.path.split('/').pop() ?? f.path) === track.title)
+            : undefined
           return (
             <Choice
               key={track.id}
-              label={label.name}
+              label={named && named.label !== track.title ? named.label : label.name}
               detail={label.detail}
               tags={label.tags}
               hint={track.external ? 'file' : undefined}
@@ -1471,9 +1524,33 @@ function SubtitleMenu({
                 label={file.label}
                 hint="load"
                 active={false}
-                onClick={() => onAddFromDrive(file)}
+                onClick={() => onAddFromDrive(file, false)}
               />
             ))}
+          </>
+        )}
+
+        {others.length > 0 && (
+          <>
+            <SectionTitle>More on the drive</SectionTitle>
+            {shownOthers.map((file) => (
+              <Choice
+                key={file.path}
+                label={file.label}
+                detail={file.path.split('/').slice(0, -1).join('/') || undefined}
+                hint="load"
+                active={false}
+                onClick={() => onAddFromDrive(file, true)}
+              />
+            ))}
+            {!allOthers && others.length > shownOthers.length && (
+              <button
+                onClick={() => setAllOthers(true)}
+                className="w-full px-4 py-1.5 text-left text-[11.5px] text-textFaint transition-colors duration-150 hover:text-text"
+              >
+                {others.length - shownOthers.length} more
+              </button>
+            )}
           </>
         )}
 

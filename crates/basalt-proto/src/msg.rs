@@ -729,6 +729,25 @@ pub struct SubtitleTrack {
     pub label: String,
 }
 
+/// The subtitles for one video, asked for when it is played.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtitlesRequest {
+    /// Vault-relative path of the video.
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtitlesResponse {
+    /// The subtitle files that belong to the video, by the same rules the
+    /// library uses.
+    pub tracks: Vec<SubtitleTrack>,
+    /// Others nearby or for something of the same title, labelled with their
+    /// file names, for choosing one by hand.
+    pub others: Vec<SubtitleTrack>,
+}
+
 /// Artwork for one item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtRequest {
