@@ -50,6 +50,24 @@ pub struct MediaProxy {
     /// is all Continue watching needs, and it is the difference between having
     /// a resume point for PotPlayer and having none.
     reach: Arc<Mutex<HashMap<String, Reach>>>,
+    /// How each video's latest conversion went: what is converting it, or
+    /// why it could not be. The player asks, to say which.
+    conversions: Conversions,
+}
+
+type Conversions = Arc<Mutex<HashMap<String, Conversion>>>;
+
+/// How a video's latest conversion went.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Conversion {
+    /// What is converting it, as people say it: "NVIDIA graphics".
+    pub by: Option<String>,
+    /// Why it could not be converted, in words.
+    pub error: Option<String>,
+    /// The kind of that failure, for the app to branch on: `unavailable` is
+    /// a host that cannot convert, or is converting all it can already.
+    pub kind: Option<String>,
 }
 
 /// The furthest a player has read into one file, and how big the file is.
@@ -80,6 +98,8 @@ impl MediaProxy {
         let accept_token = token.clone();
         let reach: Arc<Mutex<HashMap<String, Reach>>> = Arc::new(Mutex::new(HashMap::new()));
         let accept_reach = Arc::clone(&reach);
+        let conversions: Conversions = Arc::default();
+        let accept_conversions = Arc::clone(&conversions);
         tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
@@ -88,15 +108,30 @@ impl MediaProxy {
                 let client = Arc::clone(&client);
                 let token = accept_token.clone();
                 let reach = Arc::clone(&accept_reach);
+                let conversions = Arc::clone(&accept_conversions);
                 tokio::spawn(async move {
-                    if let Err(e) = handle(stream, client, token, reach).await {
+                    if let Err(e) = handle(stream, client, token, reach, conversions).await {
                         tracing::debug!("media proxy: {e}");
                     }
                 });
             }
         });
 
-        Ok(Self { addr, token, reach })
+        Ok(Self {
+            addr,
+            token,
+            reach,
+            conversions,
+        })
+    }
+
+    /// How the latest conversion of a video went, if it has been asked for.
+    pub fn conversion(&self, path: &str) -> Option<Conversion> {
+        self.conversions
+            .lock()
+            .expect("conversions lock")
+            .get(path)
+            .cloned()
     }
 
     /// How far a player has read into each file it has been handed.
@@ -135,6 +170,7 @@ async fn handle(
     client: Arc<Basalt>,
     token: String,
     reach: Arc<Mutex<HashMap<String, Reach>>>,
+    conversions: Conversions,
 ) -> Result<()> {
     let mut reader = BufReader::new(stream);
 
@@ -187,6 +223,20 @@ async fn handle(
                 respond_status(&mut stream, 404, "Not Found").await
             }
         };
+    }
+
+    // Converted on the host as it is watched: the same URL with
+    // `?convert=<seconds>`, for a device that cannot play the file itself.
+    if let Some(start) = convert_start(&target) {
+        return serve_conversion(
+            &mut stream,
+            &client,
+            &path,
+            start,
+            method == "HEAD",
+            &conversions,
+        )
+        .await;
     }
 
     let entry = match client.stat(&path).await {
@@ -286,6 +336,81 @@ async fn handle(
     }
     stream.flush().await.ok();
     Ok(())
+}
+
+/// A video converted on the host, as it arrives.
+///
+/// No length and no ranges: it is being made as it is sent, so the player
+/// reads it straight through and seeking further is a new conversion from
+/// there, which the app asks for.
+async fn serve_conversion(
+    stream: &mut TcpStream,
+    client: &Basalt,
+    path: &str,
+    start: f64,
+    head_only: bool,
+    conversions: &Conversions,
+) -> Result<()> {
+    let mut converting = match client.convert(path, start).await {
+        Ok(converting) => converting,
+        Err(e) => {
+            tracing::debug!("no conversion of {path}: {e}");
+            conversions.lock().expect("conversions lock").insert(
+                path.to_string(),
+                Conversion {
+                    by: None,
+                    error: Some(e.to_string()),
+                    kind: Some(e.kind().to_string()),
+                },
+            );
+            return respond_status(stream, 503, "Service Unavailable").await;
+        }
+    };
+    conversions.lock().expect("conversions lock").insert(
+        path.to_string(),
+        Conversion {
+            by: Some(converting.by.clone()),
+            error: None,
+            kind: None,
+        },
+    );
+    let head = "HTTP/1.1 200 OK\r\n\
+                Content-Type: video/x-matroska\r\n\
+                Cache-Control: no-store\r\n\
+                Connection: close\r\n\r\n";
+    stream.write_all(head.as_bytes()).await?;
+    if head_only {
+        return Ok(());
+    }
+    loop {
+        match converting.next().await {
+            // A player that stops reading, or moves on, closes the
+            // connection; the conversion is dropped with it, and the host
+            // stops converting.
+            Ok(Some(piece)) => {
+                if stream.write_all(&piece).await.is_err() {
+                    return Ok(());
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                tracing::debug!("a conversion of {path} ended early: {e}");
+                break;
+            }
+        }
+    }
+    stream.flush().await.ok();
+    Ok(())
+}
+
+/// The seconds in `?convert=N`, when the request is for a conversion.
+fn convert_start(target: &str) -> Option<f64> {
+    let (_, query) = target.split_once('?')?;
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("convert="))
+        .and_then(|n| n.parse::<f64>().ok())
+        .filter(|n| n.is_finite() && *n >= 0.0)
 }
 
 async fn respond_status(stream: &mut TcpStream, code: u16, reason: &str) -> Result<()> {

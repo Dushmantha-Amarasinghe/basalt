@@ -424,6 +424,30 @@ impl Session {
         Ok(())
     }
 
+    /// Starts a conversion. The pieces follow, by [`Session::convert_next`].
+    pub async fn convert_begin(
+        &mut self,
+        path: &str,
+        start: f64,
+    ) -> Result<basalt_proto::msg::ConvertStarted> {
+        call_json(
+            &mut self.stream,
+            Op::Convert,
+            &basalt_proto::msg::ConvertRequest {
+                path: path.to_string(),
+                start,
+            },
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    /// The next piece of a conversion, or `None` at its end.
+    pub async fn convert_next(&mut self) -> Result<Option<Vec<u8>>> {
+        let piece = read_response(&mut self.stream).await?;
+        Ok((!piece.is_empty()).then_some(piece))
+    }
+
     /// The subtitles for one video, and others that might be meant for it.
     pub async fn subtitles(&mut self, path: &str) -> Result<basalt_proto::msg::SubtitlesResponse> {
         call_json(

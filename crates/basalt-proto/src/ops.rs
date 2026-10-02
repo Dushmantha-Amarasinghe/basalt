@@ -123,6 +123,12 @@ pub enum Op {
     /// The subtitle files for one video, wherever they are on the drive, and
     /// others somebody might mean for it.
     Subtitles = 32,
+    /// A video converted as it is watched, for a device that cannot play it.
+    ///
+    /// Answered with what is converting it, then the converted film in
+    /// pieces, then an empty piece at the end. The connection is the
+    /// conversion's for as long as it lasts.
+    Convert = 33,
 }
 
 impl Op {
@@ -131,7 +137,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::Subtitles as u8;
+    pub const LAST: u8 = Op::Convert as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -167,6 +173,7 @@ impl Op {
             30 => Op::ProfileSignOut,
             31 => Op::Stars,
             32 => Op::Subtitles,
+            33 => Op::Convert,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -309,6 +316,7 @@ mod tests {
             Op::ProfileSignOut,
             Op::Stars,
             Op::Subtitles,
+            Op::Convert,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

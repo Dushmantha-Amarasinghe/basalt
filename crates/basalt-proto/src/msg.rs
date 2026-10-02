@@ -729,6 +729,25 @@ pub struct SubtitleTrack {
     pub label: String,
 }
 
+/// A video to convert as it is watched.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvertRequest {
+    /// Vault-relative path of the video.
+    pub path: String,
+    /// Seconds into it to start from.
+    #[serde(default)]
+    pub start: f64,
+}
+
+/// The first answer to a conversion, before the film itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvertStarted {
+    /// What is doing the converting, as people say it: "NVIDIA graphics".
+    pub by: String,
+}
+
 /// The subtitles for one video, asked for when it is played.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

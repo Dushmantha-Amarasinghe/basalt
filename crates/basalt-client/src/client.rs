@@ -734,6 +734,31 @@ impl Basalt {
         Ok(lease.check(result)?.stars)
     }
 
+    /// Starts converting a video on the host, from `start` seconds in.
+    ///
+    /// On a connection of its own, as watching for changes is: the
+    /// conversion holds it for as long as it runs, and the pool's
+    /// connections stay free for everything else meanwhile.
+    pub async fn convert(&self, path: &str, start: f64) -> Result<Converting> {
+        let (addr, host_id, token) = {
+            let pool = self.pool().await?;
+            let known = self
+                .store
+                .lock()
+                .expect("store lock")
+                .find(pool.host_id())
+                .cloned()
+                .ok_or(ClientError::NotConnected)?;
+            (pool.address(), known.host_id, known.token)
+        };
+        let mut session = Session::connect(addr, &host_id, &token, &self.me).await?;
+        let started = session.convert_begin(path, start).await?;
+        Ok(Converting {
+            by: started.by,
+            session,
+        })
+    }
+
     /// The subtitles for one video, and others that might be meant for it.
     pub async fn subtitles(&self, path: &str) -> Result<basalt_proto::msg::SubtitlesResponse> {
         let pool = self.pool().await?;
@@ -1367,6 +1392,20 @@ impl Basalt {
         let result = lease.write_commit(&begin.upload, &digest, mtime).await;
         lease.check(result)?;
         Ok(total)
+    }
+}
+
+/// A conversion under way on the host.
+pub struct Converting {
+    /// What is converting it, as people say it.
+    pub by: String,
+    session: Session,
+}
+
+impl Converting {
+    /// The next piece of the converted film, or `None` at its end.
+    pub async fn next(&mut self) -> Result<Option<Vec<u8>>> {
+        self.session.convert_next().await
     }
 }
 

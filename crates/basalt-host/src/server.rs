@@ -73,6 +73,8 @@ pub struct Host {
     scanning: std::sync::atomic::AtomicBool,
     /// A scan was asked for while one was already running.
     rescan_wanted: std::sync::atomic::AtomicBool,
+    /// Video converted as it is watched. See [`crate::convert`].
+    pub converter: crate::convert::Converter,
     /// Every subtitle file the last scan found, filed for matching. Shared
     /// with videos that arrive between scans and those played from Files.
     subtitles: std::sync::Mutex<Arc<crate::media::subs::SubtitleIndex>>,
@@ -185,6 +187,10 @@ impl Host {
         };
 
         let state_root = config.vault_path.clone();
+        let converter_dir = config_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
         let host = Arc::new(Self {
             identity,
             config_path,
@@ -208,6 +214,7 @@ impl Host {
             scanning: std::sync::atomic::AtomicBool::new(false),
             rescan_wanted: std::sync::atomic::AtomicBool::new(false),
             subtitles: std::sync::Mutex::new(Arc::default()),
+            converter: crate::convert::Converter::new(converter_dir),
             arrived_during_scan: std::sync::Mutex::new(Vec::new()),
             last_scan: std::sync::Mutex::new(None),
             progress: std::sync::Mutex::new(progress),
@@ -2072,6 +2079,21 @@ pub async fn serve(server: BoundServer) -> Result<()> {
     host.keep_library_current();
     // And keep serving the drive through it being unplugged and plugged back.
     host.keep_drive_attached();
+    // What this machine can convert video with, found now rather than on
+    // the first film somebody's phone cannot play: it takes a few seconds.
+    {
+        let host = Arc::clone(&host);
+        tokio::spawn(async move {
+            let capability = host.converter.capability().await;
+            match capability.routes.first() {
+                Some(route) => tracing::info!("video can be converted on {}", route.describe()),
+                None if capability.ffmpeg.is_none() => {
+                    tracing::info!("no ffmpeg here, so video is not converted")
+                }
+                None => tracing::info!("ffmpeg is here but nothing can convert with it"),
+            }
+        });
+    }
 
     // Announce on the local network for as long as this host is serving, so
     // clients never have to be told an address. A failure here is not fatal —
@@ -2596,6 +2618,48 @@ where
         Op::Subtitles => {
             let req: SubtitlesRequest = decode(payload)?;
             reply(stream, &host.subtitles_for(&req.path).await?).await?;
+        }
+
+        Op::Convert => {
+            let req: ConvertRequest = decode(payload)?;
+            let vault = host
+                .vault()
+                .await
+                .ok_or_else(|| HostError::Unavailable("no drive is being served".into()))?;
+            // Through the vault, so a path from the wire cannot reach outside.
+            let file = vault.resolve(&req.path)?;
+            let mut conversion = host
+                .converter
+                .start(&file, req.start.max(0.0))
+                .await
+                .map_err(|e| match e {
+                    crate::convert::ConvertError::Failed(_) => HostError::BadRequest(e.to_string()),
+                    _ => HostError::Unavailable(e.to_string()),
+                })?;
+            reply(
+                stream,
+                &ConvertStarted {
+                    by: conversion.route.describe().to_string(),
+                },
+            )
+            .await?;
+            // Until it ends, or the device stops listening: writing to a
+            // connection that has gone fails, and ffmpeg is stopped as the
+            // conversion is dropped.
+            loop {
+                match conversion.next().await {
+                    Ok(Some(piece)) => write_ok(stream, &piece).await?,
+                    Ok(None) => {
+                        write_ok(stream, &[]).await?;
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!("a conversion stopped: {e}");
+                        write_ok(stream, &[]).await?;
+                        break;
+                    }
+                }
+            }
         }
 
         Op::Collections => {

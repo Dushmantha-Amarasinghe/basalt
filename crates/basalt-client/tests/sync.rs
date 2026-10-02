@@ -1267,3 +1267,101 @@ async fn a_video_from_files_gets_its_subtitles_wherever_they_are() {
     // Outside the drive is refused, as everything is.
     assert!(client.subtitles("../outside.mkv").await.is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Converting on the host
+// ---------------------------------------------------------------------------
+
+/// Makes a short test video with ffmpeg, or says there is no ffmpeg here.
+fn test_video(at: &Path, size: &str) -> bool {
+    std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+    std::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+        ])
+        .arg(format!("testsrc2=size={size}:rate=24"))
+        .args(["-f", "lavfi", "-i", "sine=frequency=440", "-t", "6"])
+        .args(["-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac"])
+        .arg(at)
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+// A video converted on the host as it is watched: asked for from a point in
+// it, sent as Matroska, straight through and to the end. Through the proxy,
+// it is what the player opens.
+#[tokio::test]
+async fn a_video_is_converted_as_it_is_watched() {
+    let fixture = start_host().await;
+    if !test_video(
+        &fixture.vault_path("Films/Big.Picture.2024.mkv"),
+        "2560x1440",
+    ) {
+        eprintln!("no ffmpeg here; skipped");
+        return;
+    }
+    let client = fixture.paired_client().await;
+
+    let mut converting = match client.convert("Films/Big.Picture.2024.mkv", 2.0).await {
+        Ok(converting) => converting,
+        Err(e) if e.kind() == "unavailable" => {
+            eprintln!("this machine cannot convert: {e}");
+            return;
+        }
+        Err(e) => panic!("the conversion did not start: {e}"),
+    };
+    assert!(!converting.by.is_empty(), "it says what is converting");
+    let mut film = Vec::new();
+    while let Some(piece) = converting.next().await.unwrap() {
+        film.extend(piece);
+    }
+    assert!(
+        film.len() > 10_000,
+        "a film came back: {} bytes",
+        film.len()
+    );
+    assert_eq!(&film[..4], &[0x1a, 0x45, 0xdf, 0xa3], "as Matroska");
+
+    // The same through the proxy, as the player opens it.
+    let proxy = basalt_client::proxy::MediaProxy::start(Arc::clone(&client))
+        .await
+        .unwrap();
+    let url = format!("{}?convert=1", proxy.url_for("Films/Big.Picture.2024.mkv"));
+    let (head, body) = http_get(&url).await;
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    assert!(
+        !head.contains("Content-Length"),
+        "made as it is sent: {head}"
+    );
+    assert_eq!(&body[..4], &[0x1a, 0x45, 0xdf, 0xa3]);
+    let status = proxy.conversion("Films/Big.Picture.2024.mkv").unwrap();
+    assert_eq!(status.by.as_deref(), Some(converting.by.as_str()));
+
+    // Nothing outside the drive.
+    assert!(client.convert("../outside.mkv", 0.0).await.is_err());
+}
+
+/// A plain HTTP GET, read to the end: the head, and the body.
+async fn http_get(url: &str) -> (String, Vec<u8>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let rest = url.strip_prefix("http://").unwrap();
+    let (authority, path) = rest.split_once('/').unwrap();
+    let mut stream = tokio::net::TcpStream::connect(authority).await.unwrap();
+    stream
+        .write_all(format!("GET /{path} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut all = Vec::new();
+    stream.read_to_end(&mut all).await.unwrap();
+    let split = all.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    (
+        String::from_utf8_lossy(&all[..split]).to_string(),
+        all[split + 4..].to_vec(),
+    )
+}
