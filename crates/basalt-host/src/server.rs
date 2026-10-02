@@ -19,7 +19,7 @@ use basalt_proto::manifest::BatchRequest;
 use basalt_proto::msg::*;
 use basalt_proto::ops::{MAX_READ_BYTES, Op, STATUS_OK};
 use basalt_proto::{ErrorCode, PROTOCOL_VERSION};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
@@ -2721,6 +2721,7 @@ where
                         .as_ref()
                         .map(|d| d.name.clone())
                         .unwrap_or_default(),
+                    &session.device_key().unwrap_or_default(),
                     &req.path,
                 )
                 .await
@@ -2732,21 +2733,27 @@ where
                 },
             )
             .await?;
-            // Until it ends, or the device stops listening: writing to a
-            // connection that has gone fails, and ffmpeg is stopped as the
-            // conversion is dropped.
+            // Until it ends, or the device stops listening. Watched for as
+            // well as written to: a device that hangs up says nothing, and
+            // writing only finds out when ffmpeg next has something to send,
+            // which can be seconds, all of them holding a place a seek needs.
+            // ffmpeg is stopped as the conversion is dropped.
+            let mut hung_up = [0u8; 1];
             loop {
-                match conversion.next().await {
-                    Ok(Some(piece)) => write_ok(stream, &piece).await?,
-                    Ok(None) => {
-                        write_ok(stream, &[]).await?;
-                        break;
-                    }
-                    Err(e) => {
-                        tracing::warn!("a conversion stopped: {e}");
-                        write_ok(stream, &[]).await?;
-                        break;
-                    }
+                tokio::select! {
+                    _ = stream.read(&mut hung_up) => break,
+                    piece = conversion.next() => match piece {
+                        Ok(Some(piece)) => write_ok(stream, &piece).await?,
+                        Ok(None) => {
+                            write_ok(stream, &[]).await?;
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::warn!("a conversion stopped: {e}");
+                            write_ok(stream, &[]).await?;
+                            break;
+                        }
+                    },
                 }
             }
         }

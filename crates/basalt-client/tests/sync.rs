@@ -1433,3 +1433,75 @@ async fn the_hosts_settings_decide_whether_it_converts() {
     assert_eq!(saved["convert_enabled"], true);
     assert_eq!(saved["convert_at_once"], 1);
 }
+
+// A seek past what has arrived is a new conversion from there. On a host that
+// converts one film at a time, the old one used to hold its place until the
+// host next wrote to a device that had moved on, and the new one was refused:
+// "This file could not be opened" halfway through a film.
+#[tokio::test]
+async fn a_seek_replaces_the_devices_own_conversion() {
+    let fixture = start_host().await;
+    let film = fixture.vault_path("Films/Long.Film.2024.mkv");
+    std::fs::create_dir_all(film.parent().unwrap()).unwrap();
+    let made = std::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+        ])
+        .arg("testsrc2=size=1280x720:rate=24")
+        .args([
+            "-t",
+            "120",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-g",
+            "48",
+        ])
+        .arg(&film)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !made {
+        eprintln!("no ffmpeg here; skipped");
+        return;
+    }
+    let client = fixture.paired_client().await;
+    let path = "Films/Long.Film.2024.mkv";
+    if client.convert_check(path).await.is_err() {
+        eprintln!("this machine cannot convert; skipped");
+        return;
+    }
+    fixture.host.set_conversion_at_once(Some(1)).unwrap();
+
+    // Watching, from the start: only the first piece read, as a player
+    // that is still showing the beginning would.
+    let mut watching = client.convert(path, 0.0).await.unwrap();
+    assert!(watching.next().await.unwrap().is_some());
+
+    // Moved to the middle: the same device, the same film. Not refused.
+    let mut moved = client
+        .convert(path, 60.0)
+        .await
+        .expect("a seek takes the place of the conversion it replaces");
+    assert!(moved.next().await.unwrap().is_some());
+    assert_eq!(fixture.host.conversion_status().active.len(), 1);
+
+    // Hanging up frees the place at once, without waiting for a write.
+    drop(moved);
+    drop(watching);
+    let started = std::time::Instant::now();
+    while !fixture.host.conversion_status().active.is_empty() {
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "the place was still held"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    eprintln!("freed after {:?}", started.elapsed());
+}

@@ -363,6 +363,13 @@ pub struct Active {
     pub file: String,
     /// When it started, in Unix seconds.
     pub since: i64,
+    /// Which device it is for, by its pairing: a new conversion of the same
+    /// film for the same device replaces this one.
+    #[serde(skip)]
+    pub owner: String,
+    /// Tells it to stop.
+    #[serde(skip)]
+    pub stop: std::sync::Arc<tokio::sync::Notify>,
 }
 
 /// The conversions running, the route that last worked, and the settings.
@@ -408,6 +415,8 @@ pub struct Conversion {
     stdout: ChildStdout,
     /// Bytes already read while checking the route worked.
     first: Vec<u8>,
+    /// Told when another conversion takes this one's place.
+    stop: std::sync::Arc<tokio::sync::Notify>,
     _slot: Slot,
 }
 
@@ -437,7 +446,14 @@ impl Conversion {
             return Ok(Some(std::mem::take(&mut self.first)));
         }
         let mut buffer = vec![0u8; CHUNK];
-        let read = self.stdout.read(&mut buffer).await?;
+        let read = tokio::select! {
+            read = self.stdout.read(&mut buffer) => read?,
+            // Replaced: the device moved on to another point in the film.
+            _ = self.stop.notified() => {
+                let _ = self.child.kill().await;
+                return Ok(None);
+            }
+        };
         if read == 0 {
             let _ = self.child.wait().await;
             return Ok(None);
@@ -582,13 +598,52 @@ impl Converter {
         Ok(preferred.unwrap_or(first))
     }
 
+    /// Stops a conversion this device already has of this film, and waits a
+    /// moment for its place to come free.
+    ///
+    /// A seek past what has arrived is a new conversion from there, and the
+    /// old one ran on until the host next tried to send to a device that had
+    /// stopped listening. On a machine measured at one at a time, the new one
+    /// was then refused as if the machine were busy, and the film would not
+    /// open at the point it was moved to.
+    async fn replace(&self, owner: &str, file: &str) {
+        let stops: Vec<_> = self
+            .active
+            .lock()
+            .expect("active lock")
+            .iter()
+            .filter(|(_, a)| !owner.is_empty() && a.owner == owner && a.file == file)
+            .map(|(id, a)| (*id, std::sync::Arc::clone(&a.stop)))
+            .collect();
+        if stops.is_empty() {
+            return;
+        }
+        for (_, stop) in &stops {
+            stop.notify_one();
+        }
+        for _ in 0..40 {
+            let gone = {
+                let active = self.active.lock().expect("active lock");
+                stops
+                    .iter()
+                    .all(|(id, _)| !active.iter().any(|(a, _)| a == id))
+            };
+            if gone {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     /// Starts converting `input` from `start` seconds in, for `device`;
-    /// `file` is how the host's window names it.
+    /// `owner` says which device it is by its pairing, and `file` is how the
+    /// host's window names the film.
     pub async fn start(
         &self,
         input: &Path,
         start: f64,
         device: &str,
+        owner: &str,
         file: &str,
     ) -> Result<Conversion, ConvertError> {
         let capability = self.capability().await;
@@ -598,6 +653,7 @@ impl Converter {
         if capability.routes.is_empty() {
             return Err(ConvertError::Unable);
         }
+        self.replace(owner, file).await;
         self.admit()?;
         // A place first, given back however this ends. Taken, then checked,
         // so two asking at once cannot both take the last one.
@@ -606,12 +662,15 @@ impl Converter {
             return Err(ConvertError::Busy);
         }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let stop = std::sync::Arc::new(tokio::sync::Notify::new());
         self.active.lock().expect("active lock").push((
             id,
             Active {
                 device: device.to_string(),
                 file: file.to_string(),
                 since: unix_now(),
+                owner: owner.to_string(),
+                stop: std::sync::Arc::clone(&stop),
             },
         ));
         let slot = Slot {
@@ -642,6 +701,7 @@ impl Converter {
                             child,
                             stdout,
                             first,
+                            stop: std::sync::Arc::clone(&stop),
                             _slot: slot.take().expect("one slot"),
                         });
                     }
@@ -1042,7 +1102,7 @@ mod tests {
         assert!(made.success());
 
         let mut conversion = converter
-            .start(&input, 2.0, "Laptop", "in.mkv")
+            .start(&input, 2.0, "Laptop", "laptop-key", "in.mkv")
             .await
             .expect("converts");
         assert_eq!(converter.active().len(), 1, "listed while it runs");
