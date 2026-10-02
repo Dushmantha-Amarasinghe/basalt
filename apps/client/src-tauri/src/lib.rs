@@ -185,14 +185,19 @@ async fn forget_host(state: State<'_, AppState>, host_id: String) -> Answer<Stat
 fn status_of(client: &Arc<Basalt>) -> Status {
     // The paired host on disk, which is what the window needs in order to name
     // the vault — or to forget it — while nothing is answering.
+    //
+    // While nothing answers, that is the host being tried again: the one used
+    // last. It used to be the first ever paired, so a device with two drives
+    // could name one while waiting for the other.
     let saved = client.known_hosts();
     let live = client.status();
+    let waiting = client.primary_host();
     let paired = live
         .as_ref()
         .and_then(|info| saved.iter().find(|host| host.host_id == info.host_id))
-        .or_else(|| saved.first());
+        .or(waiting.as_ref());
 
-    Status::new(live.clone(), paired, client.device_name())
+    Status::new(live.clone(), paired, client.device_name()).connecting(client.is_connecting())
 }
 
 // ---------------------------------------------------------------------------

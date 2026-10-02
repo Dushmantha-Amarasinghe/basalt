@@ -38,6 +38,8 @@ export interface Status {
    *  "never set up", which are different screens. */
   hasPaired: boolean
   deviceName: string
+  /** A connection is being attempted right now, as at every startup. */
+  connecting?: boolean
 }
 
 /**

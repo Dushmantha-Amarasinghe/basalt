@@ -20,7 +20,13 @@ import { useAsyncSubscription } from './useAsyncSubscription'
  */
 
 const RETRY_MIN_MS = 2_000
-const RETRY_MAX_MS = 30_000
+/**
+ * The longest wait between attempts. An attempt is a connection that is
+ * refused or unanswered and a look round the network, which costs nothing
+ * worth saving; what a long wait costs is somebody sharing their drive again
+ * and watching Basalt not notice. It was thirty seconds.
+ */
+const RETRY_MAX_MS = 10_000
 /** Checking for a drive to come back is cheap, so it never waits long. */
 const DRIVE_RETRY_MAX_MS = 8_000
 
@@ -47,6 +53,30 @@ export function startupRetryDelay(attempt: number): number {
  * used to take on a connection did its own subset of this, and the one that
  * did nothing but store the status was pairing — the first thing anyone sees.
  */
+/**
+ * Whether a status is a drive this device uses that is not answering: paired,
+ * and not connected.
+ *
+ * Nothing in the app disconnects on purpose, and forgetting a drive clears
+ * `hasPaired`, so this is always a host that is off, asleep or not sharing.
+ */
+export function isWaiting(status: Status | null): boolean {
+  return (
+    status !== null &&
+    !status.connected &&
+    !status.connecting &&
+    status.hasPaired &&
+    status.hostId !== null
+  )
+}
+
+/** What the window says in place of a folder while a drive is not answering. */
+export function waitingLabel(status: Status | null): string {
+  const drive = status?.vault ?? 'the drive'
+  const host = status?.hostName ?? 'its computer'
+  return `Waiting for ${drive}. It opens here by itself as soon as ${host} is sharing again.`
+}
+
 export function takeOn(
   status: Status,
   fetch: { listing: () => void; size: () => void },
@@ -113,9 +143,16 @@ export function useVault(): Vault {
   const wanted = useRef('')
   const retryDelay = useRef(RETRY_MIN_MS)
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /**
+   * Counts every sign the host is reachable: a reconnection, or any listing
+   * that came back. A reconnection attempt that fails after one of these is
+   * old news: the host came back while it was still waiting on its own.
+   */
+  const reached = useRef(0)
 
   const load = useCallback(async (target: string) => {
     wanted.current = target
+    const began = reached.current
     setLoading(true)
     try {
       const listing = await api.list(target)
@@ -123,10 +160,16 @@ export function useVault(): Vault {
       setEntries(toEntries(target, listing))
       setListed(target)
       setError(null)
+      reached.current += 1
       retryDelay.current = RETRY_MIN_MS
     } catch (e) {
       if (wanted.current !== target) return
       const err = e instanceof ApiError ? e : new ApiError('error', String(e))
+      // Asked while the host was away, and answered only once it was back:
+      // a connection that does not refuse, such as a laptop asleep, can keep
+      // a request waiting for seconds. Saying "can't reach the host" then, a
+      // moment after it was reached, is old news.
+      if (err.kind === 'offline' && reached.current !== began) return
       if (err.kind === 'unpaired') {
         void dropRemoved.current()
         return
@@ -165,6 +208,22 @@ export function useVault(): Vault {
   const adopt = useCallback(
     (next: Status) => {
       setStatus(next)
+      // Paired, and not answering: offline, which is what starts the retries.
+      // Opening the app while the host was not sharing used to land here and
+      // stop. The one attempt the backend makes at startup had failed, nothing
+      // had failed in the window to retry, and it showed an empty folder for
+      // good, even once the host was sharing again.
+      if (isWaiting(next)) {
+        setError((was) =>
+          was?.kind === 'offline' ? was : new ApiError('offline', 'the host is not answering'),
+        )
+      }
+      // Connected from anywhere, such as another drive chosen while this one
+      // was being waited for: the waiting is over, and so are the retries.
+      if (next.connected) {
+        reached.current += 1
+        setError((was) => (was?.kind === 'offline' ? null : was))
+      }
       takeOn(next, { listing: () => void load(wanted.current), size: fetchSpace })
     },
     [load, fetchSpace],
@@ -208,13 +267,30 @@ export function useVault(): Vault {
     fetchSpace()
   }, [load, fetchSpace])
 
+  /**
+   * One attempt at a time. Any new error schedules an attempt, and a listing
+   * that failed while one was already under way used to start a second. The
+   * newer could succeed first and the older then fail, against a host that
+   * had already been reached, and say it could not reach the host after all.
+   */
+  const attempting = useRef(false)
+
   const reconnect = useCallback(async () => {
+    if (attempting.current) return
+    attempting.current = true
+    const began = reached.current
     setReconnecting(true)
     try {
       const next = await api.connectSaved()
+      reached.current += 1
       setError(null)
       adopt(next)
     } catch (e) {
+      // Reached meanwhile, by a listing or another drive chosen: this
+      // attempt's failure is news about nothing. Not "the status says
+      // connected", which it goes on saying all through an outage, and which
+      // stopped the retries dead when this checked it.
+      if (reached.current !== began) return
       // Removed: the client has already dropped the pairing, and says why.
       if (e instanceof ApiError && e.kind === 'removed') {
         setError(null)
@@ -225,9 +301,16 @@ export function useVault(): Vault {
         const now = await api.status().catch(() => null)
         if (now) setStatus(now)
       }
-      // Anything else is left to the retry loop below; a failed attempt is
-      // the normal case while the host is still waking up.
+      // Anything else goes back to the retry loop below, as a new error so
+      // that it schedules the next attempt. Leaving the old one in place, as
+      // this did, meant one retry and then none: the loop only runs when the
+      // error changes. A failed attempt is the normal case while the host is
+      // still waking up; one that says something else, such as a host that is
+      // not the one paired with, is shown and not retried.
+      else if (e instanceof ApiError && e.kind !== 'offline') setError(e)
+      else setError(new ApiError('offline', e instanceof Error ? e.message : String(e)))
     } finally {
+      attempting.current = false
       setReconnecting(false)
     }
   }, [adopt])
@@ -291,7 +374,10 @@ export function useVault(): Vault {
           api
             .status()
             .then((now) => {
-              if (now.connected) adopt(now)
+              // Connected, or already given up on: either way the push this
+              // listener exists for may have been missed, and a startup that
+              // failed unheard was exactly the app that never tried again.
+              if (now.connected || isWaiting(now)) adopt(now)
             })
             .catch(() => {})
           return stop

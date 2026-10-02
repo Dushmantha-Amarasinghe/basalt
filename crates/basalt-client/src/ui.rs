@@ -31,6 +31,10 @@ pub struct Status {
     /// different screens.
     pub has_paired: bool,
     pub device_name: String,
+    /// A connection is being attempted right now. Not connected and not
+    /// connecting, with a paired host, is a host that did not answer: the
+    /// window says it is waiting for it, rather than that it is connecting.
+    pub connecting: bool,
 }
 
 impl Status {
@@ -71,7 +75,13 @@ impl Status {
             address: info.as_ref().map(|i| i.address.to_string()),
             has_paired: saved.is_some(),
             device_name: device_name.to_string(),
+            connecting: false,
         }
+    }
+
+    /// The same status, saying whether a connection is being attempted.
+    pub fn connecting(self, connecting: bool) -> Self {
+        Self { connecting, ..self }
     }
 }
 
@@ -208,6 +218,7 @@ mod tests {
             vec![
                 "address",
                 "connected",
+                "connecting",
                 "deviceName",
                 "hasPaired",
                 "hostId",

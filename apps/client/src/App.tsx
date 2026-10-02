@@ -66,7 +66,7 @@ import { useIdentity } from '@/lib/useIdentity'
 import { ProfileGate } from '@/components/ProfileGate'
 import { scrollKeyOf } from '@/lib/useScrollMemory'
 import { stemOf, trackInfo } from '@/lib/mediaInfo'
-import { useVault } from '@/lib/useVault'
+import { isWaiting, useVault, waitingLabel } from '@/lib/useVault'
 import { isMobileShell } from '@/lib/platform'
 import { android, type PhoneFile } from '@/lib/android'
 import { MobileApp } from '@/mobile/MobileApp'
@@ -1725,9 +1725,11 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                     // seconds after launch this said "This folder is empty",
                     // which reads as the drive having been wiped.
                     !connected
-                      ? vault.error
-                        ? 'Not connected to the host'
-                        : 'Connecting to the host…'
+                      ? isWaiting(vault.status)
+                        ? waitingLabel(vault.status)
+                        : vault.error
+                          ? 'Not connected to the host'
+                          : 'Connecting to the host…'
                       : vault.loading || scan.scanning
                       ? 'Loading…'
                       : query

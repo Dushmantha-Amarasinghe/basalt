@@ -27,6 +27,7 @@ import {
   X,
 } from 'lucide-react'
 import { Switch } from '@/components/Switch'
+import { isWaiting, waitingLabel } from '@/lib/useVault'
 import { setShowHidden, useShowHidden } from '@/lib/showHidden'
 import { musicItem, type AppModel } from '@/App'
 import { HexMark } from '@/components/HexMark'
@@ -398,7 +399,13 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
               selecting={selecting}
               onActions={setMenuFor}
               scrollKey={model.listKey}
-              emptyLabel={query ? `Nothing matches “${query}”` : 'This folder is empty'}
+              emptyLabel={
+                isWaiting(model.vault.status)
+                  ? waitingLabel(model.vault.status)
+                  : query
+                    ? `Nothing matches “${query}”`
+                    : 'This folder is empty'
+              }
             />
           )}
           {tab === 'recent' && (

@@ -278,6 +278,41 @@ async fn a_paired_client_reconnects_without_pairing_again() {
     assert!(!reopened.list("").await.unwrap().is_empty());
 }
 
+// The window tells "still trying" from "tried, and nothing answered" by this.
+// An attempt that is abandoned part-way must not leave it saying "trying" for
+// good, or the app would never admit the host is not there.
+#[tokio::test]
+async fn a_connection_attempt_is_reported_while_it_lasts_and_not_after() {
+    let fixture = start_host().await;
+    let first = fixture.paired_client().await;
+    let host_id = first.status().unwrap().host_id;
+    first.disconnect().await;
+    assert!(!first.is_connecting());
+
+    // Accepts the connection and then says nothing, as a host that has hung.
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let silent_addr = silent.local_addr().unwrap().to_string();
+    let _held = tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((socket, _)) = silent.accept().await {
+            open.push(socket);
+        }
+    });
+
+    let trying = Arc::clone(&first);
+    let attempt =
+        tokio::spawn(async move { trying.connect(&host_id, Some(silent_addr.as_str())).await });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !first.is_connecting() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(first.is_connecting(), "an attempt under way is reported");
+
+    attempt.abort();
+    let _ = attempt.await;
+    assert!(!first.is_connecting(), "an abandoned attempt is not");
+}
+
 #[tokio::test]
 async fn a_revoked_device_stops_working() {
     let fixture = start_host().await;

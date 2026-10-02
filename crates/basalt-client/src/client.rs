@@ -100,6 +100,24 @@ pub struct Basalt {
     /// data than any download, and a trace that only counted downloads would be
     /// wrong in exactly the moment someone is watching it.
     bytes_moved: std::sync::atomic::AtomicU64,
+    /// Connections being attempted now. See [`Basalt::is_connecting`].
+    connecting: std::sync::atomic::AtomicUsize,
+}
+
+/// Counts one connection attempt for as long as it lasts, however it ends.
+struct Attempt<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl<'a> Attempt<'a> {
+    fn begin(count: &'a std::sync::atomic::AtomicUsize) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(count)
+    }
+}
+
+impl Drop for Attempt<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl Basalt {
@@ -156,7 +174,17 @@ impl Basalt {
             pending: tokio::sync::Mutex::new(None),
             identity: std::sync::Mutex::new(Current::default()),
             bytes_moved: std::sync::atomic::AtomicU64::new(0),
+            connecting: std::sync::atomic::AtomicUsize::new(0),
         })
+    }
+
+    /// Whether a connection to a host is being attempted right now.
+    ///
+    /// Lets the window tell "still trying" from "tried, and nothing answered":
+    /// at startup the first attempt takes a moment, and showing "waiting for
+    /// the drive" for that moment on every launch would be crying wolf.
+    pub fn is_connecting(&self) -> bool {
+        self.connecting.load(std::sync::atomic::Ordering::SeqCst) > 0
     }
 
     pub fn device_name(&self) -> &str {
@@ -179,6 +207,11 @@ impl Basalt {
 
     pub fn known_hosts(&self) -> Vec<KnownHost> {
         self.store.lock().expect("store lock").hosts.clone()
+    }
+
+    /// The host `connect_saved` goes to: the one used last.
+    pub fn primary_host(&self) -> Option<KnownHost> {
+        self.store.lock().expect("store lock").primary().cloned()
     }
 
     /// What the client is currently connected to, if anything.
@@ -341,6 +374,7 @@ impl Basalt {
     /// its pairing is dropped here as well, and [`ClientError::Removed`] says
     /// so, naming the host and the drive.
     pub async fn connect(&self, host_id: &str, address: Option<&str>) -> Result<SessionInfo> {
+        let _attempt = Attempt::begin(&self.connecting);
         match self.connect_known(host_id, address).await {
             Err(e) if e.kind() == "unpaired" => Err(self.removed(host_id).await),
             other => other,
@@ -441,10 +475,22 @@ impl Basalt {
         let _ = self.save_store();
 
         let pool = Pool::with_session(addr, &known.host_id, &known.token, &self.me, session);
-        // Straight back in as whoever was here last time, when that was
-        // remembered. Checked with the host on first use; one that has ended
-        // leaves the device on its own and the app asks who is watching.
-        let current = match &known.identity.profile {
+        // The same host again, after a dropped connection or the host
+        // restarting: whoever was using the device still is. It used to start
+        // over from what was saved, so somebody who had chosen "this device"
+        // for now, or a profile without "remember", was asked who is watching
+        // in the middle of watching, every time the Wi-Fi dropped.
+        let previous = self.identity.lock().expect("identity lock").clone();
+        let carried_over =
+            previous.chosen && !previous.ended && previous.host.as_deref() == Some(host_id);
+        // Otherwise straight back in as whoever was here last time, when that
+        // was remembered. Checked with the host on first use; one that has
+        // ended leaves the device on its own and the app asks who is watching.
+        let mut current = match &known.identity.profile {
+            _ if carried_over => {
+                pool.set_profile(previous.token.clone());
+                previous
+            }
             Some(saved) => {
                 pool.set_profile(Some(saved.token.clone()));
                 Current {
@@ -456,15 +502,16 @@ impl Basalt {
                         last_used: 0,
                     }),
                     chosen: true,
-                    ended: false,
+                    token: Some(saved.token.clone()),
+                    ..Current::default()
                 }
             }
             None => Current {
-                profile: None,
                 chosen: known.identity.always_device,
-                ended: false,
+                ..Current::default()
             },
         };
+        current.host = Some(host_id.to_string());
         *self.identity.lock().expect("identity lock") = current;
         *self.pool.write().await = Some(pool);
         *self.info.lock().expect("info lock") = Some(info.clone());
@@ -483,11 +530,14 @@ impl Basalt {
         self.connect(&primary.host_id, None).await
     }
 
+    /// Disconnects on purpose. Whoever was using the device is forgotten too,
+    /// unless remembered: only a connection that dropped carries them over.
     pub async fn disconnect(&self) {
         if let Some(pool) = self.pool.write().await.take() {
             pool.clear();
         }
         *self.info.lock().expect("info lock") = None;
+        *self.identity.lock().expect("identity lock") = Current::default();
     }
 
     /// Unpairs from a host, on this side and — when it can be reached — on the
@@ -539,6 +589,7 @@ impl Basalt {
                 current.profile = None;
                 current.chosen = false;
                 current.ended = true;
+                current.token = None;
                 drop(current);
                 self.update_identity(|identity| identity.profile = None);
             }
@@ -619,6 +670,8 @@ impl Basalt {
             profile: Some(profile.clone()),
             chosen: true,
             ended: false,
+            token: Some(session.token.clone()),
+            host: Some(pool.host_id().to_string()),
         };
         let saved = remember.then(|| crate::store::SavedProfile {
             id: profile.id.clone(),
@@ -659,9 +712,9 @@ impl Basalt {
             pool.set_profile(None);
         }
         *self.identity.lock().expect("identity lock") = Current {
-            profile: None,
             chosen: true,
-            ended: false,
+            host: Some(pool.host_id().to_string()),
+            ..Current::default()
         };
         self.update_identity(move |identity| {
             identity.profile = None;
@@ -1318,6 +1371,11 @@ struct Current {
     chosen: bool,
     /// The host ended the profile's sign-in since the app last looked.
     ended: bool,
+    /// The profile's sign-in, remembered or not, so a reconnection to the
+    /// same host carries on with it.
+    token: Option<String>,
+    /// The host this was chosen on. Another host asks again.
+    host: Option<String>,
 }
 
 /// Who is using the device, for the app.

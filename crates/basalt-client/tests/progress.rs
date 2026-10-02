@@ -413,6 +413,36 @@ async fn a_sign_in_not_remembered_asks_again_after_reconnecting() {
     assert_eq!(identity.last_profile, Some(maya.id), "shown first");
 }
 
+// A connection that drops and comes back, as the Wi-Fi does or the host
+// restarting: nobody is asked who is watching again in the middle of
+// watching, whatever they chose and whether or not it was remembered.
+#[tokio::test]
+async fn a_dropped_connection_carries_on_as_whoever_was_using_it() {
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let maya = laptop
+        .create_profile("Maya", "4821", 0, false)
+        .await
+        .unwrap();
+
+    laptop.connect_saved().await.unwrap();
+    let identity = laptop.identity().await;
+    assert_eq!(identity.profile.map(|p| p.id), Some(maya.id));
+    assert!(!identity.choose);
+    // Still signed in as far as the host is concerned, too.
+    laptop.progress(at("film.mkv", 0.4, 100.0)).await.unwrap();
+
+    let tv = fixture.paired_client().await;
+    tv.continue_as_device(false).await.unwrap();
+    tv.connect_saved().await.unwrap();
+    let identity = tv.identity().await;
+    assert!(identity.profile.is_none());
+    assert!(
+        !identity.choose,
+        "this device, for now, is still this device"
+    );
+}
+
 #[tokio::test]
 async fn always_as_this_device_stops_asking() {
     let fixture = start_host().await;
